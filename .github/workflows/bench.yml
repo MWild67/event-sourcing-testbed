@@ -33,14 +33,6 @@ jobs:
           for i in $(seq 1 30); do
             curl -sf http://localhost:2113/health/live && break || sleep 2
           done
-          echo "=== mount check ==="
-          mount | grep esdb || echo "tmpfs NOT mounted"
-          echo "=== active env overrides ==="
-          sudo systemctl cat eventstore | grep -A999 'bench.conf' || true
-          echo "=== effective environment ==="
-          sudo systemctl show eventstore --property=Environment
-          echo "=== eventstore logs ==="
-          sudo journalctl -u eventstore -n 40 --no-pager
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -59,18 +51,10 @@ jobs:
 
       - name: Run event-sourcing-testbed stress-test benchmark
         run: |
-          echo "=== HTTP write latency (bypasses gRPC client) ==="
-          for i in 1 2 3 4 5; do
-            time curl -sf -X POST http://localhost:2113/streams/diag-stream \
-              -H "Content-Type: application/json" \
-              -H "ES-EventType: DiagEvent" \
-              -H "ES-EventId: $(cat /proc/sys/kernel/random/uuid)" \
-              -d '[{"i":'"$i"'}]' > /dev/null
-          done
           rust-app/target/release/testbed \
             --eventstore-url "esdb://localhost:2113?tls=false" \
             bench \
             --target-rate 10000 \
-            --concurrency 20 \
+            --concurrency 500 \
             --batch-size 1 \
             --duration-secs 30
