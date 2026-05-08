@@ -40,10 +40,8 @@ impl Default for BenchmarkConfig {
         Self {
             target_rate: 10_000,
             duration_secs: 30,
-            // Max concurrent in-flight gRPC writes.  Keeping several writes
-            // in-flight at all times saturates EventStoreDB's write queue and
-            // prevents the ~40 ms idle-flush timer from firing between bursts.
-            concurrency: 64,
+            // 40 permits × ~3ms write = ~13k ev/s capacity, target 10k.
+            concurrency: 40,
             stream_prefix: "bench-stream".to_string(),
             batch_size: 1,
         }
