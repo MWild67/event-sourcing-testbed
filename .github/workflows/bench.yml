@@ -23,14 +23,7 @@ jobs:
           sudo systemctl stop eventstore || true
           sudo mkdir -p /tmp/esdb /tmp/esdb-log
           sudo chown eventstore:eventstore /tmp/esdb /tmp/esdb-log
-          sudo tee /etc/eventstore/eventstore.conf > /dev/null <<EOF
-          Db: /tmp/esdb
-          Log: /tmp/esdb-log
-          Insecure: true
-          RunProjections: None
-          UnsafeDisableFlushToDisk: true
-          ClusterSize: 1
-          EOF
+          sudo cp .github/eventstore.conf /etc/eventstore/eventstore.conf
           sudo systemctl start eventstore
           echo "Waiting for EventStoreDB to be ready..."
           for i in $(seq 1 30); do
