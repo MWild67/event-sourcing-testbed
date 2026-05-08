@@ -14,7 +14,7 @@ use std::{
 use anyhow::Result;
 use hdrhistogram::Histogram;
 use tokio::sync::Mutex;
-use tracing::{error, info, warn};
+use tracing::{info, warn};
 
 use crate::{events::BenchmarkEvent, eventstore_client::EsClient};
 
@@ -40,10 +40,10 @@ impl Default for BenchmarkConfig {
         Self {
             target_rate: 10_000,
             duration_secs: 30,
-            // 32 tasks × 313 ev/s = ~10 000 ev/s; each task fires every 3.2 ms.
-            // With MemDB writes at ~0.5 ms p50, each task is idle ~85% of the
-            // time — no client-side queuing, latency = pure server write time.
-            concurrency: 32,
+            // Max concurrent in-flight gRPC writes.  Keeping several writes
+            // in-flight at all times saturates EventStoreDB's write queue and
+            // prevents the ~40 ms idle-flush timer from firing between bursts.
+            concurrency: 64,
             stream_prefix: "bench-stream".to_string(),
             batch_size: 1,
         }
@@ -152,92 +152,87 @@ pub async fn run(es_url: &str, config: BenchmarkConfig) -> Result<BenchmarkResul
     }
     info!("EventStoreDB connectivity OK");
 
-    // Share a single gRPC connection across all tasks via HTTP/2 multiplexing.
+    // Single shared connection — HTTP/2 multiplexes all concurrent writes.
     let client = Arc::new(probe);
-
     let total_events = Arc::new(AtomicU64::new(0));
     let shared_hist = Arc::new(Mutex::new(Histogram::<u64>::new(3)?));
 
     let batch_size = config.batch_size.max(1);
-    let task_batch_rate =
-        ((config.target_rate as f64) / (config.concurrency as f64) / (batch_size as f64)).ceil()
-            as u64;
-    let interval_us = 1_000_000u64 / task_batch_rate.max(1);
+    // Single dispatch loop fires one write per tick at exactly target_rate/s.
+    // This produces a steady stream with no burst gaps, keeping the
+    // EventStoreDB write queue continuously warm.
+    let ticks_per_sec = ((config.target_rate as f64) / (batch_size as f64)).ceil() as u64;
+    let tick_us = 1_000_000u64 / ticks_per_sec.max(1);
+
+    // Semaphore bounds concurrent in-flight writes below Kestrel's HTTP/2
+    // max-concurrent-streams limit (default 100).
+    let max_in_flight = (config.concurrency as usize).min(96);
+    let in_flight = Arc::new(tokio::sync::Semaphore::new(max_in_flight));
 
     let duration = Duration::from_secs(config.duration_secs);
     let wall_start = Instant::now();
 
-    let mut handles = Vec::with_capacity(config.concurrency as usize);
+    let mut interval = tokio::time::interval(Duration::from_micros(tick_us));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
-    for task_id in 0..config.concurrency {
+    let mut seq: u64 = 0;
+
+    loop {
+        interval.tick().await;
+        if wall_start.elapsed() >= duration {
+            break;
+        }
+
+        // Non-blocking: skip this tick if the write pipeline is already full.
+        let permit = match Arc::clone(&in_flight).try_acquire_owned() {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
+
         let client = Arc::clone(&client);
         let total_events = Arc::clone(&total_events);
-        let stream_name = format!("{}-{}", config.stream_prefix, task_id);
+        let hist = Arc::clone(&shared_hist);
+        let stream_name = format!("{}-{}", config.stream_prefix, seq % config.concurrency);
+        let events: Vec<BenchmarkEvent> = (0..batch_size)
+            .map(|i| BenchmarkEvent::new(seq * batch_size + i, seq % config.concurrency))
+            .collect();
+        seq += 1;
 
-        let handle = tokio::spawn(async move {
-            let mut local_hist = Histogram::<u64>::new(3).expect("histogram alloc");
-            let mut seq: u64 = 0;
-            let mut interval = tokio::time::interval(Duration::from_micros(interval_us));
-            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-
-            loop {
-                interval.tick().await;
-
-                if wall_start.elapsed() >= duration {
-                    break;
+        tokio::spawn(async move {
+            let _permit = permit; // returned to semaphore when this task exits
+            let t0 = Instant::now();
+            match client
+                .append_batch(&stream_name, "BenchmarkEvent", &events)
+                .await
+            {
+                Ok(_) => {
+                    let lat_us = t0.elapsed().as_micros() as u64;
+                    let _ = hist.lock().await.record(lat_us);
+                    total_events.fetch_add(batch_size, Ordering::Relaxed);
                 }
-
-                let batch: Vec<BenchmarkEvent> = (0..batch_size)
-                    .map(|i| BenchmarkEvent::new(seq + i, task_id))
-                    .collect();
-                let t0 = Instant::now();
-
-                match client
-                    .append_batch(&stream_name, "BenchmarkEvent", &batch)
-                    .await
-                {
-                    Ok(_) => {
-                        let lat_us = t0.elapsed().as_micros() as u64;
-                        let _ = local_hist.record(lat_us);
-                        total_events.fetch_add(batch_size, Ordering::Relaxed);
-                        seq += batch_size;
-                    }
-                    Err(e) => {
-                        warn!(task_id, error = %e, "append_batch failed, skipping");
-                    }
-                }
+                Err(e) => warn!(error = %e, "append_batch failed, skipping"),
             }
-
-            local_hist
         });
-
-        handles.push(handle);
     }
 
-    // Collect per-task histograms.
-    let mut merged = Histogram::<u64>::new(3)?;
-    for handle in handles {
-        match handle.await {
-            Ok(local) => merged.add(&local)?,
-            Err(e) => error!(error = %e, "task panicked"),
-        }
-    }
+    // Wait for all in-flight writes to complete before computing results.
+    // acquire_many(max_in_flight) blocks until every permit has been returned.
+    let _ = in_flight.acquire_many(max_in_flight as u32).await;
 
     let elapsed = wall_start.elapsed();
     let total = total_events.load(Ordering::Relaxed);
     let rate = total as f64 / elapsed.as_secs_f64();
-    let p99_us = merged.value_at_quantile(0.99);
-
-    *shared_hist.lock().await = merged.clone();
+    let hist = shared_hist.lock().await;
+    let p99_us = hist.value_at_quantile(0.99);
 
     Ok(BenchmarkResult {
         total_events: total,
         actual_rate: rate,
         elapsed_secs: elapsed.as_secs_f64(),
-        p50_us: merged.value_at_quantile(0.50),
-        p95_us: merged.value_at_quantile(0.95),
+        p50_us: hist.value_at_quantile(0.50),
+        p95_us: hist.value_at_quantile(0.95),
         p99_us,
-        p999_us: merged.value_at_quantile(0.999),
+        p999_us: hist.value_at_quantile(0.999),
         passed: p99_us < 2_000 && rate >= 9_000.0,
     })
 }

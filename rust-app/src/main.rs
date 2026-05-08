@@ -60,8 +60,8 @@ struct BenchArgs {
     duration_secs: u64,
 
     /// Number of concurrent Tokio tasks writing to separate streams.
-    /// 32 tasks × 313 ev/s = ~10 000 ev/s; each fires every 3.2 ms.
-    #[arg(long, default_value_t = 32)]
+    /// Controls max in-flight gRPC writes — 64 keeps the ES queue warm.
+    #[arg(long, default_value_t = 64)]
     concurrency: u64,
 
     /// Stream name prefix.
