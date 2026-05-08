@@ -25,7 +25,7 @@ jobs:
           sudo mount -t tmpfs -o size=256m tmpfs /tmp/esdb
           sudo chown eventstore:eventstore /tmp/esdb /tmp/esdb-log
           sudo mkdir -p /etc/systemd/system/eventstore.service.d
-          printf '[Service]\nEnvironment="EVENTSTORE_DB=/tmp/esdb"\nEnvironment="EVENTSTORE_LOG=/tmp/esdb-log"\nEnvironment="EVENTSTORE_INSECURE=true"\nEnvironment="EVENTSTORE_RUN_PROJECTIONS=None"\nEnvironment="EVENTSTORE_UNSAFE_DISABLE_FLUSH_TO_DISK=true"\nEnvironment="EVENTSTORE_CLUSTER_SIZE=1"\n' \
+          printf '[Service]\nEnvironment="EVENTSTORE_DB=/tmp/esdb"\nEnvironment="EVENTSTORE_LOG=/tmp/esdb-log"\nEnvironment="EVENTSTORE_INSECURE=true"\nEnvironment="EVENTSTORE_RUN_PROJECTIONS=None"\nEnvironment="EVENTSTORE_UNSAFE_DISABLE_FLUSH_TO_DISK=true"\nEnvironment="EVENTSTORE_CLUSTER_SIZE=1"\nEnvironment="EVENTSTORE_MEM_DB=true"\n' \
             | sudo tee /etc/systemd/system/eventstore.service.d/bench.conf
           sudo systemctl daemon-reload
           sudo systemctl start eventstore
@@ -33,6 +33,9 @@ jobs:
           for i in $(seq 1 30); do
             curl -sf http://localhost:2113/health/live && break || sleep 2
           done
+          ES_PID=$(systemctl show -p MainPID eventstore | cut -d= -f2)
+          sudo renice -n -15 -p "$ES_PID"
+          echo "EventStoreDB PID=$ES_PID niced to -15"
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
