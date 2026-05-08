@@ -22,13 +22,25 @@ jobs:
           sudo apt-get install -y eventstore-oss=23.10.8
           sudo systemctl stop eventstore || true
           sudo mkdir -p /tmp/esdb /tmp/esdb-log
+          sudo mount -t tmpfs -o size=256m tmpfs /tmp/esdb
           sudo chown eventstore:eventstore /tmp/esdb /tmp/esdb-log
-          sudo cp .github/eventstore.conf /etc/eventstore/eventstore.conf
+          sudo mkdir -p /etc/systemd/system/eventstore.service.d
+          printf '[Service]\nEnvironment="EVENTSTORE_DB=/tmp/esdb"\nEnvironment="EVENTSTORE_LOG=/tmp/esdb-log"\nEnvironment="EVENTSTORE_INSECURE=true"\nEnvironment="EVENTSTORE_RUN_PROJECTIONS=None"\nEnvironment="EVENTSTORE_UNSAFE_DISABLE_FLUSH_TO_DISK=true"\nEnvironment="EVENTSTORE_CLUSTER_SIZE=1"\n' \
+            | sudo tee /etc/systemd/system/eventstore.service.d/bench.conf
+          sudo systemctl daemon-reload
           sudo systemctl start eventstore
           echo "Waiting for EventStoreDB to be ready..."
           for i in $(seq 1 30); do
             curl -sf http://localhost:2113/health/live && break || sleep 2
           done
+          echo "=== mount check ==="
+          mount | grep esdb || echo "tmpfs NOT mounted"
+          echo "=== active env overrides ==="
+          sudo systemctl cat eventstore | grep -A999 'bench.conf' || true
+          echo "=== effective environment ==="
+          sudo systemctl show eventstore --property=Environment
+          echo "=== eventstore logs ==="
+          sudo journalctl -u eventstore -n 40 --no-pager
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
