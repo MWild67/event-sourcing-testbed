@@ -59,6 +59,14 @@ jobs:
 
       - name: Run event-sourcing-testbed stress-test benchmark
         run: |
+          echo "=== HTTP write latency (bypasses gRPC client) ==="
+          for i in 1 2 3 4 5; do
+            time curl -sf -X POST http://localhost:2113/streams/diag-stream \
+              -H "Content-Type: application/json" \
+              -H "ES-EventType: DiagEvent" \
+              -H "ES-EventId: $(cat /proc/sys/kernel/random/uuid)" \
+              -d '[{"i":'"$i"'}]' > /dev/null
+          done
           rust-app/target/release/testbed \
             --eventstore-url "esdb://localhost:2113?tls=false" \
             bench \
