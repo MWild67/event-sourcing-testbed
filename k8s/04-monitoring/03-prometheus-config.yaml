@@ -1,0 +1,89 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+  namespace: event-store
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 15s
+      evaluation_interval: 15s
+      external_labels:
+        cluster: event-sourcing-testbed
+        namespace: event-store
+
+    scrape_configs:
+
+      # ── node-exporter: Disk I/O Wait, IOPS, filesystem metrics ────────────
+      - job_name: node-exporter
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names: [event-store]
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_label_app]
+            action: keep
+            regex: node-exporter
+          - source_labels: [__address__]
+            action: replace
+            regex: ([^:]+):.*
+            replacement: $1:9100
+            target_label: __address__
+          - source_labels: [__meta_kubernetes_pod_node_name]
+            target_label: node
+
+      # ── EventStoreDB: write latency, queue depth, cluster health ──────────
+      - job_name: eventstore
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names: [event-store]
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_label_app]
+            action: keep
+            regex: eventstore
+          - source_labels: [__address__]
+            action: replace
+            regex: ([^:]+):.*
+            replacement: $1:2113
+            target_label: __address__
+          - target_label: __metrics_path__
+            replacement: /metrics
+          - source_labels: [__meta_kubernetes_pod_name]
+            target_label: pod
+
+      # ── RabbitMQ Prometheus plugin ─────────────────────────────────────────
+      - job_name: rabbitmq
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names: [event-store]
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_label_app]
+            action: keep
+            regex: rabbitmq
+          - source_labels: [__address__]
+            action: replace
+            regex: ([^:]+):.*
+            replacement: $1:15692
+            target_label: __address__
+          - target_label: __metrics_path__
+            replacement: /metrics
+          - source_labels: [__meta_kubernetes_pod_name]
+            target_label: pod
+
+      # ── Benchmark app ──────────────────────────────────────────────────────
+      - job_name: testbed-app
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names: [event-store]
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_label_app]
+            action: keep
+            regex: testbed-app
+          - source_labels: [__address__]
+            action: replace
+            regex: ([^:]+):.*
+            replacement: $1:9090
+            target_label: __address__

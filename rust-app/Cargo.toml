@@ -1,0 +1,52 @@
+[package]
+name = "event-sourcing-testbed"
+version = "0.1.0"
+edition = "2021"
+description = "Rust benchmark and event-sourcing demo for EventStoreDB + RabbitMQ"
+
+[[bin]]
+name = "testbed"
+path = "src/main.rs"
+
+[dependencies]
+# ── EventStoreDB gRPC client ───────────────────────────────────────────────
+eventstore = "3"
+
+# ── RabbitMQ AMQP 0-9-1 client ────────────────────────────────────────────
+lapin = "2"
+
+# ── Async runtime ─────────────────────────────────────────────────────────
+tokio = { version = "1", features = ["full"] }
+futures = "0.3"
+
+# ── Serialisation ─────────────────────────────────────────────────────────
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# ── Unique IDs ────────────────────────────────────────────────────────────
+uuid = { version = "1", features = ["v4"] }
+
+# ── Timestamps ────────────────────────────────────────────────────────────
+chrono = { version = "0.4", features = ["serde"] }
+
+# ── Latency histograms (HDR, accurate across 7 orders of magnitude) ────────
+hdrhistogram = "7"
+
+# ── CLI ───────────────────────────────────────────────────────────────────
+clap = { version = "4", features = ["derive", "env"] }
+
+# ── Structured logging ────────────────────────────────────────────────────
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+# ── Error handling ────────────────────────────────────────────────────────
+anyhow = "1"
+
+# ── Prometheus metrics endpoint (exposed on :9090/metrics) ────────────────
+prometheus = { version = "0.13", features = ["process"] }
+axum = "0.7"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1

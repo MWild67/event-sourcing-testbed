@@ -1,0 +1,60 @@
+name: event-sourcing-testbed — Performance Benchmark
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:   # allow manual trigger from GitHub UI
+
+jobs:
+  event-sourcing-testbed-bench:
+    name: event-sourcing-testbed — Stress-Test (p99 < 2ms @ 10k ev/s)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout event-sourcing-testbed
+        uses: actions/checkout@v4
+
+      - name: Install EventStoreDB natively
+        run: |
+          curl -s https://packagecloud.io/install/repositories/EventStore/EventStore-OSS/script.deb.sh | sudo bash
+          sudo apt-get install -y eventstore-db
+          sudo tee /etc/eventstore/eventstore.conf > /dev/null <<EOF
+          Db: /tmp/esdb
+          Log: /tmp/esdb-log
+          Insecure: true
+          RunProjections: None
+          UnsafeDisableFlushToDisk: true
+          ClusterSize: 1
+          EOF
+          sudo systemctl start eventstore
+          echo "Waiting for EventStoreDB to be ready..."
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:2113/health/live && break || sleep 2
+          done
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache event-sourcing-testbed Rust build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            rust-app/target
+          key: event-sourcing-testbed-${{ runner.os }}-cargo-${{ hashFiles('rust-app/Cargo.lock') }}
+
+      - name: Build event-sourcing-testbed benchmark binary
+        run: cargo build --release --manifest-path rust-app/Cargo.toml
+
+      - name: Run event-sourcing-testbed stress-test benchmark
+        run: |
+          rust-app/target/release/testbed \
+            --eventstore-url "esdb://localhost:2113?tls=false" \
+            bench \
+            --target-rate 10000 \
+            --concurrency 20 \
+            --batch-size 1 \
+            --duration-secs 30

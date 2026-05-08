@@ -1,0 +1,53 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# StorageClass: event-store-local
+#
+# volumeBindingMode: WaitForFirstConsumer ensures that PVC binding is deferred
+# until a Pod actually requests the volume, allowing the scheduler to choose a
+# node first.  This provides data locality — the PV is created on the same node
+# where the Pod lands.
+#
+# Provisioner choices:
+#   rancher.io/local-path  → k3s / k3d / Rancher (default here)
+#   kubernetes.io/no-provisioner → bare-metal; requires manual PV creation
+#   ebs.csi.aws.com        → AWS EKS
+#   disk.csi.azure.com     → Azure AKS
+#   pd.csi.storage.gke.io  → GKE
+#
+# Swap the provisioner line below for your environment.
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: event-store-local
+  annotations:
+    storageclass.kubernetes.io/is-default-class: "false"
+provisioner: rancher.io/local-path
+volumeBindingMode: WaitForFirstConsumer
+reclaimPolicy: Retain
+allowVolumeExpansion: false
+
+---
+# ─────────────────────────────────────────────────────────────────────────────
+# Bare-metal fallback: uncomment if using kubernetes.io/no-provisioner.
+# You must create a PersistentVolume on EACH node manually (one per replica).
+# Template for one node — repeat for every node in your cluster:
+# ─────────────────────────────────────────────────────────────────────────────
+# apiVersion: v1
+# kind: PersistentVolume
+# metadata:
+#   name: event-store-pv-node1
+# spec:
+#   capacity:
+#     storage: 20Gi
+#   accessModes: [ReadWriteOnce]
+#   persistentVolumeReclaimPolicy: Retain
+#   storageClassName: event-store-local
+#   local:
+#     path: /mnt/disks/event-store
+#   nodeAffinity:
+#     required:
+#       nodeSelectorTerms:
+#       - matchExpressions:
+#         - key: kubernetes.io/hostname
+#           operator: In
+#           values: ["<worker-node-1>"]

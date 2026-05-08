@@ -1,0 +1,10 @@
+C:\Projects\Helix\event-sourcing-testbed\rust-app\target\debug\deps\io_lifetimes-17f8d7b1e0bf608e.d: C:\Users\wildm3\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\io-lifetimes-1.0.11\src\lib.rs C:\Users\wildm3\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\io-lifetimes-1.0.11\src\portability.rs C:\Users\wildm3\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\io-lifetimes-1.0.11\src\traits.rs C:\Users\wildm3\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\io-lifetimes-1.0.11\src\example_ffi.rs C:\Users\wildm3\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\io-lifetimes-1.0.11\src\raw.rs C:\Users\wildm3\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\io-lifetimes-1.0.11\src\views.rs
+
+C:\Projects\Helix\event-sourcing-testbed\rust-app\target\debug\deps\libio_lifetimes-17f8d7b1e0bf608e.rmeta: C:\Users\wildm3\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\io-lifetimes-1.0.11\src\lib.rs C:\Users\wildm3\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\io-lifetimes-1.0.11\src\portability.rs C:\Users\wildm3\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\io-lifetimes-1.0.11\src\traits.rs C:\Users\wildm3\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\io-lifetimes-1.0.11\src\example_ffi.rs C:\Users\wildm3\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\io-lifetimes-1.0.11\src\raw.rs C:\Users\wildm3\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\io-lifetimes-1.0.11\src\views.rs
+
+C:\Users\wildm3\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\io-lifetimes-1.0.11\src\lib.rs:
+C:\Users\wildm3\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\io-lifetimes-1.0.11\src\portability.rs:
+C:\Users\wildm3\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\io-lifetimes-1.0.11\src\traits.rs:
+C:\Users\wildm3\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\io-lifetimes-1.0.11\src\example_ffi.rs:
+C:\Users\wildm3\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\io-lifetimes-1.0.11\src\raw.rs:
+C:\Users\wildm3\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\io-lifetimes-1.0.11\src\views.rs:

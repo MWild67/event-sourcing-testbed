@@ -1,0 +1,116 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: eventstore
+  namespace: event-store
+  labels:
+    app: eventstore
+spec:
+  serviceName: eventstore-headless
+  replicas: 3
+  selector:
+    matchLabels:
+      app: eventstore
+  podManagementPolicy: Parallel
+  updateStrategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app: eventstore
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "2113"
+        prometheus.io/path: "/metrics"
+    spec:
+      # Spread pods across different nodes for HA
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app: eventstore
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: eventstore
+          image: eventstore/eventstore:23.10.0-jammy
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 2113
+            - name: grpc
+              containerPort: 2114
+          env:
+            # ── Cluster formation ──────────────────────────────────────────
+            - name: EVENTSTORE_CLUSTER_SIZE
+              value: "3"
+            - name: EVENTSTORE_DISCOVER_VIA_DNS
+              value: "true"
+            - name: EVENTSTORE_CLUSTER_DNS
+              value: "eventstore-headless.event-store.svc.cluster.local"
+            - name: EVENTSTORE_CLUSTER_GOSSIP_PORT
+              value: "2113"
+            # ── Network ────────────────────────────────────────────────────
+            - name: EVENTSTORE_INT_IP
+              value: "0.0.0.0"
+            - name: EVENTSTORE_EXT_IP
+              value: "0.0.0.0"
+            - name: EVENTSTORE_HTTP_PORT
+              value: "2113"
+            # Use the pod's own IP so other nodes can reach it for gossip
+            - name: EVENTSTORE_ADVERTISE_NODE_PORT_TO_CLIENT_AS
+              value: "2113"
+            # ── Security (testbed: no TLS) ─────────────────────────────────
+            - name: EVENTSTORE_INSECURE
+              value: "true"
+            # ── Projections (disabled for write-latency performance) ───────
+            - name: EVENTSTORE_RUN_PROJECTIONS
+              value: "None"
+            - name: EVENTSTORE_START_STANDARD_PROJECTIONS
+              value: "false"
+            # ── Atom / REST compatibility ──────────────────────────────────
+            - name: EVENTSTORE_ENABLE_ATOM_PUB_OVER_HTTP
+              value: "true"
+            # ── Storage ────────────────────────────────────────────────────
+            - name: EVENTSTORE_DB
+              value: "/data/db"
+            - name: EVENTSTORE_LOG
+              value: "/data/log"
+            - name: EVENTSTORE_INDEX
+              value: "/data/index"
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: 2113
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            failureThreshold: 6
+          readinessProbe:
+            httpGet:
+              path: /health/alive
+              port: 2113
+            initialDelaySeconds: 15
+            periodSeconds: 5
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "512Mi"
+            limits:
+              cpu: "2"
+              memory: "2Gi"
+          volumeMounts:
+            - name: data
+              mountPath: /data
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          app: eventstore
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: event-store-local
+        resources:
+          requests:
+            storage: 20Gi

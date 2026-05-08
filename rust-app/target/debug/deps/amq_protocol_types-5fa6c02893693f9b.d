@@ -1,0 +1,10 @@
+C:\Projects\Helix\event-sourcing-testbed\rust-app\target\debug\deps\amq_protocol_types-5fa6c02893693f9b.d: C:\Users\wildm3\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\amq-protocol-types-7.2.3\src\lib.rs C:\Users\wildm3\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\amq-protocol-types-7.2.3\src\types.rs C:\Users\wildm3\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\amq-protocol-types-7.2.3\src\value.rs C:\Users\wildm3\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\amq-protocol-types-7.2.3\src\flags.rs C:\Users\wildm3\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\amq-protocol-types-7.2.3\src\generation.rs C:\Users\wildm3\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\amq-protocol-types-7.2.3\src\parsing.rs
+
+C:\Projects\Helix\event-sourcing-testbed\rust-app\target\debug\deps\libamq_protocol_types-5fa6c02893693f9b.rmeta: C:\Users\wildm3\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\amq-protocol-types-7.2.3\src\lib.rs C:\Users\wildm3\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\amq-protocol-types-7.2.3\src\types.rs C:\Users\wildm3\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\amq-protocol-types-7.2.3\src\value.rs C:\Users\wildm3\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\amq-protocol-types-7.2.3\src\flags.rs C:\Users\wildm3\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\amq-protocol-types-7.2.3\src\generation.rs C:\Users\wildm3\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\amq-protocol-types-7.2.3\src\parsing.rs
+
+C:\Users\wildm3\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\amq-protocol-types-7.2.3\src\lib.rs:
+C:\Users\wildm3\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\amq-protocol-types-7.2.3\src\types.rs:
+C:\Users\wildm3\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\amq-protocol-types-7.2.3\src\value.rs:
+C:\Users\wildm3\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\amq-protocol-types-7.2.3\src\flags.rs:
+C:\Users\wildm3\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\amq-protocol-types-7.2.3\src\generation.rs:
+C:\Users\wildm3\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\amq-protocol-types-7.2.3\src\parsing.rs:
