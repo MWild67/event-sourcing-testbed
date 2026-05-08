@@ -20,6 +20,9 @@ jobs:
         run: |
           curl -s https://packagecloud.io/install/repositories/EventStore/EventStore-OSS/script.deb.sh | sudo bash
           sudo apt-get install -y eventstore-oss=23.10.8
+          sudo systemctl stop eventstore || true
+          sudo mkdir -p /tmp/esdb /tmp/esdb-log
+          sudo chown eventstore:eventstore /tmp/esdb /tmp/esdb-log
           sudo tee /etc/eventstore/eventstore.conf > /dev/null <<EOF
           Db: /tmp/esdb
           Log: /tmp/esdb-log
