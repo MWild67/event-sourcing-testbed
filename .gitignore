@@ -1,0 +1,9 @@
+# Rust build output
+rust-app/target/
+
+# RabbitMQ persistent data (created by docker-compose)
+docker/rabbitmq-data/
+
+# OS
+.DS_Store
+Thumbs.db

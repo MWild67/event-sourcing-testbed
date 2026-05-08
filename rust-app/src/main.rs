@@ -60,10 +60,8 @@ struct BenchArgs {
     duration_secs: u64,
 
     /// Number of concurrent Tokio tasks writing to separate streams.
-    /// 50 tasks × 200 ev/s = 10 000 single-event appends/sec;
-    /// each task fires one call every 5 ms, well above the expected ~0.5 ms
-    /// per-call latency.
-    #[arg(long, default_value_t = 50)]
+    /// 32 tasks × 313 ev/s = ~10 000 ev/s; each fires every 3.2 ms.
+    #[arg(long, default_value_t = 32)]
     concurrency: u64,
 
     /// Stream name prefix.

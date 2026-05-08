@@ -40,10 +40,10 @@ impl Default for BenchmarkConfig {
         Self {
             target_rate: 10_000,
             duration_secs: 30,
-            // 500 tasks share one gRPC connection via HTTP/2 multiplexing.
-            // High concurrency keeps EventStoreDB's write queue saturated so
-            // the storage-writer thread never sleeps (~40 ms sleep when idle).
-            concurrency: 500,
+            // 32 tasks × 313 ev/s = ~10 000 ev/s; each task fires every 3.2 ms.
+            // With MemDB writes at ~0.5 ms p50, each task is idle ~85% of the
+            // time — no client-side queuing, latency = pure server write time.
+            concurrency: 32,
             stream_prefix: "bench-stream".to_string(),
             batch_size: 1,
         }
@@ -153,14 +153,7 @@ pub async fn run(es_url: &str, config: BenchmarkConfig) -> Result<BenchmarkResul
     info!("EventStoreDB connectivity OK");
 
     // Share a single gRPC connection across all tasks via HTTP/2 multiplexing.
-    // This avoids opening N TCP connections (which exhausts ES resources at
-    // high concurrency) while still allowing many in-flight requests.
     let client = Arc::new(probe);
-
-    // Cap concurrent in-flight gRPC writes below HTTP/2 max-concurrent-streams
-    // (Kestrel default = 100).  64 keeps the ES write queue saturated without
-    // tripping the stream limit that crashes the dispatch task.
-    let in_flight = Arc::new(tokio::sync::Semaphore::new(64));
 
     let total_events = Arc::new(AtomicU64::new(0));
     let shared_hist = Arc::new(Mutex::new(Histogram::<u64>::new(3)?));
@@ -178,7 +171,6 @@ pub async fn run(es_url: &str, config: BenchmarkConfig) -> Result<BenchmarkResul
 
     for task_id in 0..config.concurrency {
         let client = Arc::clone(&client);
-        let in_flight = Arc::clone(&in_flight);
         let total_events = Arc::clone(&total_events);
         let stream_name = format!("{}-{}", config.stream_prefix, task_id);
 
@@ -200,7 +192,6 @@ pub async fn run(es_url: &str, config: BenchmarkConfig) -> Result<BenchmarkResul
                     .collect();
                 let t0 = Instant::now();
 
-                let _permit = in_flight.acquire().await;
                 match client
                     .append_batch(&stream_name, "BenchmarkEvent", &batch)
                     .await

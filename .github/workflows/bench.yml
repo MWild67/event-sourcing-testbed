@@ -58,6 +58,6 @@ jobs:
             --eventstore-url "esdb://localhost:2113?tls=false" \
             bench \
             --target-rate 10000 \
-            --concurrency 500 \
+            --concurrency 32 \
             --batch-size 1 \
             --duration-secs 30
