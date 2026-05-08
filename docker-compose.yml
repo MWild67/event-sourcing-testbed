@@ -2,7 +2,7 @@ services:
 
   # ── EventStoreDB node 0 ────────────────────────────────────────────────────
   eventstore-0:
-    image: docker.io/eventstore/eventstore:23.10.0-jammy
+    image: docker.io/eventstore/eventstore:23.10.8-jammy
     container_name: eventstore-0
     environment:
       EVENTSTORE_CLUSTER_SIZE: 3
@@ -36,7 +36,7 @@ services:
 
   # ── EventStoreDB node 1 ────────────────────────────────────────────────────
   eventstore-1:
-    image: docker.io/eventstore/eventstore:23.10.0-jammy
+    image: docker.io/eventstore/eventstore:23.10.8-jammy
     container_name: eventstore-1
     environment:
       EVENTSTORE_CLUSTER_SIZE: 3
@@ -70,7 +70,7 @@ services:
 
   # ── EventStoreDB node 2 ────────────────────────────────────────────────────
   eventstore-2:
-    image: docker.io/eventstore/eventstore:23.10.0-jammy
+    image: docker.io/eventstore/eventstore:23.10.8-jammy
     container_name: eventstore-2
     environment:
       EVENTSTORE_CLUSTER_SIZE: 3
@@ -107,7 +107,7 @@ services:
   # Podman VM bridge network (adds ~100 ms per write on Windows).
   # Production/Kubernetes benchmarks use the 3-node cluster (real hardware).
   eventstore-bench:
-    image: docker.io/eventstore/eventstore:23.10.0-jammy
+    image: docker.io/eventstore/eventstore:23.10.8-jammy
     container_name: eventstore-bench
     environment:
       EVENTSTORE_CLUSTER_SIZE: 1
