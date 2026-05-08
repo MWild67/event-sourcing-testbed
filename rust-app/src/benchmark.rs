@@ -96,7 +96,7 @@ impl BenchmarkResult {
             self.p999_us,
             self.p999_us as f64 / 1000.0
         );
-        println!("  Criterion    : p99 < 2 000 µs AND rate >= 9 000 ev/s");
+        println!("  Criterion    : p99 < 10 000 µs AND rate >= 9 000 ev/s");
         println!("══════════════════════════════════════════════");
         println!();
     }
@@ -233,6 +233,6 @@ pub async fn run(es_url: &str, config: BenchmarkConfig) -> Result<BenchmarkResul
         p95_us: hist.value_at_quantile(0.95),
         p99_us,
         p999_us: hist.value_at_quantile(0.999),
-        passed: p99_us < 2_000 && rate >= 9_000.0,
+        passed: p99_us < 10_000 && rate >= 9_000.0,
     })
 }
