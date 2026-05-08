@@ -10,7 +10,7 @@ on:
 jobs:
   event-sourcing-testbed-bench:
     name: event-sourcing-testbed — Stress-Test (p99 < 2ms @ 10k ev/s)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
 
     steps:
       - name: Checkout event-sourcing-testbed
@@ -19,7 +19,7 @@ jobs:
       - name: Install EventStoreDB natively
         run: |
           curl -s https://packagecloud.io/install/repositories/EventStore/EventStore-OSS/script.deb.sh | sudo bash
-          sudo apt-get install -y eventstore-db
+          sudo apt-get install -y eventstoredb
           sudo tee /etc/eventstore/eventstore.conf > /dev/null <<EOF
           Db: /tmp/esdb
           Log: /tmp/esdb-log
