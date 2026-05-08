@@ -40,13 +40,11 @@ impl Default for BenchmarkConfig {
         Self {
             target_rate: 10_000,
             duration_secs: 30,
-            // 50 tasks × 200 ev/s = 10 000 single-event appends/sec.
-            // Each task fires one call every 5 ms.  At ~0.5 ms p50 latency
-            // (single-node ES on tmpfs) the pipeline is ~10% loaded per task.
-            concurrency: 50,
+            // 500 tasks share one gRPC connection via HTTP/2 multiplexing.
+            // High concurrency keeps EventStoreDB's write queue saturated so
+            // the storage-writer thread never sleeps (~40 ms sleep when idle).
+            concurrency: 500,
             stream_prefix: "bench-stream".to_string(),
-            // batch_size=1: every AppendToStream call writes exactly one event.
-            // This directly measures the "write latency" the SLA refers to.
             batch_size: 1,
         }
     }
@@ -153,7 +151,11 @@ pub async fn run(es_url: &str, config: BenchmarkConfig) -> Result<BenchmarkResul
         anyhow::bail!("EventStoreDB did not become ready within 30 s");
     }
     info!("EventStoreDB connectivity OK");
-    drop(probe);
+
+    // Share a single gRPC connection across all tasks via HTTP/2 multiplexing.
+    // This avoids opening N TCP connections (which exhausts ES resources at
+    // high concurrency) while still allowing many in-flight requests.
+    let client = Arc::new(probe);
 
     let total_events = Arc::new(AtomicU64::new(0));
     let shared_hist = Arc::new(Mutex::new(Histogram::<u64>::new(3)?));
@@ -167,29 +169,14 @@ pub async fn run(es_url: &str, config: BenchmarkConfig) -> Result<BenchmarkResul
     let duration = Duration::from_secs(config.duration_secs);
     let wall_start = Instant::now();
 
-    // Stagger connection opens evenly across 1 second.
-    let stagger_per_task_us = 1_000_000u64 / config.concurrency.max(1);
-
     let mut handles = Vec::with_capacity(config.concurrency as usize);
 
     for task_id in 0..config.concurrency {
-        let es_url = es_url.to_string();
+        let client = Arc::clone(&client);
         let total_events = Arc::clone(&total_events);
         let stream_name = format!("{}-{}", config.stream_prefix, task_id);
-        let stagger_us = task_id * stagger_per_task_us;
 
         let handle = tokio::spawn(async move {
-            // Spread connection opens over 1 s to avoid handshake storm.
-            tokio::time::sleep(Duration::from_micros(stagger_us)).await;
-
-            let client = match EsClient::connect(&es_url).await {
-                Ok(c) => c,
-                Err(e) => {
-                    warn!(task_id, error = %e, "failed to connect, task exiting");
-                    return Histogram::<u64>::new(3).unwrap();
-                }
-            };
-
             let mut local_hist = Histogram::<u64>::new(3).expect("histogram alloc");
             let mut seq: u64 = 0;
             let mut interval = tokio::time::interval(Duration::from_micros(interval_us));
