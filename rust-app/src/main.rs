@@ -60,8 +60,8 @@ struct BenchArgs {
     duration_secs: u64,
 
     /// Number of concurrent Tokio tasks writing to separate streams.
-    /// Controls max in-flight gRPC writes — 40 keeps the ES queue warm.
-    #[arg(long, default_value_t = 40)]
+    /// Controls max in-flight gRPC writes — 64 keeps the ES queue warm.
+    #[arg(long, default_value_t = 64)]
     concurrency: u64,
 
     /// Stream name prefix.
@@ -77,6 +77,10 @@ struct BenchArgs {
     /// Emit results as a single JSON line (for CI parsing).
     #[arg(long)]
     json: bool,
+
+    /// p99 latency limit in milliseconds — benchmark FAILs if exceeded.
+    #[arg(long, default_value_t = 2)]
+    p99_limit_ms: u64,
 }
 
 #[derive(Parser)]
@@ -107,6 +111,7 @@ async fn main() -> Result<()> {
                 concurrency: args.concurrency,
                 stream_prefix: args.stream_prefix,
                 batch_size: args.batch_size,
+                p99_limit_us: args.p99_limit_ms * 1_000,
             };
 
             let result = benchmark::run(&cli.eventstore_url, config).await?;

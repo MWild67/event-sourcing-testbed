@@ -30,9 +30,9 @@ pub struct BenchmarkConfig {
     /// Prefix for stream names ("bench-stream-0", "bench-stream-1", …).
     pub stream_prefix: String,
     /// Number of events per gRPC append call (batching).
-    /// Higher values reduce per-event gRPC overhead at the cost of slightly
-    /// larger individual payloads.  Default: 5.
     pub batch_size: u64,
+    /// p99 latency pass threshold in microseconds.
+    pub p99_limit_us: u64,
 }
 
 impl Default for BenchmarkConfig {
@@ -40,10 +40,11 @@ impl Default for BenchmarkConfig {
         Self {
             target_rate: 10_000,
             duration_secs: 30,
-            // 40 permits × ~3ms write = ~13k ev/s capacity, target 10k.
-            concurrency: 40,
+            // 64 permits keeps queue warm on GitHub Actions (MEM_DB mode).
+            concurrency: 64,
             stream_prefix: "bench-stream".to_string(),
             batch_size: 1,
+            p99_limit_us: 2_000,
         }
     }
 }
@@ -60,8 +61,10 @@ pub struct BenchmarkResult {
     pub p95_us: u64,
     pub p99_us: u64,
     pub p999_us: u64,
-    /// `true` when p99 < 2 000 µs (2 ms) — the passing criterion.
+    /// `true` when p99 < p99_limit_us AND rate >= 9 000 ev/s.
     pub passed: bool,
+    /// The configured p99 limit in microseconds (echoed for display).
+    pub p99_limit_us: u64,
 }
 
 impl BenchmarkResult {
@@ -94,7 +97,10 @@ impl BenchmarkResult {
             self.p999_us,
             self.p999_us as f64 / 1000.0
         );
-        println!("  Criterion    : p99 < 10 000 µs AND rate >= 9 000 ev/s");
+        println!(
+            "  Criterion    : p99 < {} µs AND rate >= 9 000 ev/s",
+            self.p99_limit_us
+        );
         println!("══════════════════════════════════════════════");
         println!();
     }
@@ -231,6 +237,7 @@ pub async fn run(es_url: &str, config: BenchmarkConfig) -> Result<BenchmarkResul
         p95_us: hist.value_at_quantile(0.95),
         p99_us,
         p999_us: hist.value_at_quantile(0.999),
-        passed: p99_us < 10_000 && rate >= 9_000.0,
+        passed: p99_us < config.p99_limit_us && rate >= 9_000.0,
+        p99_limit_us: config.p99_limit_us,
     })
 }
