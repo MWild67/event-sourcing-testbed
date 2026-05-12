@@ -187,10 +187,18 @@ jobs:
 
       - name: Run benchmark (Kubernetes, 3-node quorum writes)
         run: |
-          kubectl port-forward -n event-store svc/eventstore 2113:2113 &
+          kubectl port-forward -n event-store pod/eventstore-0 19999:2113 &
+          PF_GOSSIP=$!
+          sleep 3
+          LEADER_IP=$(curl -sf http://localhost:19999/gossip | jq -r '.members[] | select(.state == "Leader") | .httpEndPointIp')
+          kill $PF_GOSSIP 2>/dev/null || true
+          echo "Leader IP: $LEADER_IP"
+          LEADER_POD=$(kubectl get pods -n event-store -l app=eventstore -o json | jq -r --arg ip "$LEADER_IP" '.items[] | select(.status.podIP == $ip) | .metadata.name')
+          echo "Leader pod: $LEADER_POD"
+          test -n "$LEADER_POD"
+          kubectl port-forward -n event-store "pod/$LEADER_POD" 2113:2113 &
           PF_PID=$!
           sleep 3
-
           rust-app/target/release/testbed \
             --eventstore-url "esdb://localhost:2113?tls=false" \
             bench \
@@ -198,5 +206,4 @@ jobs:
             --duration-secs 30 \
             --concurrency 50 \
             --batch-size 1
-
           kill $PF_PID 2>/dev/null || true
