@@ -219,16 +219,17 @@ jobs:
 
       - name: Start MongoDB on tmpfs
         run: |
-          # Mount a tmpfs so all I/O stays in RAM — gives the cleanest
-          # possible latency baseline (no disk scheduler variance).
+          # 2 GB tmpfs: 64 collections × data+index files + WiredTiger journal
+          # easily exceed 512 MB once eviction starts flushing dirty pages.
+          # Cache is kept at 0.25 GB (pure RAM) — sufficient for a 30-second run.
           sudo mkdir -p /tmp/mongodb
-          sudo mount -t tmpfs -o size=512m tmpfs /tmp/mongodb
+          sudo mount -t tmpfs -o size=2g tmpfs /tmp/mongodb
           docker run -d \
             --name mongodb \
             -p 27017:27017 \
             -v /tmp/mongodb:/data/db \
             mongo:7 \
-            mongod --quiet --bind_ip_all --wiredTigerCacheSizeGB 0.5
+            mongod --quiet --bind_ip_all --wiredTigerCacheSizeGB 0.25
           echo "Waiting for MongoDB to be ready..."
           for i in $(seq 1 30); do
             docker exec mongodb mongosh --quiet --eval "db.adminCommand('ping').ok" \
