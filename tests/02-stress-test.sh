@@ -128,7 +128,7 @@ EOF
     step "Waiting for Job to complete (timeout: $((DURATION_SECS + 60))s)..."
     kubectl wait "job/$JOB" -n "$NS" \
         --for=condition=complete \
-        --timeout="${DURATION_SECS+60}s" \
+        --timeout="$((DURATION_SECS + 60))s" \
       || {
         kubectl logs "job/$JOB" -n "$NS" --tail=50 >&2 || true
         kubectl delete job "$JOB" -n "$NS" --ignore-not-found >/dev/null
@@ -136,7 +136,7 @@ EOF
       }
 
     step "Collecting results"
-    OUTPUT=$(kubectl logs "job/$JOB" -n "$NS" 2>/dev/null | grep -E '^\{' | tail -1)
+    OUTPUT=$(kubectl logs "job/$JOB" -n "$NS" 2>/dev/null | grep -E '^\{' | tail -1 || true)
     echo "  Raw output: $OUTPUT"
 
     kubectl delete job "$JOB" -n "$NS" --ignore-not-found >/dev/null
