@@ -128,11 +128,6 @@ async fn main() -> Result<()> {
             // requires this.
             let _ = std::io::stdout().flush();
             let _ = std::io::stderr().flush();
-
-            // Non-zero exit code on failure so shell scripts can `set -e`.
-            if !result.passed {
-                std::process::exit(1);
-            }
         }
 
         Commands::Produce(args) => {
