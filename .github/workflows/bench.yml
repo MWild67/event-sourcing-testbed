@@ -251,9 +251,12 @@ jobs:
             }
 
           echo "=== Full job output ==="
-          kubectl logs "job/$JOB" -n "$NS" 2>&1 || true
+          POD=$(kubectl get pods -n "$NS" -l "job-name=$JOB" \
+            -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+          echo "Pod: $POD"
+          kubectl logs "$POD" -n "$NS" 2>&1 || true
 
-          OUTPUT=$(kubectl logs "job/$JOB" -n "$NS" 2>/dev/null | grep -E '^\{' | tail -1 || true)
+          OUTPUT=$(kubectl logs "$POD" -n "$NS" 2>/dev/null | grep -E '^\{' | tail -1 || true)
           kubectl delete job "$JOB" -n "$NS" --ignore-not-found >/dev/null
 
           echo "JSON: $OUTPUT"
