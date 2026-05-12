@@ -197,7 +197,6 @@ jobs:
             --target-rate 10000 \
             --duration-secs 30 \
             --concurrency 50 \
-            --batch-size 1 \
-            --json
+            --batch-size 1
 
           kill $PF_PID 2>/dev/null || true
