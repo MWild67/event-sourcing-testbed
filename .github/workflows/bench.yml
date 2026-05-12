@@ -116,3 +116,57 @@ jobs:
             --batch-size 1 \
             --duration-secs 30 \
             --p99-limit-ms 45
+
+  # ── Job 3: Kubernetes 3-node cluster — real quorum writes + real disk ───────
+  bench-k8s:
+    name: Bench — Kubernetes 3-node cluster
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install k3d
+        run: curl -s https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | bash
+
+      - name: Create k3d cluster (1 server + 3 agents)
+        run: |
+          k3d cluster create testbed \
+            --agents 3 \
+            --wait \
+            --timeout 120s
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            rust-app/target
+          key: event-sourcing-testbed-${{ runner.os }}-cargo-${{ hashFiles('rust-app/Cargo.lock') }}
+
+      - name: Build benchmark image
+        run: docker build -t event-sourcing-testbed:latest rust-app/
+
+      - name: Import benchmark image into k3d
+        run: k3d image import event-sourcing-testbed:latest -c testbed
+
+      - name: Deploy Kubernetes manifests
+        run: |
+          kubectl apply -f k8s/00-namespace.yaml
+          kubectl apply -f k8s/01-storageclass.yaml
+          kubectl apply -f k8s/02-eventstore/
+
+      - name: Wait for EventStoreDB cluster to be ready
+        run: |
+          kubectl rollout status statefulset/eventstore \
+            -n event-store \
+            --timeout=300s
+
+      - name: Run benchmark (Kubernetes, 3-node quorum writes)
+        env:
+          TESTBED_IMAGE: event-sourcing-testbed:latest
+        run: bash tests/02-stress-test.sh
