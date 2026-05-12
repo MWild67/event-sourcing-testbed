@@ -1,6 +1,6 @@
 # Event Sourcing Testbed
 
-A fully automated testbed for event sourcing using **Rust**, **RabbitMQ**, and **EventStoreDB** on Kubernetes.
+A fully automated testbed for event sourcing using **Rust**, **RabbitMQ**, and **KurrentDB** on Kubernetes.
 
 ## Architecture
 
@@ -9,7 +9,7 @@ A fully automated testbed for event sourcing using **Rust**, **RabbitMQ**, and *
 │                    event-store namespace                     │
 │                                                             │
 │  ┌──────────────┐   appends    ┌──────────────────────────┐ │
-│  │  Rust App    │─────────────▶│  EventStoreDB (3-node)   │ │
+│  │  Rust App    │─────────────▶│  KurrentDB (3-node)   │ │
 │  │  (testbed)   │              │  StatefulSet + local PVs │ │
 │  └──────┬───────┘              └──────────────────────────┘ │
 │         │ publishes                                          │
@@ -23,7 +23,7 @@ A fully automated testbed for event sourcing using **Rust**, **RabbitMQ**, and *
 
 | Component       | Version              | Role                                  |
 |-----------------|----------------------|---------------------------------------|
-| EventStoreDB    | 23.10.0              | Append-only event log (gRPC/HTTP)     |
+| KurrentDB    | 23.10.0              | Append-only event log (gRPC/HTTP)     |
 | RabbitMQ        | 3.13 + management    | Event fan-out (topic exchange)        |
 | Rust app        | Tokio + lapin        | Benchmark harness & event producer    |
 | MongoDB         | 7.x                  | Event-log alternative — write latency comparison |
@@ -48,7 +48,7 @@ A fully automated testbed for event sourcing using **Rust**, **RabbitMQ**, and *
 > (`sudo apt install podman` on Ubuntu 24.04+ gives 4.x) or use Docker Engine with
 > the Compose plugin: `make up COMPOSE="docker compose" RUNTIME=docker`
 
-The cluster needs **≥ 3 worker nodes** (for EventStoreDB HA and the failover test).
+The cluster needs **≥ 3 worker nodes** (for KurrentDB HA and the failover test).
 
 ### StorageClass provisioner
 
@@ -78,14 +78,14 @@ make build
 # Start all services (includes MongoDB on port 27017)
 make up
 
-# Run the EventStoreDB benchmark
+# Run the KurrentDB benchmark
 make bench-local
 
 # Run the MongoDB benchmark
 make mongo-bench-local
 
 # Explore the UIs
-start http://localhost:2113/web   # EventStoreDB
+start http://localhost:2113/web   # KurrentDB
 start http://localhost:15672       # RabbitMQ  (guest / guest)
 start http://localhost:3000        # Grafana   (admin / admin)
 
@@ -102,14 +102,14 @@ make build
 # Start all services (includes MongoDB on port 27017)
 make up
 
-# Run the EventStoreDB benchmark
+# Run the KurrentDB benchmark
 make bench-local
 
 # Run the MongoDB benchmark
 make mongo-bench-local
 
 # Explore the UIs
-xdg-open http://localhost:2113/web   # EventStoreDB
+xdg-open http://localhost:2113/web   # KurrentDB
 xdg-open http://localhost:15672       # RabbitMQ  (guest / guest)
 xdg-open http://localhost:3000        # Grafana   (admin / admin)
 
@@ -118,9 +118,9 @@ make down
 ```
 
 > **Why the benchmark only passes on Linux:** On Windows, containers run inside a
-> HyperV guest VM.  The .NET EventStoreDB process inherits Windows host CPU scheduling,
+> HyperV guest VM.  The .NET KurrentDB process inherits Windows host CPU scheduling,
 > which delays async thread wake-ups by ~15 ms per scheduler tick.  A single event write
-> requires several async continuations inside EventStoreDB, making the hard floor ~45 ms
+> requires several async continuations inside KurrentDB, making the hard floor ~45 ms
 > — well above the 2 ms p99 SLA.  On Linux, Podman runs containers directly on the host
 > kernel (no VM), so the same async continuations complete in ~200 µs.
 
@@ -173,7 +173,7 @@ event-sourcing-testbed/
 │   └── src/
 │       ├── main.rs                  # CLI entry point (bench / produce / ping)
 │       ├── events.rs                # Domain events + benchmark payload
-│       ├── eventstore_client.rs     # EventStoreDB gRPC wrapper
+│       ├── kurrentdb/client.rs   # KurrentDB gRPC wrapper
 │       ├── rabbitmq_client.rs       # AMQP producer (lapin)
 │       └── benchmark.rs             # HDR-histogram stress test
 │
@@ -261,7 +261,7 @@ rust-app/target/release/testbed \
 | `--no-drop` | off | Skip pre-run database drop |
 | `--json` | off | Emit results as a single JSON line |
 
-> **Isolation:** The MongoDB benchmark is completely independent of the EventStoreDB
+> **Isolation:** The MongoDB benchmark is completely independent of the KurrentDB
 > and RabbitMQ tests — separate server, separate port, separate collections.
 > Do **not** run `mongo-bench` concurrently with `bench` on the same machine;
 > both saturate host I/O and will inflate each other's latency numbers.
@@ -270,7 +270,7 @@ rust-app/target/release/testbed \
 
 ### Test 02 — Performance Benchmark (I/O Stress Test)
 
-Appends events to EventStoreDB at **10 000 events/second** for 30 seconds
+Appends events to KurrentDB at **10 000 events/second** for 30 seconds
 using 50 concurrent Tokio tasks across separate streams.
 Latency is measured with a 3-significant-digit HDR histogram.
 
@@ -299,7 +299,7 @@ Tuning tips if you fail this test:
 ### Test 03 — Automated Failover
 
 Simulates a worker node power-off by applying `NoExecute` taints and measures
-how long it takes for EventStoreDB to re-elect a leader and reach ≥ 2 ready
+how long it takes for KurrentDB to re-elect a leader and reach ≥ 2 ready
 replicas on healthy nodes.
 
 ```bash
@@ -308,7 +308,7 @@ make test-failover
 
 **Pass criteria:**
 
-- EventStoreDB re-mounts data on a healthy node and has ≥ 2 ready replicas
+- KurrentDB re-mounts data on a healthy node and has ≥ 2 ready replicas
 - **Recovery time < 60 seconds** from taint application
 
 The node is automatically uncordoned and taints removed after the test.
@@ -333,7 +333,7 @@ make test-monitoring
 | `node_cpu_seconds_total{mode="iowait"}` | Disk I/O Wait %          |
 | `node_disk_reads_completed_total`   | Read IOPS                   |
 | `node_disk_writes_completed_total`  | Write IOPS                  |
-| `up{job="eventstore"}`              | EventStoreDB cluster health |
+| `up{job="eventstore"}`              | KurrentDB cluster health |
 | `up{job="rabbitmq"}`                | RabbitMQ health             |
 
 **Pass criteria:**
@@ -356,7 +356,7 @@ contains three row groups:
 - Disk throughput MB/s
 - Average I/O completion time (ms)
 
-**EventStoreDB Cluster Health:**
+**KurrentDB Cluster Health:**
 
 - Active client connections
 - Write queue depth
@@ -387,15 +387,15 @@ open http://localhost:3000   # admin / admin
 testbed [OPTIONS] <COMMAND>
 
 Options:
-  --eventstore-url  ESDB connection URL  [env: EVENTSTORE_URL]
+  --kurrentdb-url  ESDB connection URL  [env: KURRENTDB_URL]
   --rabbitmq-url    AMQP URL             [env: RABBITMQ_URL]
   --mongodb-url     MongoDB URL          [env: MONGODB_URL]
 
 Commands:
-  bench        Run the EventStoreDB write-latency stress test
+  bench        Run the KurrentDB write-latency stress test
   mongo-bench  Run the MongoDB write-latency stress test
-  produce      Continuously produce events to EventStoreDB + RabbitMQ
-  ping         Probe EventStoreDB + RabbitMQ connectivity and exit
+  produce      Continuously produce events to KurrentDB + RabbitMQ
+  ping         Probe KurrentDB + RabbitMQ connectivity and exit
   mongo-ping   Probe MongoDB connectivity and exit
 
 bench options:
@@ -421,7 +421,7 @@ mongo-bench options:
 
 ## Troubleshooting
 
-**EventStoreDB pods stuck in Pending**
+**KurrentDB pods stuck in Pending**
 → Check that `event-store-local` StorageClass provisioner is installed.
 → k3d: StorageClass is available by default.
 → Cloud: replace the provisioner with the cloud-native CSI driver.
@@ -441,7 +441,7 @@ mongo-bench options:
 
 **Failover test fails — recovery > 60 s**
 → Check `kubelet` pod eviction timer: `kubectl describe node <node>` — default `node.kubernetes.io/not-ready:NoExecute` tolerance is **5 minutes** for system components.
-→ Tune EventStoreDB `gossipIntervalMs` and `deadMemberRemovalPeriodSec` via env vars.
+→ Tune KurrentDB `gossipIntervalMs` and `deadMemberRemovalPeriodSec` via env vars.
 → Ensure `podManagementPolicy: Parallel` is set (already configured).
 
 **RabbitMQ peers not joining the cluster**

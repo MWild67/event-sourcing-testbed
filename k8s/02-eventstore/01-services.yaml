@@ -1,5 +1,5 @@
 # ─────────────────────────────────────────────────────────────────────────────
-# EventStoreDB Services
+# KurrentDB Services
 #   - eventstore-headless  : pod-to-pod gossip / cluster DNS discovery
 #   - eventstore           : client-facing load-balanced service
 # ─────────────────────────────────────────────────────────────────────────────

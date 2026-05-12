@@ -1,4 +1,4 @@
-//! Stress-test benchmark: appends events to EventStoreDB at a target rate and
+//! Stress-test benchmark: appends events to KurrentDB at a target rate and
 //! measures write latency using an HDR histogram.
 //!
 //! Pass/fail criterion: p99 write latency < 2 ms at 10 000 events/second.
@@ -16,7 +16,7 @@ use hdrhistogram::Histogram;
 use tokio::sync::Mutex;
 use tracing::{info, warn};
 
-use crate::{events::BenchmarkEvent, eventstore_client::EsClient};
+use crate::{events::BenchmarkEvent, kurrentdb::client::KurrentClient};
 
 // ─── Configuration ────────────────────────────────────────────────────────────
 
@@ -72,7 +72,7 @@ impl BenchmarkResult {
         let status = if self.passed { "PASS ✓" } else { "FAIL ✗" };
         println!();
         println!("══════════════════════════════════════════════");
-        println!("  Stress-Test Result: {status}");
+        println!("  KurrentDB Stress-Test Result: {status}");
         println!("══════════════════════════════════════════════");
         println!("  Duration     : {:.2}s", self.elapsed_secs);
         println!("  Total events : {}", self.total_events);
@@ -118,22 +118,22 @@ impl BenchmarkResult {
 
 // ─── Benchmark runner ────────────────────────────────────────────────────────
 
-/// Each task gets its own independent gRPC connection (`EsClient`) to avoid
-/// HTTP/2 head-of-line blocking that occurs when many concurrent streams share
-/// one connection.  Connections are staggered over 1 second so the server
-/// doesn't see a simultaneous handshake storm.
-pub async fn run(es_url: &str, config: BenchmarkConfig) -> Result<BenchmarkResult> {
+/// Each task gets its own independent gRPC connection (`KurrentClient`) to
+/// avoid HTTP/2 head-of-line blocking that occurs when many concurrent streams
+/// share one connection.  Connections are staggered over 1 second so the
+/// server doesn't see a simultaneous handshake storm.
+pub async fn run(kurrent_url: &str, config: BenchmarkConfig) -> Result<BenchmarkResult> {
     info!(
         target_rate = config.target_rate,
         concurrency = config.concurrency,
         batch_size = config.batch_size,
         duration = config.duration_secs,
-        "starting stress-test benchmark"
+        "starting KurrentDB stress-test benchmark"
     );
 
-    // Validate connectivity — retry for up to 30 s so a freshly-started ES has
-    // time to elect a leader before the benchmark tasks start connecting.
-    let probe = EsClient::connect(es_url).await?;
+    // Validate connectivity — retry for up to 30 s so a freshly-started
+    // KurrentDB has time to elect a leader before benchmark tasks start.
+    let probe = KurrentClient::connect(kurrent_url).await?;
     let mut ready = false;
     for attempt in 1..=30 {
         match probe.ping().await {
@@ -142,15 +142,15 @@ pub async fn run(es_url: &str, config: BenchmarkConfig) -> Result<BenchmarkResul
                 break;
             }
             Err(e) => {
-                warn!(attempt, error = %e, "waiting for EventStoreDB to become ready...");
+                warn!(attempt, error = %e, "waiting for KurrentDB to become ready...");
                 tokio::time::sleep(Duration::from_secs(1)).await;
             }
         }
     }
     if !ready {
-        anyhow::bail!("EventStoreDB did not become ready within 30 s");
+        anyhow::bail!("KurrentDB did not become ready within 30 s");
     }
-    info!("EventStoreDB connectivity OK");
+    info!("KurrentDB connectivity OK");
 
     // Single shared connection — HTTP/2 multiplexes all concurrent writes.
     let client = Arc::new(probe);
@@ -159,8 +159,8 @@ pub async fn run(es_url: &str, config: BenchmarkConfig) -> Result<BenchmarkResul
 
     let batch_size = config.batch_size.max(1);
     // Single dispatch loop fires one write per tick at exactly target_rate/s.
-    // This produces a steady stream with no burst gaps, keeping the
-    // EventStoreDB write queue continuously warm.
+    // This produces a steady stream with no burst gaps, keeping the KurrentDB
+    // write queue continuously warm.
     let ticks_per_sec = ((config.target_rate as f64) / (batch_size as f64)).ceil() as u64;
     let tick_us = 1_000_000u64 / ticks_per_sec.max(1);
 

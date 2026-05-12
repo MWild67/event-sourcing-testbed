@@ -1,6 +1,6 @@
 services:
 
-  # ── EventStoreDB node 0 ────────────────────────────────────────────────────
+  # ── KurrentDB node 0 ────────────────────────────────────────────────────
   eventstore-0:
     image: docker.io/eventstore/eventstore:23.10.8-jammy
     container_name: eventstore-0
@@ -34,7 +34,7 @@ services:
       timeout: 5s
       retries: 10
 
-  # ── EventStoreDB node 1 ────────────────────────────────────────────────────
+  # ── KurrentDB node 1 ────────────────────────────────────────────────────
   eventstore-1:
     image: docker.io/eventstore/eventstore:23.10.8-jammy
     container_name: eventstore-1
@@ -68,7 +68,7 @@ services:
       timeout: 5s
       retries: 10
 
-  # ── EventStoreDB node 2 ────────────────────────────────────────────────────
+  # ── KurrentDB node 2 ────────────────────────────────────────────────────
   eventstore-2:
     image: docker.io/eventstore/eventstore:23.10.8-jammy
     container_name: eventstore-2
@@ -102,7 +102,7 @@ services:
       timeout: 5s
       retries: 10
 
-  # ── EventStoreDB single-node (benchmark only) ─────────────────────────────
+  # ── KurrentDB single-node (benchmark only) ─────────────────────────────────
   # Used by the local stress-test to eliminate 3-node quorum latency over the
   # Podman VM bridge network (adds ~100 ms per write on Windows).
   # Production/Kubernetes benchmarks use the 3-node cluster (real hardware).

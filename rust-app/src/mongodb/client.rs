@@ -1,6 +1,6 @@
 //! Thin async wrapper around the official MongoDB Rust driver.
 //!
-//! Mirrors the interface of [`crate::eventstore_client::EsClient`] so the
+//! Mirrors the interface of [`crate::kurrentdb::client::KurrentClient`] so the
 //! benchmark harness can swap backends without structural changes.
 
 use anyhow::{Context, Result};
@@ -84,6 +84,24 @@ impl MongoClient {
             .await
             .context("failed to drop MongoDB database")?;
         Ok(())
+    }
+
+    /// Create a collection if it does not already exist.
+    /// Ignores NamespaceExists (code 48) so it is safe to call on a collection
+    /// that was already created by a concurrent task or a `--no-drop` run.
+    pub async fn ensure_collection(&self, collection_name: &str) -> Result<()> {
+        match self.db.create_collection(collection_name).await {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                if let mongodb::error::ErrorKind::Command(ref cmd) = *e.kind {
+                    if cmd.code == 48 {
+                        // NamespaceExists — another task beat us, not an error
+                        return Ok(());
+                    }
+                }
+                Err(e).context(format!("failed to create collection '{collection_name}'"))
+            }
+        }
     }
 
     /// Cheap health probe — issues a server-level `ping` command.

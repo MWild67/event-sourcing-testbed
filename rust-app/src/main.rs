@@ -1,8 +1,6 @@
-mod benchmark;
 mod events;
-mod eventstore_client;
-mod mongodb_benchmark;
-mod mongodb_client;
+mod kurrentdb;
+mod mongodb;
 mod rabbitmq_client;
 
 use std::io::Write as _;
@@ -18,16 +16,16 @@ use tracing_subscriber::{fmt, EnvFilter};
 #[command(
     name    = "testbed",
     version = env!("CARGO_PKG_VERSION"),
-    about   = "Event-sourcing testbed — EventStoreDB + RabbitMQ benchmark tool"
+    about   = "Event-sourcing testbed — KurrentDB + RabbitMQ + MongoDB benchmark tool"
 )]
 struct Cli {
-    /// EventStoreDB connection URL.
+    /// KurrentDB connection URL.
     #[arg(
         long,
-        env = "EVENTSTORE_URL",
+        env = "KURRENTDB_URL",
         default_value = "esdb://localhost:2113,localhost:2114,localhost:2115?tls=false"
     )]
-    eventstore_url: String,
+    kurrentdb_url: String,
 
     /// RabbitMQ AMQP URL.
     #[arg(
@@ -47,13 +45,13 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Run the write-latency stress test against EventStoreDB (p99 < 2 ms at 10k ev/s).
+    /// Run the write-latency stress test against KurrentDB (p99 < 2 ms at 10k ev/s).
     Bench(BenchArgs),
     /// Run the write-latency stress test against MongoDB (p99 < p99-limit-ms at 10k ev/s).
     MongoBench(MongoBenchArgs),
-    /// Continuously produce events to both EventStoreDB and RabbitMQ.
+    /// Continuously produce events to KurrentDB and RabbitMQ.
     Produce(ProduceArgs),
-    /// Probe connectivity to both backends and exit 0 if healthy.
+    /// Probe connectivity to KurrentDB + RabbitMQ and exit 0 if healthy.
     Ping,
     /// Probe MongoDB connectivity and exit 0 if healthy.
     MongoPing,
@@ -70,7 +68,7 @@ struct BenchArgs {
     duration_secs: u64,
 
     /// Number of concurrent Tokio tasks writing to separate streams.
-    /// Controls max in-flight gRPC writes — 64 keeps the ES queue warm.
+    /// Controls max in-flight gRPC writes — 64 keeps the KurrentDB queue warm.
     #[arg(long, default_value_t = 64)]
     concurrency: u64,
 
@@ -156,7 +154,7 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Commands::Bench(args) => {
-            let config = benchmark::BenchmarkConfig {
+            let config = kurrentdb::benchmark::BenchmarkConfig {
                 target_rate: args.target_rate,
                 duration_secs: args.duration_secs,
                 concurrency: args.concurrency,
@@ -165,7 +163,7 @@ async fn main() -> Result<()> {
                 p99_limit_us: args.p99_limit_ms * 1_000,
             };
 
-            let result = benchmark::run(&cli.eventstore_url, config).await?;
+            let result = kurrentdb::benchmark::run(&cli.kurrentdb_url, config).await?;
 
             if args.json {
                 result.print_json();
@@ -182,7 +180,7 @@ async fn main() -> Result<()> {
         }
 
         Commands::MongoBench(args) => {
-            let config = mongodb_benchmark::BenchmarkConfig {
+            let config = mongodb::benchmark::BenchmarkConfig {
                 target_rate: args.target_rate,
                 duration_secs: args.duration_secs,
                 concurrency: args.concurrency,
@@ -193,7 +191,7 @@ async fn main() -> Result<()> {
                 drop_before_run: !args.no_drop,
             };
 
-            let result = mongodb_benchmark::run(&cli.mongodb_url, config).await?;
+            let result = mongodb::benchmark::run(&cli.mongodb_url, config).await?;
 
             if args.json {
                 result.print_json();
@@ -210,11 +208,11 @@ async fn main() -> Result<()> {
         }
 
         Commands::Produce(args) => {
-            produce_loop(&cli.eventstore_url, &cli.rabbitmq_url, args.rate).await?;
+            produce_loop(&cli.kurrentdb_url, &cli.rabbitmq_url, args.rate).await?;
         }
 
         Commands::Ping => {
-            ping(&cli.eventstore_url, &cli.rabbitmq_url).await?;
+            ping(&cli.kurrentdb_url, &cli.rabbitmq_url).await?;
         }
 
         Commands::MongoPing => {
@@ -227,8 +225,8 @@ async fn main() -> Result<()> {
 
 // ─── Produce loop ─────────────────────────────────────────────────────────────
 
-async fn produce_loop(es_url: &str, rmq_url: &str, rate: u64) -> Result<()> {
-    let es = eventstore_client::EsClient::connect(es_url).await?;
+async fn produce_loop(kurrent_url: &str, rmq_url: &str, rate: u64) -> Result<()> {
+    let kurrent = kurrentdb::client::KurrentClient::connect(kurrent_url).await?;
     let rmq = rabbitmq_client::RmqClient::connect(rmq_url).await?;
 
     let interval_us = 1_000_000u64 / rate.max(1);
@@ -250,9 +248,9 @@ async fn produce_loop(es_url: &str, rmq_url: &str, rate: u64) -> Result<()> {
 
         let stream = format!("order-{}", order.order_id);
 
-        // Write to EventStoreDB (append-only log).
-        if let Err(e) = es.append(&stream, "OrderPlaced", &order).await {
-            tracing::warn!(error = %e, "EventStoreDB append failed");
+        // Write to KurrentDB (append-only log).
+        if let Err(e) = kurrent.append(&stream, "OrderPlaced", &order).await {
+            tracing::warn!(error = %e, "KurrentDB append failed");
         }
 
         // Fan-out to RabbitMQ for downstream consumers.
@@ -272,7 +270,7 @@ async fn produce_loop(es_url: &str, rmq_url: &str, rate: u64) -> Result<()> {
 
 async fn mongo_ping(mongo_url: &str) -> Result<()> {
     info!("pinging MongoDB...");
-    mongodb_client::MongoClient::connect(mongo_url, "eventbench")
+    mongodb::client::MongoClient::connect(mongo_url, "eventbench")
         .await?
         .ping()
         .await?;
@@ -280,13 +278,13 @@ async fn mongo_ping(mongo_url: &str) -> Result<()> {
     Ok(())
 }
 
-async fn ping(es_url: &str, rmq_url: &str) -> Result<()> {
-    info!("pinging EventStoreDB...");
-    eventstore_client::EsClient::connect(es_url)
+async fn ping(kurrent_url: &str, rmq_url: &str) -> Result<()> {
+    info!("pinging KurrentDB...");
+    kurrentdb::client::KurrentClient::connect(kurrent_url)
         .await?
         .ping()
         .await?;
-    info!("EventStoreDB OK");
+    info!("KurrentDB OK");
 
     info!("pinging RabbitMQ...");
     rabbitmq_client::RmqClient::connect(rmq_url).await?;

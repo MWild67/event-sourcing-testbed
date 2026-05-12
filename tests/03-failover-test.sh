@@ -3,18 +3,18 @@
 # Test 03 — Automated Failover Test
 #
 # Scenario:
-#   1. Identify which Kubernetes worker node hosts the current EventStoreDB leader.
+#   1. Identify which Kubernetes worker node hosts the current KurrentDB leader.
 #   2. Simulate a node failure by:
 #        a. Cordoning the node (no new scheduling).
 #        b. Applying NoExecute taints (immediate pod eviction — like power-off).
 #   3. Start a timer.
-#   4. Poll until EventStoreDB has ≥ 2 healthy replicas AND a leader is elected.
+#   4. Poll until KurrentDB has ≥ 2 healthy replicas AND a leader is elected.
 #   5. Assert recovery time < 60 seconds.
 #   6. Restore the node and remove taints (cleanup).
 #
 # Assumptions:
 #   • kubectl is configured and has admin permissions.
-#   • EventStoreDB StatefulSet is in namespace "event-store".
+#   • KurrentDB StatefulSet is in namespace "event-store".
 #   • Cluster has ≥ 3 worker nodes (so another node can absorb the workload).
 #
 # Usage: ./tests/03-failover-test.sh
@@ -54,7 +54,7 @@ READY=$(kubectl get statefulset "$STS" -n "$NS" \
           -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo "0")
 [[ "$READY" -ge 3 ]] \
   || fail "Need 3/3 ready replicas before failover test; got $READY"
-pass "EventStoreDB: 3/3 replicas ready"
+pass "KurrentDB: 3/3 replicas ready"
 
 NODE_COUNT=$(kubectl get nodes --no-headers | grep -c " Ready")
 [[ "$NODE_COUNT" -ge 3 ]] \
@@ -62,7 +62,7 @@ NODE_COUNT=$(kubectl get nodes --no-headers | grep -c " Ready")
 pass "Cluster has $NODE_COUNT Ready nodes"
 
 # ── Find the leader pod and its node ─────────────────────────────────────────
-step "Identifying EventStoreDB leader"
+step "Identifying KurrentDB leader"
 
 LEADER_POD=""
 for pod in $(kubectl get pods -n "$NS" -l app="$STS" -o jsonpath='{.items[*].metadata.name}'); do
@@ -141,10 +141,10 @@ step "Results"
 kubectl get pods -n "$NS" -l app="$STS" -o wide
 
 if [[ "$RECOVERED" -eq 0 ]]; then
-    fail "EventStoreDB did not recover within ${RECOVERY_TIMEOUT}s"
+    fail "KurrentDB did not recover within ${RECOVERY_TIMEOUT}s"
 fi
 
-pass "EventStoreDB recovered in ${RECOVERY_TIME}s"
+pass "KurrentDB recovered in ${RECOVERY_TIME}s"
 
 [[ "$RECOVERY_TIME" -lt "$RECOVERY_TIMEOUT" ]] \
   || fail "Recovery time ${RECOVERY_TIME}s exceeds SLA of ${RECOVERY_TIMEOUT}s"

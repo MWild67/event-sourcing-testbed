@@ -2,14 +2,14 @@
 name = "event-sourcing-testbed"
 version = "0.1.0"
 edition = "2021"
-description = "Rust benchmark and event-sourcing demo for EventStoreDB + RabbitMQ"
+description = "Rust benchmark and event-sourcing demo for KurrentDB + RabbitMQ + MongoDB"
 
 [[bin]]
 name = "testbed"
 path = "src/main.rs"
 
 [dependencies]
-# ── EventStoreDB gRPC client ───────────────────────────────────────────────
+# ── KurrentDB gRPC client ───────────────────────────────────────────────
 eventstore = "3"
 
 # ── MongoDB async driver ───────────────────────────────────────────────────

@@ -26,16 +26,16 @@ help: ## Show this help
 # ── Local dev ─────────────────────────────────────────────────────────────────
 up: ## Start all services locally
 	$(COMPOSE) up -d
-	@echo "EventStoreDB UI : http://localhost:2113/web"
+	@echo "KurrentDB UI : http://localhost:2113/web"
 	@echo "RabbitMQ UI     : http://localhost:15672  (guest/guest)"
 	@echo "Grafana         : http://localhost:3000   (admin/admin)"
 
 down: ## Stop and remove local containers
 	$(COMPOSE) down -v
 
-bench-local: build ## Run the EventStoreDB performance benchmark (requires 'make up' first)
+bench-local: build ## Run the KurrentDB performance benchmark (requires 'make up' first)
 	@$(RUNTIME) run --rm --network event-sourcing-testbed_event-net $(FULL_IMAGE) \
-	  --eventstore-url esdb://eventstore-bench:2113?tls=false \
+	  --kurrentdb-url esdb://eventstore-bench:2113?tls=false \
 	  bench --target-rate 10000 --concurrency 20 --batch-size 1 --duration-secs 30
 
 mongo-bench-local: build ## Run the MongoDB performance benchmark (requires 'make up' first)
@@ -58,7 +58,7 @@ deploy: ## Apply all Kubernetes manifests in order
 	kubectl apply -f k8s/03-rabbitmq/
 	kubectl apply -f k8s/04-monitoring/
 	@echo ""
-	@echo "Waiting for EventStoreDB to be ready (this may take ~60s)..."
+	@echo "Waiting for KurrentDB to be ready (this may take ~60s)..."
 	kubectl rollout status statefulset/eventstore -n $(NAMESPACE) --timeout=180s
 	@echo "Waiting for RabbitMQ to be ready..."
 	kubectl rollout status statefulset/rabbitmq    -n $(NAMESPACE) --timeout=180s
@@ -95,7 +95,7 @@ test-mongodb-direct: ## Test 05: Run MongoDB benchmark directly (requires local 
 	DIRECT=1 bash tests/05-mongodb-stress-test.sh
 
 # ── Utility ───────────────────────────────────────────────────────────────────
-logs-es: ## Tail EventStoreDB logs
+logs-es: ## Tail KurrentDB logs
 	kubectl logs -n $(NAMESPACE) -l app=eventstore -f --max-log-requests=3
 
 logs-rmq: ## Tail RabbitMQ logs
@@ -107,5 +107,5 @@ pf-grafana: ## Port-forward Grafana to localhost:3000
 pf-prom: ## Port-forward Prometheus to localhost:9090
 	kubectl port-forward svc/prometheus -n $(NAMESPACE) 9090:9090
 
-pf-es: ## Port-forward EventStoreDB to localhost:2113
+pf-es: ## Port-forward KurrentDB to localhost:2113
 	kubectl port-forward svc/eventstore -n $(NAMESPACE) 2113:2113

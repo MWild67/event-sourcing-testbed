@@ -7,12 +7,12 @@
 #   • p99 write latency < 2 ms (2 000 µs)
 #
 # Runs the Rust 'testbed bench' binary inside a Kubernetes Job or, if kubectl
-# is unavailable, directly against a local EventStoreDB instance.
+# is unavailable, directly against a local KurrentDB instance.
 #
 # Usage:
 #   ./tests/02-stress-test.sh                     # run as K8s Job (default)
 #   DIRECT=1 ./tests/02-stress-test.sh            # run testbed binary directly
-#   ES_URL=esdb://myhost:2113?tls=false \
+#   KURRENT_URL=esdb://myhost:2113?tls=false \
 #     DIRECT=1 ./tests/02-stress-test.sh
 # ─────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
@@ -22,8 +22,8 @@ JOB="stress-test-$(date +%s)"
 IMAGE="${TESTBED_IMAGE:-event-sourcing-testbed:latest}"
 # K8s default: 3-node cluster (real hardware, sub-ms networking → OK)
 # Direct default: single-node bench service (avoids Podman VM bridge overhead)
-ES_URL="${ES_URL:-esdb://eventstore.event-store.svc.cluster.local:2113?tls=false}"
-ES_URL_DIRECT="${ES_URL_DIRECT:-esdb://localhost:2116?tls=false}"
+KURRENT_URL="${KURRENT_URL:-esdb://eventstore.event-store.svc.cluster.local:2113?tls=false}"
+KURRENT_URL_DIRECT="${KURRENT_URL_DIRECT:-esdb://localhost:2116?tls=false}"
 DIRECT="${DIRECT:-0}"
 
 TARGET_RATE=10000
@@ -53,10 +53,10 @@ if [[ "$DIRECT" == "1" ]]; then
     require_cmd testbed
 
     step "Running stress test directly (target ${TARGET_RATE} ev/s for ${DURATION_SECS}s)"
-    echo "  EventStoreDB: $ES_URL_DIRECT"
+    echo "  KurrentDB: $KURRENT_URL_DIRECT"
 
     OUTPUT=$(testbed \
-        --eventstore-url "$ES_URL_DIRECT" \
+        --kurrentdb-url "$KURRENT_URL_DIRECT" \
         bench \
         --target-rate    "$TARGET_RATE" \
         --duration-secs  "$DURATION_SECS" \
@@ -70,12 +70,12 @@ else
     # ── Kubernetes Job mode ────────────────────────────────────────────────
     require_cmd kubectl
 
-    step "Verifying EventStoreDB cluster is healthy"
+    step "Verifying KurrentDB cluster is healthy"
     READY=$(kubectl get statefulset eventstore -n "$NS" \
               -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo "0")
     [[ "$READY" -ge 2 ]] \
-      || fail "EventStoreDB needs ≥2 ready replicas, got $READY. Deploy first with 'make deploy'."
-    pass "EventStoreDB: $READY/3 replicas ready"
+      || fail "KurrentDB needs ≥2 ready replicas, got $READY. Deploy first with 'make deploy'."
+    pass "KurrentDB: $READY/3 replicas ready"
 
     step "Submitting stress-test Job '$JOB'"
     kubectl apply -f - <<EOF
@@ -112,8 +112,8 @@ spec:
             - "$BATCH_SIZE"
             - --json
           env:
-            - name: EVENTSTORE_URL
-              value: "$ES_URL"
+            - name: KURRENTDB_URL
+              value: "$KURRENT_URL"
             - name: RUST_LOG
               value: warn
           resources:

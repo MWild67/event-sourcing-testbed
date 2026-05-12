@@ -3,7 +3,7 @@
 # Test 04 — Monitoring Integration Check
 #
 # Verifies:
-#   1. Prometheus is scraping node-exporter, EventStoreDB, and RabbitMQ targets.
+#   1. Prometheus is scraping node-exporter, KurrentDB, and RabbitMQ targets.
 #   2. The four key metric families are present:
 #        • node_cpu_seconds_total{mode="iowait"}   — Disk I/O Wait
 #        • node_disk_reads_completed_total          — Read IOPS
@@ -78,7 +78,7 @@ check_metric() {
 check_metric 'node_cpu_seconds_total{mode="iowait"}'  "Disk I/O Wait"
 check_metric 'node_disk_reads_completed_total'         "Read IOPS"
 check_metric 'node_disk_writes_completed_total'        "Write IOPS"
-check_metric 'up{job="eventstore"}'                    "EventStoreDB cluster health"
+check_metric 'up{job="eventstore"}'                    "KurrentDB cluster health"
 check_metric 'up{job="rabbitmq"}'                      "RabbitMQ health"
 
 # ── Check Grafana dashboard ───────────────────────────────────────────────────

@@ -1,23 +1,28 @@
+//! KurrentDB gRPC client wrapper.
+//!
+//! Thin async wrapper around the official `eventstore` crate, exposing only
+//! the append and health-probe operations needed by the benchmark harness.
+
 use anyhow::{Context, Result};
 use eventstore::{AppendToStreamOptions, Client, ClientSettings, EventData, ExpectedRevision};
 use serde::Serialize;
 use uuid::Uuid;
 
-pub struct EsClient {
+pub struct KurrentClient {
     inner: Client,
 }
 
-impl EsClient {
-    /// Connect to EventStoreDB.
+impl KurrentClient {
+    /// Connect to KurrentDB.
     ///
     /// `url` examples:
     ///   "esdb://localhost:2113?tls=false"
-    ///   "esdb://es-0:2113,es-1:2113,es-2:2113?tls=false"
+    ///   "esdb://kurrent-0:2113,kurrent-1:2113,kurrent-2:2113?tls=false"
     pub async fn connect(url: &str) -> Result<Self> {
         let settings: ClientSettings = url
             .parse()
-            .with_context(|| format!("invalid EventStoreDB URL: {url}"))?;
-        let inner = Client::new(settings).context("failed to create EventStoreDB client")?;
+            .with_context(|| format!("invalid KurrentDB URL: {url}"))?;
+        let inner = Client::new(settings).context("failed to create KurrentDB client")?;
         Ok(Self { inner })
     }
 
@@ -75,9 +80,9 @@ impl EsClient {
     /// Cheap health probe — checks whether the gRPC endpoint responds.
     /// Returns an error if the server is not reachable or not yet ready.
     pub async fn ping(&self) -> Result<()> {
-        // append_to_stream on a fresh stream is the lightest write-path check.
-        // We use read_stream and check the error — a transport error means not ready,
-        // a stream-not-found error means ES is up (stream just doesn't exist yet).
+        // We use read_stream and check the error — a transport error means not
+        // ready; a stream-not-found or access-denied error means KurrentDB is
+        // up and accepting requests (stream just doesn't exist yet).
         match self
             .inner
             .read_stream("$ping-probe", &Default::default())
@@ -86,7 +91,6 @@ impl EsClient {
             Ok(_) => Ok(()),
             Err(e) => {
                 let msg = e.to_string();
-                // "stream not found" or "access denied" mean ES is up and accepting requests.
                 if msg.contains("StreamNotFound")
                     || msg.contains("stream not found")
                     || msg.contains("AccessDenied")
@@ -94,7 +98,7 @@ impl EsClient {
                 {
                     Ok(())
                 } else {
-                    Err(anyhow::anyhow!("EventStoreDB not ready: {}", msg))
+                    Err(anyhow::anyhow!("KurrentDB not ready: {}", msg))
                 }
             }
         }

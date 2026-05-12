@@ -20,7 +20,7 @@
 #   • The testbed binary drops the 'eventbench' database before every run so
 #     leftover data from a prior run cannot inflate latency.  Pass --no-drop to
 #     keep existing data (e.g. when intentionally testing a warm database).
-#   • This test targets MongoDB only.  It does NOT touch EventStoreDB or
+#   • This test targets MongoDB only.  It does NOT touch KurrentDB or
 #     RabbitMQ streams — those backends are completely separate.
 #   • Do NOT run this test concurrently with 02-stress-test.sh on the same
 #     host.  Both benchmarks saturate the host's CPU/memory/disk I/O, which

@@ -10,7 +10,7 @@ data:
     {
       "title": "Event Store Namespace — I/O, IOPS & Health",
       "uid": "event-store-main",
-      "description": "Disk I/O Wait, IOPS, EventStoreDB cluster health, and RabbitMQ for the event-store namespace",
+      "description": "Disk I/O Wait, IOPS, KurrentDB cluster health, and RabbitMQ for the event-store namespace",
       "schemaVersion": 38,
       "version": 1,
       "refresh": "10s",
@@ -184,7 +184,7 @@ data:
         {
           "type": "row",
           "id": 10,
-          "title": "📦 EventStoreDB Cluster Health",
+          "title": "📦 KurrentDB Cluster Health",
           "gridPos": { "h": 1, "w": 24, "x": 0, "y": 17 },
           "collapsed": false
         },

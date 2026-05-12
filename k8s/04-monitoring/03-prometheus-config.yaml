@@ -32,7 +32,7 @@ data:
           - source_labels: [__meta_kubernetes_pod_node_name]
             target_label: node
 
-      # ── EventStoreDB: write latency, queue depth, cluster health ──────────
+      # ── KurrentDB: write latency, queue depth, cluster health ──────────
       - job_name: eventstore
         kubernetes_sd_configs:
           - role: pod

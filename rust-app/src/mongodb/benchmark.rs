@@ -1,8 +1,8 @@
 //! Stress-test benchmark: inserts events into MongoDB at a target rate and
 //! measures write latency using an HDR histogram.
 //!
-//! Mirrors the structure and pass/fail criterion of the EventStoreDB benchmark
-//! (`benchmark.rs`) so results are directly comparable.
+//! Mirrors the structure and pass/fail criterion of the KurrentDB benchmark
+//! (`kurrentdb/benchmark.rs`) so results are directly comparable.
 //!
 //! Pass/fail criterion: p99 insert latency < p99_limit_us AND rate ≥ 9 000 ev/s.
 
@@ -15,11 +15,12 @@ use std::{
 };
 
 use anyhow::Result;
+use futures::future::try_join_all;
 use hdrhistogram::Histogram;
 use tokio::sync::Mutex;
 use tracing::{info, warn};
 
-use crate::{events::BenchmarkEvent, mongodb_client::MongoClient};
+use crate::{events::BenchmarkEvent, mongodb::client::MongoClient};
 
 // ─── Configuration ────────────────────────────────────────────────────────────
 
@@ -173,8 +174,27 @@ pub async fn run(mongo_url: &str, config: BenchmarkConfig) -> Result<BenchmarkRe
         info!(database = %config.database, "dropped database for clean-slate run");
     }
 
-    // Single shared client — the driver maintains an internal connection pool.
+    // Wrap probe in Arc before pre-creation so the same client is reused
+    // throughout warm-up and the timed loop.
     let client = Arc::new(probe);
+
+    // Pre-create every collection and its _id index before the timer starts.
+    //
+    // Without this, the first insert_many into each collection triggers
+    // WiredTiger schema creation (data file allocation, index-tree build, oplog
+    // entry) — a multi-millisecond operation that lands inside the timed window
+    // and directly inflates the p99.  Pre-creating moves that one-time cost
+    // entirely outside the measurement window.
+    info!(
+        collections = config.concurrency,
+        "pre-creating collections (warm-up, outside timed window)"
+    );
+    let collection_names: Vec<String> = (0..config.concurrency)
+        .map(|i| format!("{}-{}", config.collection_prefix, i))
+        .collect();
+    try_join_all(collection_names.iter().map(|n| client.ensure_collection(n))).await?;
+    info!("collection warm-up complete, starting timed run");
+
     let total_events = Arc::new(AtomicU64::new(0));
     let shared_hist = Arc::new(Mutex::new(Histogram::<u64>::new(3)?));
 
