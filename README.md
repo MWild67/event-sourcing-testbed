@@ -26,6 +26,7 @@ A fully automated testbed for event sourcing using **Rust**, **RabbitMQ**, and *
 | EventStoreDB    | 23.10.0              | Append-only event log (gRPC/HTTP)     |
 | RabbitMQ        | 3.13 + management    | Event fan-out (topic exchange)        |
 | Rust app        | Tokio + lapin        | Benchmark harness & event producer    |
+| MongoDB         | 7.x                  | Event-log alternative — write latency comparison |
 | Prometheus      | v2.51                | Metrics collection                    |
 | Grafana         | 10.4                 | Dashboards                            |
 | node-exporter   | v1.7                 | Disk I/O, IOPS, CPU iowait            |
@@ -74,11 +75,14 @@ Swap the `provisioner:` line in [k8s/01-storageclass.yaml](k8s/01-storageclass.y
 # Build the benchmark image
 make build
 
-# Start all services
+# Start all services (includes MongoDB on port 27017)
 make up
 
-# Run the benchmark — will report FAIL with ~45 ms p99 (expected, see note below)
+# Run the EventStoreDB benchmark
 make bench-local
+
+# Run the MongoDB benchmark
+make mongo-bench-local
 
 # Explore the UIs
 start http://localhost:2113/web   # EventStoreDB
@@ -95,11 +99,14 @@ make down
 # Build the benchmark image
 make build
 
-# Start all services
+# Start all services (includes MongoDB on port 27017)
 make up
 
-# Run the benchmark — should report PASS with p99 < 2 ms
+# Run the EventStoreDB benchmark
 make bench-local
+
+# Run the MongoDB benchmark
+make mongo-bench-local
 
 # Explore the UIs
 xdg-open http://localhost:2113/web   # EventStoreDB
@@ -197,6 +204,67 @@ bash tests/01-validate-storage.sh
 - StorageClass exists with `volumeBindingMode: WaitForFirstConsumer`
 - PVC stays in `Pending` state until a Pod is scheduled
 - PVC binds to a PV on the same node as the consumer Pod
+
+---
+
+### Test 05 — MongoDB Write-Latency Stress Test
+
+Inserts events into a single MongoDB 7 node at **10 000 events/second** for 30 seconds
+using 64 concurrent Tokio tasks across separate collections.
+The database is **dropped before each run** so leftover data from a prior run
+cannot inflate B-tree index lookup times.
+
+```bash
+# Start MongoDB locally first:
+docker compose up -d mongodb
+# or with Podman:
+podman compose up -d mongodb
+
+# Run the benchmark directly:
+MONGO_URL=mongodb://localhost:27017 \
+  DIRECT=1 bash tests/05-mongodb-stress-test.sh
+
+# Or via the testbed binary:
+rust-app/target/release/testbed \
+  --mongodb-url mongodb://localhost:27017 \
+  mongo-bench \
+  --target-rate 10000 \
+  --concurrency 64 \
+  --duration-secs 30 \
+  --p99-limit-ms 5
+
+# Relax the p99 threshold on slower machines:
+P99_LIMIT_MS=20 DIRECT=1 MONGO_URL=mongodb://localhost:27017 \
+  bash tests/05-mongodb-stress-test.sh
+
+# Keep data from a prior run (warm-database test):
+rust-app/target/release/testbed \
+  --mongodb-url mongodb://localhost:27017 \
+  mongo-bench --no-drop --p99-limit-ms 5
+```
+
+**Pass criteria:**
+
+- Actual rate ≥ 9 000 ev/s
+- **p99 insert latency < p99-limit-ms** (default 2 ms; 5 ms recommended on GitHub-hosted runners)
+
+**CLI flags:**
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--target-rate` | 10000 | Target events/second |
+| `--concurrency` | 64 | Parallel insert tasks |
+| `--batch-size` | 1 | Documents per `insert_many` call |
+| `--duration-secs` | 30 | Run duration |
+| `--database` | `eventbench` | MongoDB database name |
+| `--p99-limit-ms` | 2 | Failure threshold |
+| `--no-drop` | off | Skip pre-run database drop |
+| `--json` | off | Emit results as a single JSON line |
+
+> **Isolation:** The MongoDB benchmark is completely independent of the EventStoreDB
+> and RabbitMQ tests — separate server, separate port, separate collections.
+> Do **not** run `mongo-bench` concurrently with `bench` on the same machine;
+> both saturate host I/O and will inflate each other's latency numbers.
 
 ---
 
@@ -321,16 +389,31 @@ testbed [OPTIONS] <COMMAND>
 Options:
   --eventstore-url  ESDB connection URL  [env: EVENTSTORE_URL]
   --rabbitmq-url    AMQP URL             [env: RABBITMQ_URL]
+  --mongodb-url     MongoDB URL          [env: MONGODB_URL]
 
 Commands:
-  bench    Run the write-latency stress test
-  produce  Continuously produce events to both backends
-  ping     Probe connectivity and exit
+  bench        Run the EventStoreDB write-latency stress test
+  mongo-bench  Run the MongoDB write-latency stress test
+  produce      Continuously produce events to EventStoreDB + RabbitMQ
+  ping         Probe EventStoreDB + RabbitMQ connectivity and exit
+  mongo-ping   Probe MongoDB connectivity and exit
 
 bench options:
   --target-rate    <N>     Target events/second  [default: 10000]
   --duration-secs  <N>     Run duration          [default: 30]
-  --concurrency    <N>     Parallel tasks        [default: 50]
+  --concurrency    <N>     Parallel tasks        [default: 64]
+  --batch-size     <N>     Events per gRPC call  [default: 1]
+  --p99-limit-ms   <N>     Failure threshold ms  [default: 2]
+  --json                   Emit results as JSON  (for CI parsing)
+
+mongo-bench options:
+  --target-rate    <N>     Target events/second  [default: 10000]
+  --duration-secs  <N>     Run duration          [default: 30]
+  --concurrency    <N>     Parallel tasks        [default: 64]
+  --batch-size     <N>     Docs per insert_many  [default: 1]
+  --database       <NAME>  MongoDB database      [default: eventbench]
+  --p99-limit-ms   <N>     Failure threshold ms  [default: 2]
+  --no-drop                Skip pre-run DB drop
   --json                   Emit results as JSON  (for CI parsing)
 ```
 

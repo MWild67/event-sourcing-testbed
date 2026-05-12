@@ -12,6 +12,9 @@ path = "src/main.rs"
 # ── EventStoreDB gRPC client ───────────────────────────────────────────────
 eventstore = "3"
 
+# ── MongoDB async driver ───────────────────────────────────────────────────
+mongodb = "3"
+
 # ── RabbitMQ AMQP 0-9-1 client ────────────────────────────────────────────
 lapin = "2"
 

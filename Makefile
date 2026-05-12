@@ -2,8 +2,8 @@
 # Makefile — Event Sourcing Testbed
 # ─────────────────────────────────────────────────────────────────────────────
 .PHONY: help up down build push deploy undeploy test-all \
-        test-storage test-bench test-failover test-monitoring \
-	bench-local \
+        test-storage test-bench test-failover test-monitoring test-mongodb \
+	bench-local mongo-bench-local \
         logs-es logs-rmq pf-grafana pf-prom
 
 NAMESPACE   := event-store
@@ -33,10 +33,15 @@ up: ## Start all services locally
 down: ## Stop and remove local containers
 	$(COMPOSE) down -v
 
-bench-local: build ## Run the performance benchmark (requires 'make up' first)
+bench-local: build ## Run the EventStoreDB performance benchmark (requires 'make up' first)
 	@$(RUNTIME) run --rm --network event-sourcing-testbed_event-net $(FULL_IMAGE) \
 	  --eventstore-url esdb://eventstore-bench:2113?tls=false \
 	  bench --target-rate 10000 --concurrency 20 --batch-size 1 --duration-secs 30
+
+mongo-bench-local: build ## Run the MongoDB performance benchmark (requires 'make up' first)
+	@$(RUNTIME) run --rm --network event-sourcing-testbed_event-net $(FULL_IMAGE) \
+	  --mongodb-url mongodb://mongodb:27017 \
+	  mongo-bench --target-rate 10000 --concurrency 64 --batch-size 1 --duration-secs 30 --p99-limit-ms 5
 
 # ── Build & publish Rust image ────────────────────────────────────────────────
 build: ## Build the Rust benchmark image
@@ -64,7 +69,7 @@ undeploy: ## Remove all Kubernetes resources in the event-store namespace
 	kubectl delete namespace $(NAMESPACE) --ignore-not-found
 
 # ── Tests ─────────────────────────────────────────────────────────────────────
-test-all: test-storage test-bench test-monitoring ## Run all four test suites
+test-all: test-storage test-bench test-monitoring test-mongodb ## Run all test suites
 	@echo ""
 	@echo "All tests passed."
 
@@ -82,6 +87,12 @@ test-failover: ## Test 03: Automated failover (recovery < 60s)
 
 test-monitoring: ## Test 04: Monitoring integration (Prometheus + Grafana)
 	bash tests/04-monitoring-check.sh
+
+test-mongodb: ## Test 05: MongoDB write-latency stress test (p99 < 5ms)
+	TESTBED_IMAGE=$(FULL_IMAGE) bash tests/05-mongodb-stress-test.sh
+
+test-mongodb-direct: ## Test 05: Run MongoDB benchmark directly (requires local MongoDB)
+	DIRECT=1 bash tests/05-mongodb-stress-test.sh
 
 # ── Utility ───────────────────────────────────────────────────────────────────
 logs-es: ## Tail EventStoreDB logs

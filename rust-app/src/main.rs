@@ -1,6 +1,8 @@
 mod benchmark;
 mod events;
 mod eventstore_client;
+mod mongodb_benchmark;
+mod mongodb_client;
 mod rabbitmq_client;
 
 use std::io::Write as _;
@@ -35,18 +37,26 @@ struct Cli {
     )]
     rabbitmq_url: String,
 
+    /// MongoDB connection URL.
+    #[arg(long, env = "MONGODB_URL", default_value = "mongodb://localhost:27017")]
+    mongodb_url: String,
+
     #[command(subcommand)]
     command: Commands,
 }
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Run the write-latency stress test (pass criterion: p99 < 2 ms at 10k ev/s).
+    /// Run the write-latency stress test against EventStoreDB (p99 < 2 ms at 10k ev/s).
     Bench(BenchArgs),
+    /// Run the write-latency stress test against MongoDB (p99 < p99-limit-ms at 10k ev/s).
+    MongoBench(MongoBenchArgs),
     /// Continuously produce events to both EventStoreDB and RabbitMQ.
     Produce(ProduceArgs),
     /// Probe connectivity to both backends and exit 0 if healthy.
     Ping,
+    /// Probe MongoDB connectivity and exit 0 if healthy.
+    MongoPing,
 }
 
 #[derive(Parser)]
@@ -81,6 +91,47 @@ struct BenchArgs {
     /// p99 latency limit in milliseconds — benchmark FAILs if exceeded.
     #[arg(long, default_value_t = 2)]
     p99_limit_ms: u64,
+}
+
+#[derive(Parser)]
+struct MongoBenchArgs {
+    /// Target events per second (across all concurrent tasks).
+    #[arg(long, default_value_t = 10_000)]
+    target_rate: u64,
+
+    /// Duration of the benchmark run in seconds.
+    #[arg(long, default_value_t = 30)]
+    duration_secs: u64,
+
+    /// Number of concurrent Tokio tasks writing to separate collections.
+    #[arg(long, default_value_t = 64)]
+    concurrency: u64,
+
+    /// Collection name prefix.
+    #[arg(long, default_value = "bench-events")]
+    collection_prefix: String,
+
+    /// Events sent per `insert_many` call.  Default 1 = one event per call.
+    #[arg(long, default_value_t = 1)]
+    batch_size: u64,
+
+    /// Emit results as a single JSON line (for CI parsing).
+    #[arg(long)]
+    json: bool,
+
+    /// p99 latency limit in milliseconds — benchmark FAILs if exceeded.
+    #[arg(long, default_value_t = 2)]
+    p99_limit_ms: u64,
+
+    /// MongoDB database name to use for the benchmark.
+    #[arg(long, default_value = "eventbench")]
+    database: String,
+
+    /// Skip dropping the database before the run.
+    /// By default the database is dropped so leftover data from a prior run
+    /// cannot inflate latency results.
+    #[arg(long)]
+    no_drop: bool,
 }
 
 #[derive(Parser)]
@@ -130,12 +181,44 @@ async fn main() -> Result<()> {
             let _ = std::io::stderr().flush();
         }
 
+        Commands::MongoBench(args) => {
+            let config = mongodb_benchmark::BenchmarkConfig {
+                target_rate: args.target_rate,
+                duration_secs: args.duration_secs,
+                concurrency: args.concurrency,
+                collection_prefix: args.collection_prefix,
+                batch_size: args.batch_size,
+                p99_limit_us: args.p99_limit_ms * 1_000,
+                database: args.database,
+                drop_before_run: !args.no_drop,
+            };
+
+            let result = mongodb_benchmark::run(&cli.mongodb_url, config).await?;
+
+            if args.json {
+                result.print_json();
+            } else {
+                result.print_report();
+            }
+
+            let _ = std::io::stdout().flush();
+            let _ = std::io::stderr().flush();
+
+            if !result.passed {
+                std::process::exit(1);
+            }
+        }
+
         Commands::Produce(args) => {
             produce_loop(&cli.eventstore_url, &cli.rabbitmq_url, args.rate).await?;
         }
 
         Commands::Ping => {
             ping(&cli.eventstore_url, &cli.rabbitmq_url).await?;
+        }
+
+        Commands::MongoPing => {
+            mongo_ping(&cli.mongodb_url).await?;
         }
     }
 
@@ -186,6 +269,16 @@ async fn produce_loop(es_url: &str, rmq_url: &str, rate: u64) -> Result<()> {
 }
 
 // ─── Ping / health check ──────────────────────────────────────────────────────
+
+async fn mongo_ping(mongo_url: &str) -> Result<()> {
+    info!("pinging MongoDB...");
+    mongodb_client::MongoClient::connect(mongo_url, "eventbench")
+        .await?
+        .ping()
+        .await?;
+    info!("MongoDB OK");
+    Ok(())
+}
 
 async fn ping(es_url: &str, rmq_url: &str) -> Result<()> {
     info!("pinging EventStoreDB...");

@@ -136,6 +136,41 @@ services:
       timeout: 5s
       retries: 10
 
+  # ── MongoDB single-node (event-sourcing benchmark) ────────────────────────
+  # Intentionally single-node to match the eventstore-bench service and give a
+  # fair apples-to-apples latency comparison.  journalCommitInterval is left at
+  # its default (100 ms) to avoid artificially inflating performance.
+  mongodb:
+    image: docker.io/library/mongo:7
+    container_name: mongodb
+    environment:
+      MONGO_INITDB_DATABASE: eventbench
+    command:
+      - mongod
+      - --quiet
+      - --bind_ip_all
+      - --wiredTigerCacheSizeGB
+      - "0.5"
+    ports:
+      - "27017:27017"
+    tmpfs:
+      - /data/db
+    networks:
+      - event-net
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "mongosh",
+          "--quiet",
+          "--eval",
+          "db.adminCommand('ping').ok",
+          "mongodb://localhost:27017/admin",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
   # ── RabbitMQ ───────────────────────────────────────────────────────────────
   rabbitmq:
     image: docker.io/library/rabbitmq:3.13-management
