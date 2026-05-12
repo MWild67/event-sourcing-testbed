@@ -148,11 +148,8 @@ jobs:
             rust-app/target
           key: event-sourcing-testbed-${{ runner.os }}-cargo-${{ hashFiles('rust-app/Cargo.lock') }}
 
-      - name: Build benchmark image
-        run: docker build -t event-sourcing-testbed:latest rust-app/
-
-      - name: Import benchmark image into k3d
-        run: k3d image import event-sourcing-testbed:latest -c testbed
+      - name: Build benchmark binary
+        run: cargo build --release --manifest-path rust-app/Cargo.toml
 
       - name: Pre-pull EventStoreDB image into k3d
         run: |
@@ -189,79 +186,18 @@ jobs:
           done
 
       - name: Run benchmark (Kubernetes, 3-node quorum writes)
-        env:
-          TESTBED_IMAGE: event-sourcing-testbed:latest
         run: |
-          NS="event-store"
-          JOB="stress-test-$(date +%s)"
-          ES_URL="esdb://eventstore.event-store.svc.cluster.local:2113?tls=false"
+          kubectl port-forward -n event-store svc/eventstore 2113:2113 &
+          PF_PID=$!
+          sleep 3
 
-          kubectl apply -f - <<EOF
-          apiVersion: batch/v1
-          kind: Job
-          metadata:
-            name: $JOB
-            namespace: $NS
-          spec:
-            ttlSecondsAfterFinished: 600
-            backoffLimit: 0
-            template:
-              spec:
-                restartPolicy: Never
-                enableServiceLinks: false
-                containers:
-                  - name: bench
-                    image: event-sourcing-testbed:latest
-                    imagePullPolicy: IfNotPresent
-                    command: ["/usr/local/bin/testbed"]
-                    args:
-                      - bench
-                      - --target-rate
-                      - "10000"
-                      - --duration-secs
-                      - "30"
-                      - --concurrency
-                      - "50"
-                      - --batch-size
-                      - "1"
-                      - --json
-                    env:
-                      - name: EVENTSTORE_URL
-                        value: "$ES_URL"
-                      - name: RUST_LOG
-                        value: warn
-                    resources:
-                      requests:
-                        cpu: "1"
-                        memory: "256Mi"
-                      limits:
-                        cpu: "4"
-                        memory: "512Mi"
-          EOF
+          rust-app/target/release/testbed \
+            --eventstore-url "esdb://localhost:2113?tls=false" \
+            bench \
+            --target-rate 10000 \
+            --duration-secs 30 \
+            --concurrency 50 \
+            --batch-size 1 \
+            --json
 
-          echo "Waiting for job to complete..."
-          kubectl wait "job/$JOB" -n "$NS" \
-            --for=condition=complete \
-            --timeout=120s \
-            || {
-              echo "=== Job did not complete — full pod logs ==="
-              kubectl logs -l "job-name=$JOB" -n "$NS" 2>&1 || true
-              kubectl delete job "$JOB" -n "$NS" --ignore-not-found >/dev/null
-              exit 1
-            }
-
-          echo "=== Full job output ==="
-          POD=$(kubectl get pods -n "$NS" -l "job-name=$JOB" \
-            -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
-          echo "Pod: $POD"
-          kubectl logs "$POD" -n "$NS" 2>&1 || true
-
-          OUTPUT=$(kubectl logs "$POD" -n "$NS" 2>/dev/null | grep -E '^\{' | tail -1 || true)
-          kubectl delete job "$JOB" -n "$NS" --ignore-not-found >/dev/null
-
-          echo "JSON: $OUTPUT"
-          [[ -n "$OUTPUT" ]] || { echo "ERROR: no JSON output from benchmark"; exit 1; }
-
-          ACTUAL_RATE=$(echo "$OUTPUT" | grep -oP '"actual_rate_eps":\s*\K[^,}]+')
-          P99=$(echo "$OUTPUT" | grep -oP '"p99_us":\s*\K[^,}]+')
-          echo "actual_rate=${ACTUAL_RATE} ev/s  p99=${P99} µs"
+          kill $PF_PID 2>/dev/null || true
