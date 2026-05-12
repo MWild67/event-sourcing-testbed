@@ -10,7 +10,7 @@ on:
 jobs:
   # ── Job 1: in-memory storage — tests gRPC API + write path throughput ──────
   bench-memdb:
-    name: Bench — MEM_DB (p99 < 5ms @ 10k ev/s)
+    name: Bench — MEM_DB
     runs-on: ubuntu-22.04
 
     steps:
@@ -64,7 +64,7 @@ jobs:
 
   # ── Job 2: real storage on tmpfs, fsync off — tests full write pipeline ─────
   bench-disk:
-    name: Bench — Real storage / tmpfs (p99 < 45ms @ 10k ev/s)
+    name: Bench — Real storage / tmpfs
     runs-on: ubuntu-22.04
 
     steps:
@@ -154,6 +154,11 @@ jobs:
       - name: Import benchmark image into k3d
         run: k3d image import event-sourcing-testbed:latest -c testbed
 
+      - name: Pre-pull EventStoreDB image into k3d
+        run: |
+          docker pull eventstore/eventstore:23.10.0-jammy
+          k3d image import eventstore/eventstore:23.10.0-jammy -c testbed
+
       - name: Deploy Kubernetes manifests
         run: |
           kubectl apply -f k8s/00-namespace.yaml
@@ -164,7 +169,7 @@ jobs:
         run: |
           kubectl rollout status statefulset/eventstore \
             -n event-store \
-            --timeout=300s
+            --timeout=600s
 
       - name: Run benchmark (Kubernetes, 3-node quorum writes)
         env:
