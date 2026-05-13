@@ -63,12 +63,10 @@ impl PostgresClient {
         .context("failed to create bench_events table")?;
 
         // Index on stream_id so per-stream reads are fast.
-        sqlx::query(
-            "CREATE INDEX IF NOT EXISTS idx_bench_stream ON bench_events (stream_id)",
-        )
-        .execute(&self.pool)
-        .await
-        .context("failed to create stream index")?;
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_bench_stream ON bench_events (stream_id)")
+            .execute(&self.pool)
+            .await
+            .context("failed to create stream index")?;
 
         Ok(())
     }
@@ -142,9 +140,7 @@ impl PostgresClient {
                 .push_bind(event_type)
                 .push_bind((base_seq + i as u64) as i64)
                 .push_bind(task_id as i64)
-                .push_bind(
-                    serde_json::to_vec(p).unwrap_or_default(),
-                );
+                .push_bind(serde_json::to_vec(p).unwrap_or_default());
         });
         qb.build()
             .execute(&self.pool)
@@ -170,7 +166,50 @@ impl PostgresClient {
         }
         let batch_len = payloads.len() as i64;
 
-        // ── Atomically advance the per-stream version counter ────────────────
+        if batch_len == 1 {
+            // ── Single-event fast path: one CTE round trip ──────────────────
+            //
+            // The entire version-bump + insert executes as a single SQL
+            // statement.  This keeps the stream_versions row lock for only
+            // the statement duration (microseconds) and uses exactly one
+            // pool connection instead of two, eliminating both lock
+            // contention and connection-pool pressure under high concurrency.
+            let payload_bytes = serde_json::to_vec(&payloads[0]).unwrap_or_default();
+            sqlx::query(
+                r#"
+                WITH ver AS (
+                    INSERT INTO stream_versions (stream_id, version)
+                    VALUES ($1, 1)
+                    ON CONFLICT (stream_id) DO UPDATE
+                        SET version = stream_versions.version + 1
+                    RETURNING version - 1 AS start_ver
+                )
+                INSERT INTO bench_events
+                    (event_id, stream_id, stream_version, event_type, seq, task_id, payload)
+                SELECT $2, $1, ver.start_ver, $3, $4, $5, $6
+                FROM ver
+                "#,
+            )
+            .bind(stream_id)
+            .bind(Uuid::new_v4().to_string())
+            .bind(event_type)
+            .bind(base_seq as i64)
+            .bind(task_id as i64)
+            .bind(payload_bytes)
+            .execute(&self.pool)
+            .await
+            .with_context(|| format!("single-event versioned insert failed for '{stream_id}'"))?;
+
+            return Ok(1);
+        }
+
+        // ── Batch path (batch_size > 1): two separate autocommit queries ──────
+        //
+        // The UPSERT on stream_versions is autocommit — the row lock is
+        // released the instant the statement completes, so concurrent tasks
+        // for the same stream only block for microseconds before proceeding.
+        // Each query uses one pool connection sequentially, so peak concurrent
+        // connection count equals concurrency (64), well within the pool limit.
         let row = sqlx::query(
             r#"
             INSERT INTO stream_versions (stream_id, version)
@@ -227,9 +266,8 @@ impl PostgresClient {
         if stream_ids.is_empty() {
             return Ok(());
         }
-        let mut qb: sqlx::QueryBuilder<sqlx::Postgres> = sqlx::QueryBuilder::new(
-            "INSERT INTO stream_versions (stream_id, version) ",
-        );
+        let mut qb: sqlx::QueryBuilder<sqlx::Postgres> =
+            sqlx::QueryBuilder::new("INSERT INTO stream_versions (stream_id, version) ");
         qb.push_values(stream_ids.iter(), |mut b, id| {
             b.push_bind(id).push_bind(0i64);
         });

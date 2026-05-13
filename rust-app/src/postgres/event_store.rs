@@ -119,7 +119,10 @@ impl UpcastRegistry {
                 break;
             }
         }
-        UpcastResult::Migrated { _from: original, event: v }
+        UpcastResult::Migrated {
+            _from: original,
+            event: v,
+        }
     }
 }
 
@@ -438,9 +441,11 @@ impl PgEventStore {
         let stream_version: i64 = row.get(0);
 
         let event_id = Uuid::new_v4().to_string();
-        let payload_json =
-            serde_json::to_value(payload).context("failed to serialise payload").map_err(EventStoreError::Io)?;
-        let occurred_at = chrono::Utc::now().to_rfc3339();
+        let payload_json = serde_json::to_value(payload)
+            .context("failed to serialise payload")
+            .map_err(EventStoreError::Io)?;
+        let occurred_at_dt = chrono::Utc::now();
+        let occurred_at = occurred_at_dt.to_rfc3339();
 
         // ── Insert event — duplicate key = ConcurrencyConflict ───────────────
         let row = match sqlx::query(
@@ -458,14 +463,12 @@ impl PgEventStore {
         .bind(event_type)
         .bind(schema_version)
         .bind(&payload_json)
-        .bind(&occurred_at)
+        .bind(occurred_at_dt)
         .fetch_one(&mut **tx)
         .await
         {
             Ok(r) => r,
-            Err(sqlx::Error::Database(db_err))
-                if db_err.code().as_deref() == Some("23505") =>
-            {
+            Err(sqlx::Error::Database(db_err)) if db_err.code().as_deref() == Some("23505") => {
                 // 23505 = unique_violation → stream version already exists.
                 return Err(EventStoreError::ConcurrencyConflict {
                     stream: stream_id.to_owned(),
@@ -567,13 +570,11 @@ impl PgEventStore {
 
     /// Load the last checkpoint for `consumer_id`; `None` means start from 0.
     pub async fn load_checkpoint(&self, consumer_id: &str) -> Result<Option<i64>> {
-        let row = sqlx::query(
-            "SELECT global_position FROM checkpoints WHERE consumer_id = $1",
-        )
-        .bind(consumer_id)
-        .fetch_optional(&self.pool)
-        .await
-        .context("failed to load checkpoint")?;
+        let row = sqlx::query("SELECT global_position FROM checkpoints WHERE consumer_id = $1")
+            .bind(consumer_id)
+            .fetch_optional(&self.pool)
+            .await
+            .context("failed to load checkpoint")?;
         Ok(row.map(|r| r.get(0)))
     }
 
@@ -619,7 +620,11 @@ impl PgEventStore {
             handler(envelope).await?;
             self.save_checkpoint(consumer_id, last_pos).await?;
         }
-        info!(consumer_id, caught_up_at = last_pos, "catch-up complete, switching to LISTEN");
+        info!(
+            consumer_id,
+            caught_up_at = last_pos,
+            "catch-up complete, switching to LISTEN"
+        );
 
         // ── Phase 2: live push via LISTEN/NOTIFY (Property 4) ────────────────
         //
@@ -635,10 +640,7 @@ impl PgEventStore {
             .context("failed to LISTEN on events_channel")?;
 
         loop {
-            let notification = listener
-                .recv()
-                .await
-                .context("LISTEN channel error")?;
+            let notification = listener.recv().await.context("LISTEN channel error")?;
 
             let pos: i64 = notification
                 .payload()
@@ -705,10 +707,7 @@ impl PgEventStore {
     /// locks a different row so there is no double-delivery.
     ///
     /// Returns `true` if an event was dispatched, `false` if the outbox is empty.
-    pub async fn relay_next_integration_event<F, Fut>(
-        &self,
-        publish: F,
-    ) -> Result<bool>
+    pub async fn relay_next_integration_event<F, Fut>(&self, publish: F) -> Result<bool>
     where
         F: FnOnce(serde_json::Value, String) -> Fut,
         Fut: std::future::Future<Output = Result<()>>,
