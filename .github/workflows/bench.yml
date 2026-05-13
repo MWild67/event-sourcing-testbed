@@ -22,6 +22,7 @@ jobs:
           curl -1sLf 'https://dl.cloudsmith.io/public/eventstore/kurrent-latest/setup.deb.sh' | sudo -E bash
           sudo apt-get install -y kurrentdb
           sudo systemctl stop kurrentdb || true
+          getent passwd kurrentdb > /dev/null || sudo useradd --system --no-create-home --shell /usr/sbin/nologin kurrentdb
           sudo mkdir -p /tmp/esdb /tmp/esdb-log
           sudo chown kurrentdb:kurrentdb /tmp/esdb /tmp/esdb-log
           sudo mkdir -p /etc/systemd/system/kurrentdb.service.d
@@ -75,6 +76,7 @@ jobs:
           curl -1sLf 'https://dl.cloudsmith.io/public/eventstore/kurrent-latest/setup.deb.sh' | sudo -E bash
           sudo apt-get install -y kurrentdb
           sudo systemctl stop kurrentdb || true
+          getent passwd kurrentdb > /dev/null || sudo useradd --system --no-create-home --shell /usr/sbin/nologin kurrentdb
           sudo mkdir -p /tmp/esdb /tmp/esdb-log
           sudo mount -t tmpfs -o size=512m tmpfs /tmp/esdb
           sudo chown kurrentdb:kurrentdb /tmp/esdb /tmp/esdb-log
