@@ -34,10 +34,7 @@ use futures::TryStreamExt;
 use mongodb::{
     bson::{doc, from_document, to_document, Document},
     change_stream::event::OperationType,
-    options::{
-        ClientOptions, FindOptions, IndexOptions,
-        ValidationAction,
-    },
+    options::{ClientOptions, FindOptions, IndexOptions, ValidationAction},
     Client, ClientSession, Database, IndexModel,
 };
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
@@ -158,7 +155,10 @@ impl UpcastRegistry {
                 break;
             }
         }
-        UpcastResult::Migrated { from: original, event: v }
+        UpcastResult::Migrated {
+            from: original,
+            event: v,
+        }
     }
 }
 
@@ -245,7 +245,7 @@ impl MongoEventStore {
                     "stream_version":  { "bsonType": "long" },
                     "global_position": { "bsonType": "long" },
                     "event_type":      { "bsonType": "string" },
-                    "schema_version":  { "bsonType": "int" },
+                    "schema_version":  { "bsonType": ["int", "long"] },
                     "payload":         { "bsonType": "object" },
                 }
             }
@@ -266,8 +266,7 @@ impl MongoEventStore {
                         return Ok(());
                     }
                 }
-                return Err(e)
-                    .context(format!("failed to create events collection '{name}'"));
+                return Err(e).context(format!("failed to create events collection '{name}'"));
             }
         }
 
@@ -312,13 +311,20 @@ impl MongoEventStore {
     }
 
     async fn ensure_aux_collections(&self) -> Result<()> {
-        for name in &["_global_seq", "_stream_versions", "_checkpoints",
-                       "_integration_outbox", "_competing_consumers"] {
+        for name in &[
+            "_global_seq",
+            "_stream_versions",
+            "_checkpoints",
+            "_integration_outbox",
+            "_competing_consumers",
+        ] {
             match self.db.create_collection(*name).await {
                 Ok(_) => {}
                 Err(e) => {
                     if let mongodb::error::ErrorKind::Command(ref cmd) = *e.kind {
-                        if cmd.code == 48 { continue; }
+                        if cmd.code == 48 {
+                            continue;
+                        }
                     }
                     return Err(e).context(format!("failed to create aux collection '{name}'"));
                 }
@@ -473,10 +479,7 @@ impl MongoEventStore {
         let gseq_doc = self
             .db
             .collection::<Document>("_global_seq")
-            .find_one_and_update(
-                doc! { "_id": "counter" },
-                doc! { "$inc": { "seq": batch } },
-            )
+            .find_one_and_update(doc! { "_id": "counter" }, doc! { "$inc": { "seq": batch } })
             .upsert(true)
             .return_document(mongodb::options::ReturnDocument::Before)
             .session(&mut *session)
@@ -491,8 +494,9 @@ impl MongoEventStore {
 
         // ── Build envelope ────────────────────────────────────────────────────
         let event_id = uuid::Uuid::new_v4().to_string();
-        let payload_doc =
-            to_document(payload).context("failed to serialise payload").map_err(EventStoreError::Io)?;
+        let payload_doc = to_document(payload)
+            .context("failed to serialise payload")
+            .map_err(EventStoreError::Io)?;
 
         let envelope = EventEnvelope {
             event_id: event_id.clone(),
@@ -522,11 +526,9 @@ impl MongoEventStore {
             Err(e) => {
                 if matches!(
                     *e.kind,
-                    mongodb::error::ErrorKind::Write(
-                        mongodb::error::WriteFailure::WriteError(
-                            mongodb::error::WriteError { code: 11000, .. }
-                        )
-                    )
+                    mongodb::error::ErrorKind::Write(mongodb::error::WriteFailure::WriteError(
+                        mongodb::error::WriteError { code: 11000, .. }
+                    ))
                 ) {
                     return Err(EventStoreError::ConcurrencyConflict {
                         stream: stream_id.to_owned(),
@@ -552,10 +554,7 @@ impl MongoEventStore {
     ///
     /// Returns the final aggregate state and the last `stream_version` seen
     /// (useful for optimistic-concurrency checks on the next append).
-    pub async fn rehydrate<A>(
-        &self,
-        stream_id: &str,
-    ) -> Result<(A, i64)>
+    pub async fn rehydrate<A>(&self, stream_id: &str) -> Result<(A, i64)>
     where
         A: Aggregate,
     {
@@ -573,17 +572,20 @@ impl MongoEventStore {
         let mut state = A::default();
         let mut last_version: i64 = -1;
 
-        while let Some(raw) = TryStreamExt::try_next(&mut cursor).await.context("cursor error during rehydration")? {
-            let envelope: EventEnvelope = from_document(raw)
-                .context("failed to deserialise event envelope")?;
+        while let Some(raw) = TryStreamExt::try_next(&mut cursor)
+            .await
+            .context("cursor error during rehydration")?
+        {
+            let envelope: EventEnvelope =
+                from_document(raw).context("failed to deserialise event envelope")?;
             last_version = envelope.stream_version;
 
             // Run upcaster chain before handing to the aggregate.
             let raw_json: serde_json::Value = serde_json::to_value(&envelope.payload)
                 .unwrap_or(serde_json::Value::Object(Default::default()));
-            let upcasted = self
-                .upcasters
-                .upcast(&envelope.event_type, envelope.schema_version, raw_json);
+            let upcasted =
+                self.upcasters
+                    .upcast(&envelope.event_type, envelope.schema_version, raw_json);
 
             let event_json = match upcasted {
                 UpcastResult::Current(v) | UpcastResult::Migrated { event: v, .. } => v,
@@ -615,11 +617,7 @@ impl MongoEventStore {
     /// this after each batch to advance its durable cursor.  On restart,
     /// `load_checkpoint` returns this value so processing resumes exactly where
     /// it left off — no events are replayed or skipped.
-    pub async fn save_checkpoint(
-        &self,
-        consumer_id: &str,
-        global_position: i64,
-    ) -> Result<()> {
+    pub async fn save_checkpoint(&self, consumer_id: &str, global_position: i64) -> Result<()> {
         self.db
             .collection::<Document>("_checkpoints")
             .update_one(
@@ -654,11 +652,7 @@ impl MongoEventStore {
     /// `save_checkpoint` after each successful batch.
     ///
     /// `handler` receives each envelope; returning `Err` stops the subscription.
-    pub async fn catch_up_subscribe<F, Fut>(
-        &self,
-        consumer_id: &str,
-        mut handler: F,
-    ) -> Result<()>
+    pub async fn catch_up_subscribe<F, Fut>(&self, consumer_id: &str, mut handler: F) -> Result<()>
     where
         F: FnMut(EventEnvelope) -> Fut + Send,
         Fut: std::future::Future<Output = Result<()>> + Send,
@@ -688,7 +682,11 @@ impl MongoEventStore {
             handler(envelope).await?;
             self.save_checkpoint(consumer_id, last_pos).await?;
         }
-        info!(consumer_id, caught_up_at = last_pos, "catch-up complete, switching to live stream");
+        info!(
+            consumer_id,
+            caught_up_at = last_pos,
+            "catch-up complete, switching to live stream"
+        );
 
         // ── Phase 2: live push via Change Stream (Property 4) ────────────────
         //
@@ -702,10 +700,7 @@ impl MongoEventStore {
             .await
             .context("failed to open change stream")?;
 
-        while let Some(event) = change_stream
-            .next()
-            .await
-        {
+        while let Some(event) = change_stream.next().await {
             let cs_event = event.context("change stream error")?;
             if cs_event.operation_type != OperationType::Insert {
                 continue;
@@ -794,10 +789,7 @@ impl MongoEventStore {
     /// domain event (Property 6), exactly-once delivery semantics are
     /// achievable: the relay retries until `publish` succeeds, and the
     /// `dispatched = true` update prevents re-delivery.
-    pub async fn relay_next_integration_event<F, Fut>(
-        &self,
-        publish: F,
-    ) -> Result<bool>
+    pub async fn relay_next_integration_event<F, Fut>(&self, publish: F) -> Result<bool>
     where
         F: FnOnce(Document) -> Fut,
         Fut: std::future::Future<Output = Result<()>>,
@@ -813,7 +805,10 @@ impl MongoEventStore {
             None => return Ok(false),
         };
 
-        let id = doc.get_str("_id").context("outbox entry missing _id")?.to_owned();
+        let id = doc
+            .get_str("_id")
+            .context("outbox entry missing _id")?
+            .to_owned();
 
         // Publish first — if this fails we leave `dispatched = false` and retry.
         publish(doc).await?;
