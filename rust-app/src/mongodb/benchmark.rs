@@ -38,6 +38,12 @@ pub struct BenchmarkConfig {
     /// Drop the database before the run starts to guarantee a clean slate.
     /// Prevents leftover documents/indexes from prior runs inflating latency.
     pub drop_before_run: bool,
+    /// Enable event-store-mode features:
+    ///   - Journaled write concern (fsync before acknowledge).
+    ///   - Per-stream version counter with optimistic-concurrency enforcement.
+    ///   - Global `$all`-stream sequence position stamped on every event.
+    ///   - JSON Schema validator on each collection (structural immutability).
+    pub event_store_mode: bool,
 }
 
 impl Default for BenchmarkConfig {
@@ -50,6 +56,7 @@ impl Default for BenchmarkConfig {
             batch_size: 1,
             database: "eventbench".to_string(),
             drop_before_run: true,
+            event_store_mode: false,
         }
     }
 }
@@ -120,18 +127,29 @@ impl BenchmarkResult {
 /// Spawns one shared MongoDB client and fans writes out across `concurrency`
 /// logical collections.  A semaphore bounds in-flight inserts to avoid
 /// overwhelming the server's connection pool.
+///
+/// When `config.event_store_mode` is `true`, the run uses a journaled client,
+/// per-stream version counters, global position stamping, and schema-validated
+/// collections — the four features KurrentDB provides out of the box.
 pub async fn run(mongo_url: &str, config: BenchmarkConfig) -> Result<BenchmarkResult> {
     info!(
         target_rate = config.target_rate,
         concurrency = config.concurrency,
         batch_size = config.batch_size,
         duration = config.duration_secs,
+        event_store_mode = config.event_store_mode,
         "starting MongoDB stress-test benchmark"
     );
 
     // Validate connectivity — retry for up to 30 s so a freshly-started
     // MongoDB instance has time to become ready before writes begin.
-    let probe = MongoClient::connect(mongo_url, &config.database).await?;
+    // In event-store mode use a journaled client so the probe connection already
+    // carries the correct write concern.
+    let probe = if config.event_store_mode {
+        MongoClient::connect_event_store(mongo_url, &config.database).await?
+    } else {
+        MongoClient::connect(mongo_url, &config.database).await?
+    };
     let mut ready = false;
     for attempt in 1..=30 {
         match probe.ping().await {
@@ -176,8 +194,23 @@ pub async fn run(mongo_url: &str, config: BenchmarkConfig) -> Result<BenchmarkRe
     let collection_names: Vec<String> = (0..config.concurrency)
         .map(|i| format!("{}-{}", config.collection_prefix, i))
         .collect();
-    try_join_all(collection_names.iter().map(|n| client.ensure_collection(n))).await?;
-    info!("collection warm-up complete, starting timed run");
+
+    if config.event_store_mode {
+        // Schema-validated collections with stream-version + global-position indexes.
+        try_join_all(
+            collection_names
+                .iter()
+                .map(|n| client.ensure_collection_event_store(n)),
+        )
+        .await?;
+        // Pre-warm counter documents so their first creation doesn't land in
+        // the timed window.
+        client.init_event_store_counters(&collection_names).await?;
+        info!("event-store warm-up complete (schema + indexes + counters), starting timed run");
+    } else {
+        try_join_all(collection_names.iter().map(|n| client.ensure_collection(n))).await?;
+        info!("collection warm-up complete, starting timed run");
+    }
 
     let total_events = Arc::new(AtomicU64::new(0));
     let shared_hist = Arc::new(Mutex::new(Histogram::<u64>::new(3)?));
@@ -197,6 +230,7 @@ pub async fn run(mongo_url: &str, config: BenchmarkConfig) -> Result<BenchmarkRe
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     let mut seq: u64 = 0;
+    let event_store_mode = config.event_store_mode;
 
     loop {
         interval.tick().await;
@@ -222,16 +256,22 @@ pub async fn run(mongo_url: &str, config: BenchmarkConfig) -> Result<BenchmarkRe
         tokio::spawn(async move {
             let _permit = permit; // returned to semaphore when this task exits
             let t0 = Instant::now();
-            match client
-                .append_batch(&collection_name, "BenchmarkEvent", &events)
-                .await
-            {
+            let result = if event_store_mode {
+                client
+                    .append_batch_versioned(&collection_name, "BenchmarkEvent", &events)
+                    .await
+            } else {
+                client
+                    .append_batch(&collection_name, "BenchmarkEvent", &events)
+                    .await
+            };
+            match result {
                 Ok(_) => {
                     let lat_us = t0.elapsed().as_micros() as u64;
                     let _ = hist.lock().await.record(lat_us);
                     total_events.fetch_add(batch_size, Ordering::Relaxed);
                 }
-                Err(e) => warn!(error = %e, "insert_many failed, skipping"),
+                Err(e) => warn!(error = %e, "insert failed, skipping"),
             }
         });
     }

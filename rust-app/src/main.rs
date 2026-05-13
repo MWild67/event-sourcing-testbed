@@ -122,6 +122,13 @@ struct MongoBenchArgs {
     /// cannot inflate latency results.
     #[arg(long)]
     no_drop: bool,
+
+    /// Enable event-store-mode: journaled writes, per-stream version counters,
+    /// global position stamping, and JSON Schema validation on each collection.
+    /// Makes the benchmark structurally equivalent to KurrentDB for a fair
+    /// side-by-side latency comparison.
+    #[arg(long)]
+    event_store_mode: bool,
 }
 
 #[derive(Parser)]
@@ -179,6 +186,7 @@ async fn main() -> Result<()> {
                 batch_size: args.batch_size,
                 database: args.database,
                 drop_before_run: !args.no_drop,
+                event_store_mode: args.event_store_mode,
             };
 
             let result = mongodb::benchmark::run(&cli.mongodb_url, config).await?;

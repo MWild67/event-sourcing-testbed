@@ -4,10 +4,11 @@
 //! benchmark harness can swap backends without structural changes.
 
 use anyhow::{Context, Result};
+use futures::future::try_join_all;
 use mongodb::{
     bson::{doc, to_document, Document},
-    options::ClientOptions,
-    Client, Database,
+    options::{ClientOptions, IndexOptions, ReturnDocument, ValidationAction, WriteConcern},
+    Client, Database, IndexModel,
 };
 use serde::Serialize;
 use uuid::Uuid;
@@ -28,6 +29,20 @@ impl MongoClient {
         let opts = ClientOptions::parse(url)
             .await
             .with_context(|| format!("invalid MongoDB URL: {url}"))?;
+        let client = Client::with_options(opts).context("failed to create MongoDB client")?;
+        let db = client.database(db_name);
+        Ok(Self { db })
+    }
+
+    /// Connect with journaled write concern (`j:true`) — every acknowledged
+    /// write has been flushed to the on-disk journal before MongoDB replies.
+    /// This mirrors KurrentDB's durable-append guarantee, making latency
+    /// numbers directly comparable between the two backends.
+    pub async fn connect_event_store(url: &str, db_name: &str) -> Result<Self> {
+        let mut opts = ClientOptions::parse(url)
+            .await
+            .with_context(|| format!("invalid MongoDB URL: {url}"))?;
+        opts.write_concern = Some(WriteConcern::builder().journal(true).build());
         let client = Client::with_options(opts).context("failed to create MongoDB client")?;
         let db = client.database(db_name);
         Ok(Self { db })
@@ -73,6 +88,187 @@ impl MongoClient {
         coll.insert_many(docs?)
             .await
             .with_context(|| format!("batch insert to '{collection_name}' failed"))?;
+        Ok(())
+    }
+
+    // ── Event-store-mode additions ─────────────────────────────────────────
+
+    /// Create `collection_name` with:
+    ///  1. A JSON Schema validator requiring `stream_id`, `stream_version`, and
+    ///     `global_position` on every inserted document (structural immutability).
+    ///  2. A unique compound index `{ stream_id, stream_version }` — a duplicate
+    ///     key error on insert mirrors KurrentDB's `WrongExpectedVersion`.
+    ///  3. An index on `global_position` to support `$all`-stream queries.
+    pub async fn ensure_collection_event_store(&self, collection_name: &str) -> Result<()> {
+        let validator = doc! {
+            "$jsonSchema": {
+                "bsonType": "object",
+                "required": ["_id", "event_type", "stream_id", "stream_version", "global_position"],
+                "properties": {
+                    "_id":             { "bsonType": "string" },
+                    "event_type":      { "bsonType": "string" },
+                    "stream_id":       { "bsonType": "string" },
+                    "stream_version":  { "bsonType": "long" },
+                    "global_position": { "bsonType": "long" },
+                }
+            }
+        };
+
+        match self
+            .db
+            .create_collection(collection_name)
+            .validator(validator)
+            .validation_action(ValidationAction::Error)
+            .await
+        {
+            Ok(_) => {}
+            Err(e) => {
+                if let mongodb::error::ErrorKind::Command(ref cmd) = *e.kind {
+                    if cmd.code == 48 {
+                        return Ok(());
+                    }
+                }
+                return Err(e).context(format!("failed to create collection '{collection_name}'"));
+            }
+        }
+
+        let coll = self.db.collection::<Document>(collection_name);
+
+        // Unique compound index — provides optimistic-concurrency enforcement.
+        let stream_ver_idx = IndexModel::builder()
+            .keys(doc! { "stream_id": 1, "stream_version": 1 })
+            .options(
+                IndexOptions::builder()
+                    .unique(true)
+                    .name("uq_stream_version".to_string())
+                    .build(),
+            )
+            .build();
+
+        // Index on global_position supports efficient $all-stream reads.
+        let global_pos_idx = IndexModel::builder()
+            .keys(doc! { "global_position": 1 })
+            .options(
+                IndexOptions::builder()
+                    .name("idx_global_position".to_string())
+                    .build(),
+            )
+            .build();
+
+        coll.create_indexes(vec![stream_ver_idx, global_pos_idx])
+            .await
+            .with_context(|| format!("failed to create indexes on '{collection_name}'"))?;
+
+        Ok(())
+    }
+
+    /// Pre-warm the per-stream version counters and the global sequence counter
+    /// so their documents exist before the timed benchmark window starts.
+    /// Uses `$setOnInsert` — a no-op if the document already exists.
+    pub async fn init_event_store_counters(&self, stream_names: &[String]) -> Result<()> {
+        // Global sequence counter (single document shared across all streams).
+        let gseq_coll = self.db.collection::<Document>("_global_seq");
+        gseq_coll
+            .update_one(
+                doc! { "_id": "counter" },
+                doc! { "$setOnInsert": { "seq": 0i64 } },
+            )
+            .upsert(true)
+            .await
+            .context("failed to init global sequence counter")?;
+
+        // Per-stream version counters — initialise all in parallel.
+        let versions_coll = self.db.collection::<Document>("_stream_versions");
+        let futs: Vec<_> = stream_names
+            .iter()
+            .map(|name| {
+                let coll = versions_coll.clone();
+                let name = name.clone();
+                async move {
+                    coll.update_one(
+                        doc! { "_id": &name },
+                        doc! { "$setOnInsert": { "version": 0i64 } },
+                    )
+                    .upsert(true)
+                    .await
+                    .context("failed to init stream version counter")
+                }
+            })
+            .collect();
+        try_join_all(futs).await?;
+        Ok(())
+    }
+
+    /// Insert a batch of events stamped with a monotonic `stream_version` and a
+    /// globally-ordered `global_position` — mirroring KurrentDB's per-stream
+    /// version and global `$all`-stream position.
+    ///
+    /// Two sequential atomic `findOneAndUpdate` increments advance the
+    /// `_stream_versions` and `_global_seq` control collections, then the
+    /// actual `insertMany` writes all events in one round-trip.
+    pub async fn append_batch_versioned<T: Serialize>(
+        &self,
+        collection_name: &str,
+        event_type: &str,
+        payloads: &[T],
+    ) -> Result<()> {
+        let batch_len = payloads.len() as i64;
+
+        // ── 1. Atomically advance the per-stream version counter ────────────
+        let versions_coll = self.db.collection::<Document>("_stream_versions");
+        let ver_before = versions_coll
+            .find_one_and_update(
+                doc! { "_id": collection_name },
+                doc! { "$inc": { "version": batch_len } },
+            )
+            .upsert(true)
+            .return_document(ReturnDocument::Before)
+            .await
+            .with_context(|| format!("version counter update failed for '{collection_name}'"))?;
+
+        let start_version: i64 = ver_before
+            .as_ref()
+            .and_then(|d| d.get_i64("version").ok())
+            .unwrap_or(0);
+
+        // ── 2. Atomically advance the global sequence counter ───────────────
+        let gseq_coll = self.db.collection::<Document>("_global_seq");
+        let gseq_before = gseq_coll
+            .find_one_and_update(
+                doc! { "_id": "counter" },
+                doc! { "$inc": { "seq": batch_len } },
+            )
+            .upsert(true)
+            .return_document(ReturnDocument::Before)
+            .await
+            .context("global sequence counter update failed")?;
+
+        let global_start: i64 = gseq_before
+            .as_ref()
+            .and_then(|d| d.get_i64("seq").ok())
+            .unwrap_or(0);
+
+        // ── 3. Build documents and insert ───────────────────────────────────
+        let coll = self.db.collection::<Document>(collection_name);
+        let docs: Result<Vec<Document>> = payloads
+            .iter()
+            .enumerate()
+            .map(|(i, p)| {
+                let mut doc =
+                    to_document(p).with_context(|| "failed to serialise event to BSON")?;
+                doc.insert("_id", Uuid::new_v4().to_string());
+                doc.insert("event_type", event_type);
+                doc.insert("stream_id", collection_name);
+                doc.insert("stream_version", start_version + i as i64);
+                doc.insert("global_position", global_start + i as i64);
+                Ok(doc)
+            })
+            .collect();
+
+        coll.insert_many(docs?)
+            .await
+            .with_context(|| format!("versioned batch insert to '{collection_name}' failed"))?;
+
         Ok(())
     }
 
