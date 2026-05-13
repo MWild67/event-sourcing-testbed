@@ -169,6 +169,31 @@ pub async fn run(pg_url: &str, config: BenchmarkConfig) -> Result<BenchmarkResul
         info!("bench table truncated for clean-slate run");
     }
 
+    // ── Connection pool warm-up (outside timed window) ────────────────────────
+    //
+    // sqlx creates connections lazily.  Without this warm-up, the first burst
+    // of `concurrency` concurrent tasks all race to CREATE new connections
+    // through the network path (including any k8s port-forward tunnel).
+    // Connection establishment is slow relative to the 5 s acquire_timeout,
+    // so those pending requests time out, producing the periodic WARN bursts
+    // seen in CI logs.
+    //
+    // Firing `concurrency` simultaneous pings here ensures every connection
+    // slot is open before the timed measurement window starts.
+    {
+        let warm_handles: Vec<_> = (0..config.concurrency as usize)
+            .map(|_| {
+                let c = Arc::clone(&client);
+                tokio::spawn(async move { c.ping().await.ok() })
+            })
+            .collect();
+        futures::future::join_all(warm_handles).await;
+        info!(
+            connections = config.concurrency,
+            "connection pool warmed up"
+        );
+    }
+
     // ── Timed loop ────────────────────────────────────────────────────────────
     let total_events = Arc::new(AtomicU64::new(0));
     let shared_hist = Arc::new(Mutex::new(Histogram::<u64>::new(3)?));
@@ -217,7 +242,13 @@ pub async fn run(pg_url: &str, config: BenchmarkConfig) -> Result<BenchmarkResul
             let t0 = Instant::now();
             let result = if event_store_mode {
                 client
-                    .append_batch_versioned(&stream_id, "BenchmarkEvent", &events, base_seq, task_id)
+                    .append_batch_versioned(
+                        &stream_id,
+                        "BenchmarkEvent",
+                        &events,
+                        base_seq,
+                        task_id,
+                    )
                     .await
                     .map(|_| ())
             } else {

@@ -528,10 +528,19 @@ impl PgEventStore {
                 .upcasters
                 .upcast(&event_type, schema_version as u32, payload);
 
-            let event_json = match upcasted {
+            let mut event_json = match upcasted {
                 UpcastResult::Current(v) | UpcastResult::Migrated { event: v, .. } => v,
                 UpcastResult::Unrecognised(_) => continue,
             };
+
+            // Inject the event_type discriminator so that aggregate-event enums
+            // defined with `#[serde(tag = "event_type")]` can be deserialized.
+            // The payload stored in JSONB contains only the event fields; the
+            // event_type is persisted in its own column for efficient querying.
+            if let serde_json::Value::Object(ref mut map) = event_json {
+                map.entry("event_type")
+                    .or_insert_with(|| serde_json::Value::String(event_type.clone()));
+            }
 
             match serde_json::from_value::<A::Event>(event_json) {
                 Ok(ev) => state.apply(ev),
