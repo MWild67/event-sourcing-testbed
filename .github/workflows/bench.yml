@@ -222,7 +222,8 @@ jobs:
           # 2 GB tmpfs: 64 collections × data+index files + WiredTiger journal
           # easily exceed 512 MB once eviction starts flushing dirty pages.
           # Cache is kept at 0.25 GB (pure RAM) — sufficient for a 30-second run.
-          # --journal enables the WiredTiger journal (required for j:true writes).
+          # MongoDB 4.0+ (WiredTiger) always journals; no --journal flag needed.
+          # The j:true write concern in the Rust client enforces fsync per-write.
           sudo mkdir -p /tmp/mongodb
           sudo mount -t tmpfs -o size=2g tmpfs /tmp/mongodb
           docker run -d \
@@ -230,12 +231,14 @@ jobs:
             -p 27017:27017 \
             -v /tmp/mongodb:/data/db \
             mongo:7 \
-            mongod --quiet --bind_ip_all --journal --wiredTigerCacheSizeGB 0.25
+            mongod --quiet --bind_ip_all --wiredTigerCacheSizeGB 0.25
           echo "Waiting for MongoDB to be ready..."
           for i in $(seq 1 30); do
             docker exec mongodb mongosh --quiet --eval "db.adminCommand('ping').ok" \
               mongodb://localhost:27017/admin 2>/dev/null && break || sleep 2
           done
+          docker exec mongodb mongosh --quiet --eval "db.adminCommand('ping').ok" \
+            mongodb://localhost:27017/admin || { echo "MongoDB failed to start"; docker logs mongodb --tail 20; exit 1; }
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable

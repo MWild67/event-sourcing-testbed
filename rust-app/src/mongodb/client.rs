@@ -3,6 +3,8 @@
 //! Mirrors the interface of [`crate::kurrentdb::client::KurrentClient`] so the
 //! benchmark harness can swap backends without structural changes.
 
+use std::time::Duration;
+
 use anyhow::{Context, Result};
 use futures::future::try_join_all;
 use mongodb::{
@@ -299,11 +301,19 @@ impl MongoClient {
     }
 
     /// Cheap health probe — issues a server-level `ping` command.
+    ///
+    /// Wraps the call in a 5-second hard timeout so the benchmark's readiness
+    /// retry loop fails quickly (5 s per attempt) rather than waiting the
+    /// driver's default 30-second server-selection timeout.  30 retries × 5 s
+    /// = 2.5 minutes maximum wait, vs 30 × 30 s = 15 minutes without this.
     pub async fn ping(&self) -> Result<()> {
-        self.db
-            .run_command(doc! { "ping": 1 })
-            .await
-            .context("MongoDB ping failed")?;
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            self.db.run_command(doc! { "ping": 1 }),
+        )
+        .await
+        .context("MongoDB ping timed out after 5 s")?
+        .context("MongoDB ping failed")?;
         Ok(())
     }
 }

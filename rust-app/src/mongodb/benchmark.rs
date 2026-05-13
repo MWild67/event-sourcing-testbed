@@ -128,9 +128,11 @@ impl BenchmarkResult {
 /// logical collections.  A semaphore bounds in-flight inserts to avoid
 /// overwhelming the server's connection pool.
 ///
-/// When `config.event_store_mode` is `true`, the run uses a journaled client,
-/// per-stream version counters, global position stamping, and schema-validated
-/// collections — the four features KurrentDB provides out of the box.
+/// When `config.event_store_mode` is `true`, the run uses per-stream version
+/// counters, global position stamping, schema-validated collections, and a
+/// journaled write concern on each insert — the four features KurrentDB
+/// provides out of the box.  The journaled concern is applied per-operation
+/// (not at the client level) to avoid interfering with server selection.
 pub async fn run(mongo_url: &str, config: BenchmarkConfig) -> Result<BenchmarkResult> {
     info!(
         target_rate = config.target_rate,
