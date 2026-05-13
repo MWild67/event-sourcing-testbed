@@ -53,14 +53,10 @@ spec:
             - name: KURRENTDB_CLUSTER_GOSSIP_PORT
               value: "2113"
             # ── Network ────────────────────────────────────────────────────
-            - name: KURRENTDB_INT_IP
-              value: "0.0.0.0"
-            - name: KURRENTDB_EXT_IP
-              value: "0.0.0.0"
-            - name: KURRENTDB_HTTP_PORT
+            - name: KURRENTDB_NODE_PORT
               value: "2113"
             # Use the pod's own IP so other nodes can reach it for gossip
-            - name: KURRENTDB_ADVERTISE_NODE_PORT_TO_CLIENT_AS
+            - name: KURRENTDB_NODE_PORT_ADVERTISE_AS
               value: "2113"
             # ── Security (testbed: no TLS) ─────────────────────────────────
             - name: KURRENTDB_INSECURE
