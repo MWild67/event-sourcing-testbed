@@ -2,7 +2,7 @@
 name = "event-sourcing-testbed"
 version = "0.1.0"
 edition = "2021"
-description = "Rust benchmark and event-sourcing demo for KurrentDB + RabbitMQ + MongoDB"
+description = "Rust benchmark and event-sourcing demo for KurrentDB + RabbitMQ + MongoDB + PostgreSQL"
 
 [[bin]]
 name = "testbed"
@@ -14,6 +14,15 @@ kurrentdb = "1"
 
 # ── MongoDB async driver ───────────────────────────────────────────────────
 mongodb = "3"
+
+# ── PostgreSQL async driver (sqlx, runtime-tokio, no TLS for testbed) ────────
+sqlx = { version = "0.8", features = [
+    "postgres",
+    "runtime-tokio",
+    "uuid",
+    "chrono",
+    "json",
+] }
 
 # ── RabbitMQ AMQP 0-9-1 client ────────────────────────────────────────────
 lapin = "2"

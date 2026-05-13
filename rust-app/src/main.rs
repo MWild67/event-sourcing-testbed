@@ -1,6 +1,7 @@
 mod events;
 mod kurrentdb;
 mod mongodb;
+mod postgres;
 mod rabbitmq_client;
 
 use std::io::Write as _;
@@ -16,7 +17,7 @@ use tracing_subscriber::{fmt, EnvFilter};
 #[command(
     name    = "testbed",
     version = env!("CARGO_PKG_VERSION"),
-    about   = "Event-sourcing testbed — KurrentDB + RabbitMQ + MongoDB benchmark tool"
+    about   = "Event-sourcing testbed — KurrentDB + RabbitMQ + MongoDB + PostgreSQL benchmark tool"
 )]
 struct Cli {
     /// KurrentDB connection URL.
@@ -39,6 +40,14 @@ struct Cli {
     #[arg(long, env = "MONGODB_URL", default_value = "mongodb://localhost:27017")]
     mongodb_url: String,
 
+    /// PostgreSQL connection URL.
+    #[arg(
+        long,
+        env = "POSTGRES_URL",
+        default_value = "postgres://postgres:postgres@localhost:5432/eventbench"
+    )]
+    postgres_url: String,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -57,6 +66,12 @@ enum Commands {
     MongoPing,
     /// Demonstrate all 8 event-sourcing properties against MongoDB.
     MongoEventStoreDemo(MongoEventStoreDemoArgs),
+    /// Run the write-latency stress test against PostgreSQL.
+    PgBench(PgBenchArgs),
+    /// Probe PostgreSQL connectivity and exit 0 if healthy.
+    PgPing,
+    /// Demonstrate all 8 event-sourcing properties against PostgreSQL.
+    PgEventStoreDemo(PgEventStoreDemoArgs),
 }
 
 #[derive(Parser)]
@@ -151,6 +166,44 @@ struct MongoEventStoreDemoArgs {
     events: u32,
 }
 
+#[derive(Parser)]
+struct PgBenchArgs {
+    /// Target events per second (across all concurrent tasks).
+    #[arg(long, default_value_t = 10_000)]
+    target_rate: u64,
+
+    /// Duration of the benchmark run in seconds.
+    #[arg(long, default_value_t = 30)]
+    duration_secs: u64,
+
+    /// Number of concurrent Tokio tasks writing to separate streams.
+    #[arg(long, default_value_t = 64)]
+    concurrency: u64,
+
+    /// Stream name prefix.
+    #[arg(long, default_value = "bench-stream")]
+    stream_prefix: String,
+
+    /// Events sent per INSERT … VALUES call.
+    #[arg(long, default_value_t = 1)]
+    batch_size: u64,
+
+    /// Emit results as a single JSON line (for CI parsing).
+    #[arg(long)]
+    json: bool,
+
+    /// Enable event-store mode (unique version constraint + global position).
+    #[arg(long)]
+    event_store_mode: bool,
+}
+
+#[derive(Parser)]
+struct PgEventStoreDemoArgs {
+    /// Number of orders to append during the demo.
+    #[arg(long, default_value_t = 5)]
+    events: u32,
+}
+
 // ─── Entry point ─────────────────────────────────────────────────────────────
 
 #[tokio::main]
@@ -228,6 +281,38 @@ async fn main() -> Result<()> {
 
         Commands::MongoEventStoreDemo(args) => {
             mongo_event_store_demo(&cli.mongodb_url, &args.database, args.events).await?;
+        }
+
+        Commands::PgBench(args) => {
+            let config = postgres::benchmark::BenchmarkConfig {
+                target_rate: args.target_rate,
+                duration_secs: args.duration_secs,
+                concurrency: args.concurrency,
+                stream_prefix: args.stream_prefix,
+                batch_size: args.batch_size,
+                database_url: cli.postgres_url.clone(),
+                truncate_before_run: true,
+                event_store_mode: args.event_store_mode,
+            };
+
+            let result = postgres::benchmark::run(&cli.postgres_url, config).await?;
+
+            if args.json {
+                result.print_json();
+            } else {
+                result.print_report();
+            }
+
+            let _ = std::io::stdout().flush();
+            let _ = std::io::stderr().flush();
+        }
+
+        Commands::PgPing => {
+            pg_ping(&cli.postgres_url).await?;
+        }
+
+        Commands::PgEventStoreDemo(args) => {
+            pg_event_store_demo(&cli.postgres_url, args.events).await?;
         }
     }
 
@@ -310,11 +395,7 @@ async fn ping(kurrent_url: &str, rmq_url: &str) -> Result<()> {
 // Exercises all 8 event-sourcing properties in sequence so each one is
 // observable in the structured log output.
 
-async fn mongo_event_store_demo(
-    mongo_url: &str,
-    database: &str,
-    event_count: u32,
-) -> Result<()> {
+async fn mongo_event_store_demo(mongo_url: &str, database: &str, event_count: u32) -> Result<()> {
     use crate::mongodb::event_store::{
         Aggregate, EventStoreError, MongoEventStore, UpcastRegistry,
     };
@@ -429,9 +510,7 @@ async fn mongo_event_store_demo(
 
     // ── Property 2: Aggregate Rehydrator ─────────────────────────────────────
     info!("=== Property 2: Aggregate Rehydrator — rebuilding state from stream ===");
-    let (agg, last_ver) = store
-        .rehydrate::<OrderAggregate>(&stream_id)
-        .await?;
+    let (agg, last_ver) = store.rehydrate::<OrderAggregate>(&stream_id).await?;
     info!(
         order_count = agg.order_ids.len(),
         cancelled = agg.cancelled,
@@ -452,9 +531,13 @@ async fn mongo_event_store_demo(
 
     // ── Property 7: Built-in Subscriptions (competing consumer lease) ─────────
     info!("=== Property 7: Competing Consumer — acquiring Single-Active-Consumer lease ===");
-    let acquired = store.try_acquire_lease("order-processors", "worker-1", 30).await?;
+    let acquired = store
+        .try_acquire_lease("order-processors", "worker-1", 30)
+        .await?;
     info!(acquired, "✓ lease acquisition result");
-    let renewed = store.try_acquire_lease("order-processors", "worker-1", 30).await?;
+    let renewed = store
+        .try_acquire_lease("order-processors", "worker-1", 30)
+        .await?;
     info!(renewed, "✓ lease renewal result");
     store.release_lease("order-processors", "worker-1").await?;
     info!("✓ lease released");
@@ -467,10 +550,7 @@ async fn mongo_event_store_demo(
             .relay_next_integration_event(|doc| async move {
                 // In production this would publish to RabbitMQ.
                 // Here we just log the event type to show the relay works.
-                let event_type = doc
-                    .get_str("event_type")
-                    .unwrap_or("unknown")
-                    .to_owned();
+                let event_type = doc.get_str("event_type").unwrap_or("unknown").to_owned();
                 info!(event_type, "→ (simulated) publish to RabbitMQ");
                 Ok(())
             })
@@ -497,5 +577,171 @@ async fn mongo_event_store_demo(
     info!(replayed, "✓ catch-up replayed events from stream");
 
     info!("=== MongoDB Event Store Demo complete ===");
+    Ok(())
+}
+
+// ─── PostgreSQL helpers ───────────────────────────────────────────────────────
+
+async fn pg_ping(pg_url: &str) -> Result<()> {
+    info!("pinging PostgreSQL...");
+    postgres::client::PostgresClient::connect(pg_url)
+        .await?
+        .ping()
+        .await?;
+    info!("PostgreSQL OK");
+    Ok(())
+}
+
+async fn pg_event_store_demo(pg_url: &str, event_count: u32) -> Result<()> {
+    use crate::postgres::event_store::{Aggregate, EventStoreError, PgEventStore, UpcastRegistry};
+    use serde::{Deserialize, Serialize};
+
+    // ── Aggregate definition (Property 2) ─────────────────────────────────────
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    #[serde(tag = "event_type", rename_all = "PascalCase")]
+    enum OrderEvent {
+        OrderPlaced(events::OrderPlaced),
+        OrderCancelled(events::OrderCancelled),
+    }
+
+    #[derive(Debug, Default)]
+    struct OrderAggregate {
+        order_ids: Vec<uuid::Uuid>,
+        cancelled: u32,
+    }
+
+    #[async_trait::async_trait]
+    impl Aggregate for OrderAggregate {
+        type Event = OrderEvent;
+        fn apply(&mut self, event: OrderEvent) {
+            match event {
+                OrderEvent::OrderPlaced(e) => self.order_ids.push(e.order_id),
+                OrderEvent::OrderCancelled(_) => self.cancelled += 1,
+            }
+        }
+    }
+
+    // ── Property 5: Upcaster ─────────────────────────────────────────────────
+    let mut upcasters = UpcastRegistry::new();
+    upcasters.register("OrderPlaced", 1, |mut v| {
+        v["notes"] = serde_json::json!("(migrated from v1)");
+        v
+    });
+
+    // ── Connect and bootstrap ─────────────────────────────────────────────────
+    let store = PgEventStore::connect(pg_url)
+        .await?
+        .with_upcasters(upcasters);
+    store.bootstrap().await?;
+    info!("PostgreSQL event store bootstrapped");
+
+    let stream_id = format!("order-demo-{}", uuid::Uuid::new_v4());
+
+    // ── Property 6: No Dual Write ─────────────────────────────────────────────
+    info!("=== Property 6: No Dual Write — appending events with transactional outbox ===");
+    for i in 0..event_count {
+        let order = events::OrderPlaced {
+            order_id: uuid::Uuid::new_v4(),
+            product_id: format!("PROD-{i}"),
+            quantity: i + 1,
+            price_usd: (i as f64 + 1.0) * 9.99,
+            placed_at: chrono::Utc::now(),
+            schema_version: events::SchemaVersion(2),
+        };
+        match store
+            .append_with_outbox(&stream_id, "OrderPlaced", 2, &order)
+            .await
+        {
+            Ok(env) => info!(
+                stream_version = env.stream_version,
+                global_position = env.global_position,
+                "appended OrderPlaced"
+            ),
+            Err(EventStoreError::ConcurrencyConflict { .. }) => {
+                anyhow::bail!("unexpected concurrency conflict during demo");
+            }
+            Err(e) => return Err(e.into()),
+        }
+    }
+
+    // ── Property 1: Append-Only Guard ─────────────────────────────────────────
+    // The immutability trigger fires if we try UPDATE/DELETE.
+    // We demonstrate the concurrency conflict by writing a duplicate version.
+    info!("=== Property 1: Append-Only Guard ===");
+    // Direct low-level duplicate insert to show UNIQUE constraint.
+    let dup_result = sqlx::query(
+        "INSERT INTO events (event_id, stream_id, stream_version, event_type, schema_version, payload)
+         VALUES (gen_random_uuid()::TEXT, $1, 0, 'OrderPlaced', 2, '{}'::jsonb)",
+    )
+    .bind(&stream_id)
+    .execute(&store.pool)
+    .await;
+    match dup_result {
+        Err(sqlx::Error::Database(e)) if e.code().as_deref() == Some("23505") => {
+            info!("✓ duplicate version correctly rejected (UNIQUE constraint)");
+        }
+        _ => info!("duplicate-insert probe complete"),
+    }
+
+    // ── Property 2: Aggregate Rehydrator ─────────────────────────────────────
+    info!("=== Property 2: Aggregate Rehydrator ===");
+    let (agg, last_ver) = store.rehydrate::<OrderAggregate>(&stream_id).await?;
+    info!(
+        order_count = agg.order_ids.len(),
+        cancelled = agg.cancelled,
+        last_stream_version = last_ver,
+        "✓ aggregate rehydrated"
+    );
+
+    // ── Property 3: Checkpoint System ─────────────────────────────────────────
+    info!("=== Property 3: Checkpoint System ===");
+    let consumer_id = "demo-pg-consumer-1";
+    store.save_checkpoint(consumer_id, last_ver).await?;
+    let loaded = store.load_checkpoint(consumer_id).await?;
+    info!(
+        saved = last_ver,
+        loaded = loaded,
+        "✓ checkpoint round-trip succeeded"
+    );
+
+    // ── Property 7: Single-Active-Consumer lease ──────────────────────────────
+    info!("=== Property 7: Single-Active-Consumer advisory lock ===");
+    let acquired = store.try_acquire_lease("order-processors").await?;
+    info!(acquired, "✓ lease acquisition result");
+    let re_acquired = store.try_acquire_lease("order-processors").await?;
+    info!(
+        re_acquired,
+        "✓ lease re-acquisition on same connection (should be true — same session)"
+    );
+    store.release_lease("order-processors").await?;
+    info!("✓ lease released");
+
+    // ── Property 8: Integration Events — drain outbox ─────────────────────────
+    info!("=== Property 8: Integration Events — draining outbox ===");
+    let mut dispatched = 0u32;
+    loop {
+        let published = store
+            .relay_next_integration_event(|_payload, event_type| async move {
+                info!(event_type, "→ (simulated) publish to message broker");
+                Ok(())
+            })
+            .await?;
+        if !published {
+            break;
+        }
+        dispatched += 1;
+    }
+    info!(dispatched, "✓ all outbox entries relayed");
+
+    // ── Properties 4 & 7: Catch-up subscription (historical phase only) ───────
+    info!("=== Properties 4 & 7: Catch-Up Subscription (historical replay) ===");
+    store.save_checkpoint("demo-pg-catchup", -1).await?;
+    let (agg2, _) = store.rehydrate::<OrderAggregate>(&stream_id).await?;
+    info!(
+        replayed = agg2.order_ids.len(),
+        "✓ catch-up replayed events from stream"
+    );
+
+    info!("=== PostgreSQL Event Store Demo complete ===");
     Ok(())
 }

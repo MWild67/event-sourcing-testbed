@@ -396,3 +396,166 @@ jobs:
       - name: Stop port-forward
         if: always()
         run: kill "$PF_PID" 2>/dev/null || true
+
+  # ── Job 6: PostgreSQL — standalone Docker ─────────────────────────────────
+  bench-postgres:
+    name: "Bench: PostgreSQL (Docker)"
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo registry + build artefacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            rust-app/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('rust-app/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Build release binary
+        run: cargo build --release --manifest-path rust-app/Cargo.toml
+
+      - name: Start PostgreSQL container
+        run: |
+          docker run -d --name pg \
+            -e POSTGRES_DB=eventbench \
+            -e POSTGRES_USER=postgres \
+            -e POSTGRES_PASSWORD=postgres \
+            -p 5432:5432 \
+            --tmpfs /var/lib/postgresql/data \
+            postgres:16 \
+            -c synchronous_commit=on
+
+      - name: Wait for PostgreSQL to be ready
+        run: |
+          for i in $(seq 1 30); do
+            docker exec pg pg_isready -U postgres -d eventbench && break
+            echo "Attempt $i/30: waiting for PostgreSQL..."
+            sleep 2
+          done
+          docker exec pg pg_isready -U postgres -d eventbench
+
+      - name: Run PostgreSQL benchmark (event-store mode)
+        run: |
+          rust-app/target/release/testbed \
+            --postgres-url "postgres://postgres:postgres@localhost:5432/eventbench" \
+            pg-bench \
+            --target-rate 10000 \
+            --concurrency 64 \
+            --batch-size 1 \
+            --duration-secs 30 \
+            --event-store-mode
+
+      - name: Run PostgreSQL event-store demo (all 8 properties)
+        run: |
+          rust-app/target/release/testbed \
+            --postgres-url "postgres://postgres:postgres@localhost:5432/eventbench" \
+            pg-event-store-demo \
+            --events 5
+
+      - name: Stop PostgreSQL container
+        if: always()
+        run: docker stop pg && docker rm pg || true
+
+  # ── Job 7: PostgreSQL — Kubernetes (k3d) ──────────────────────────────────
+  bench-postgres-k8s:
+    name: "Bench: PostgreSQL (Kubernetes k3d)"
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo registry + build artefacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            rust-app/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('rust-app/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Build release binary
+        run: cargo build --release --manifest-path rust-app/Cargo.toml
+
+      - name: Install k3d + kubectl
+        run: |
+          curl -s https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | bash
+          curl -LO "https://dl.k8s.io/release/$(curl -sSL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+          chmod +x kubectl && sudo mv kubectl /usr/local/bin/
+
+      - name: Create k3d cluster
+        run: |
+          k3d cluster create bench \
+            --servers 1 \
+            --agents 1 \
+            --no-lb \
+            --wait
+
+      - name: Pre-pull postgres:16 image into k3d
+        run: |
+          docker pull postgres:16
+          k3d image import postgres:16 -c bench
+
+      - name: Deploy PostgreSQL into Kubernetes
+        run: |
+          kubectl apply -f k8s/00-namespace.yaml
+          kubectl apply -f k8s/01-storageclass.yaml
+          kubectl apply -f k8s/06-postgres/
+
+      - name: Wait for PostgreSQL StatefulSet rollout
+        run: kubectl rollout status statefulset/postgres -n event-store --timeout=300s
+
+      - name: Wait for PostgreSQL to accept connections
+        run: |
+          for i in $(seq 1 40); do
+            kubectl exec -n event-store postgres-0 -- \
+              pg_isready -U postgres -d eventbench 2>/dev/null && break
+            echo "Attempt $i/40: waiting for pg_isready..."
+            sleep 5
+          done
+          kubectl exec -n event-store postgres-0 -- \
+            pg_isready -U postgres -d eventbench
+
+      - name: Port-forward PostgreSQL
+        run: |
+          kubectl port-forward -n event-store pod/postgres-0 5432:5432 &
+          echo "PF_PID=$!" >> "$GITHUB_ENV"
+          sleep 3
+
+      - name: Run PostgreSQL benchmark (Kubernetes, event-store mode)
+        run: |
+          rust-app/target/release/testbed \
+            --postgres-url "postgres://postgres:postgres@localhost:5432/eventbench" \
+            pg-bench \
+            --target-rate 10000 \
+            --concurrency 64 \
+            --batch-size 1 \
+            --duration-secs 30 \
+            --event-store-mode
+
+      - name: Run PostgreSQL event-store demo (all 8 properties)
+        run: |
+          rust-app/target/release/testbed \
+            --postgres-url "postgres://postgres:postgres@localhost:5432/eventbench" \
+            pg-event-store-demo \
+            --events 5
+
+      - name: Stop port-forward
+        if: always()
+        run: kill "$PF_PID" 2>/dev/null || true
+
+      - name: Cluster diagnostics (on failure)
+        if: failure()
+        run: |
+          kubectl cluster-info 2>/dev/null || { echo "No k8s cluster reachable"; exit 0; }
+          kubectl get pods -n event-store || true
+          kubectl describe statefulset/postgres -n event-store || true
+          kubectl logs statefulset/postgres -n event-store --tail=50 || true
