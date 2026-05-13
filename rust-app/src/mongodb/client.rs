@@ -39,6 +39,7 @@ impl MongoClient {
     }
 
     /// Insert a single JSON-serialisable event into `collection_name`.
+    #[allow(dead_code)]
     pub async fn append<T: Serialize>(
         &self,
         collection_name: &str,

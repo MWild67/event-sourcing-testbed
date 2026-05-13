@@ -18,11 +18,12 @@ impl Default for SchemaVersion {
 /// Result after the upcaster chain runs.  The variant tells the consumer what
 /// happened so integration-event publishing decisions can be made cleanly.
 #[derive(Debug)]
+#[allow(dead_code)]
 pub enum UpcastResult<T> {
     /// Payload was already at the current version — no transform needed.
     Current(T),
     /// Payload was migrated from an older schema version to `T`.
-    Migrated { from: SchemaVersion, event: T },
+    Migrated { _from: SchemaVersion, event: T },
     /// The raw BSON/JSON could not be deserialised even after all upcasters ran.
     Unrecognised(serde_json::Value),
 }
@@ -54,6 +55,7 @@ pub struct OrderCancelled {
 /// Discriminated union of all domain events this app can process.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "event_type", rename_all = "PascalCase")]
+#[allow(dead_code)]
 pub enum DomainEvent {
     OrderPlaced(OrderPlaced),
     OrderCancelled(OrderCancelled),

@@ -156,7 +156,7 @@ impl UpcastRegistry {
             }
         }
         UpcastResult::Migrated {
-            from: original,
+            _from: original,
             event: v,
         }
     }
@@ -652,6 +652,7 @@ impl MongoEventStore {
     /// `save_checkpoint` after each successful batch.
     ///
     /// `handler` receives each envelope; returning `Err` stops the subscription.
+    #[allow(dead_code)]
     pub async fn catch_up_subscribe<F, Fut>(&self, consumer_id: &str, mut handler: F) -> Result<()>
     where
         F: FnMut(EventEnvelope) -> Fut + Send,
@@ -830,7 +831,8 @@ impl MongoEventStore {
     /// Calls `relay_next_integration_event` in a tight loop (with a short
     /// back-off when the outbox is empty) so integration events are published
     /// with minimal latency.
-    pub async fn run_relay_loop<F, Fut>(
+    #[allow(dead_code)]
+    pub async fn run_relay_loop<F>(
         &self,
         mut make_publish: impl FnMut(Document) -> F,
         mut shutdown: impl std::future::Future<Output = ()> + Unpin,
@@ -846,7 +848,7 @@ impl MongoEventStore {
                     info!("integration event relay loop shutting down");
                     return Ok(());
                 }
-                result = self.relay_next_integration_event(|doc| make_publish(doc)) => {
+                result = self.relay_next_integration_event(&mut make_publish) => {
                     match result {
                         Ok(true) => {} // more may be pending, loop immediately
                         Ok(false) => {
