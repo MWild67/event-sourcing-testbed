@@ -7,7 +7,9 @@ use anyhow::{Context, Result};
 use futures::future::try_join_all;
 use mongodb::{
     bson::{doc, to_document, Document},
-    options::{ClientOptions, IndexOptions, ReturnDocument, ValidationAction, WriteConcern},
+    options::{
+        Acknowledgment, ClientOptions, IndexOptions, ReturnDocument, ValidationAction, WriteConcern,
+    },
     Client, Database, IndexModel,
 };
 use serde::Serialize;
@@ -29,20 +31,6 @@ impl MongoClient {
         let opts = ClientOptions::parse(url)
             .await
             .with_context(|| format!("invalid MongoDB URL: {url}"))?;
-        let client = Client::with_options(opts).context("failed to create MongoDB client")?;
-        let db = client.database(db_name);
-        Ok(Self { db })
-    }
-
-    /// Connect with journaled write concern (`j:true`) — every acknowledged
-    /// write has been flushed to the on-disk journal before MongoDB replies.
-    /// This mirrors KurrentDB's durable-append guarantee, making latency
-    /// numbers directly comparable between the two backends.
-    pub async fn connect_event_store(url: &str, db_name: &str) -> Result<Self> {
-        let mut opts = ClientOptions::parse(url)
-            .await
-            .with_context(|| format!("invalid MongoDB URL: {url}"))?;
-        opts.write_concern = Some(WriteConcern::builder().journal(true).build());
         let client = Client::with_options(opts).context("failed to create MongoDB client")?;
         let db = client.database(db_name);
         Ok(Self { db })
@@ -265,7 +253,17 @@ impl MongoClient {
             })
             .collect();
 
+        // Apply journaled write concern on the event insert only — the fsync
+        // cost here is what makes this comparable to KurrentDB's durable append.
+        // Applying j:true at the ClientOptions level would interfere with server
+        // selection and cause connection timeouts on some MongoDB configurations.
+        let journal_wc = WriteConcern::builder()
+            .w(Acknowledgment::Nodes(1))
+            .journal(true)
+            .build();
+
         coll.insert_many(docs?)
+            .write_concern(journal_wc)
             .await
             .with_context(|| format!("versioned batch insert to '{collection_name}' failed"))?;
 

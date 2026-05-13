@@ -143,13 +143,9 @@ pub async fn run(mongo_url: &str, config: BenchmarkConfig) -> Result<BenchmarkRe
 
     // Validate connectivity — retry for up to 30 s so a freshly-started
     // MongoDB instance has time to become ready before writes begin.
-    // In event-store mode use a journaled client so the probe connection already
-    // carries the correct write concern.
-    let probe = if config.event_store_mode {
-        MongoClient::connect_event_store(mongo_url, &config.database).await?
-    } else {
-        MongoClient::connect(mongo_url, &config.database).await?
-    };
+    // Write concern is applied per-operation (not at the client level) to avoid
+    // interfering with server selection during the connection handshake.
+    let probe = MongoClient::connect(mongo_url, &config.database).await?;
     let mut ready = false;
     for attempt in 1..=30 {
         match probe.ping().await {
