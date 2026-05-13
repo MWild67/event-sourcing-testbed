@@ -2,6 +2,31 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+// ─── Upcast support ───────────────────────────────────────────────────────────
+
+/// Version tag embedded in every persisted envelope.
+/// Increment this when a breaking schema change is made to a domain event.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SchemaVersion(pub u32);
+
+impl Default for SchemaVersion {
+    fn default() -> Self {
+        SchemaVersion(1)
+    }
+}
+
+/// Result after the upcaster chain runs.  The variant tells the consumer what
+/// happened so integration-event publishing decisions can be made cleanly.
+#[derive(Debug)]
+pub enum UpcastResult<T> {
+    /// Payload was already at the current version — no transform needed.
+    Current(T),
+    /// Payload was migrated from an older schema version to `T`.
+    Migrated { from: SchemaVersion, event: T },
+    /// The raw BSON/JSON could not be deserialised even after all upcasters ran.
+    Unrecognised(serde_json::Value),
+}
+
 // ─── Domain events ────────────────────────────────────────────────────────────
 
 /// An order was placed in the system.
@@ -12,6 +37,26 @@ pub struct OrderPlaced {
     pub quantity: u32,
     pub price_usd: f64,
     pub placed_at: DateTime<Utc>,
+    #[serde(default)]
+    pub schema_version: SchemaVersion,
+}
+
+/// An order was cancelled.  Added in schema v2 — demonstrates upcasting.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OrderCancelled {
+    pub order_id: Uuid,
+    pub reason: String,
+    pub cancelled_at: DateTime<Utc>,
+    #[serde(default)]
+    pub schema_version: SchemaVersion,
+}
+
+/// Discriminated union of all domain events this app can process.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "event_type", rename_all = "PascalCase")]
+pub enum DomainEvent {
+    OrderPlaced(OrderPlaced),
+    OrderCancelled(OrderCancelled),
 }
 
 // ─── Benchmark payload ───────────────────────────────────────────────────────

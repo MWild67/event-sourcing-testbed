@@ -1104,6 +1104,7 @@ name = "event-sourcing-testbed"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "axum 0.7.9",
  "chrono",
  "clap",
@@ -1115,7 +1116,9 @@ dependencies = [
  "prometheus",
  "serde",
  "serde_json",
+ "thiserror 1.0.69",
  "tokio",
+ "tokio-stream",
  "tracing",
  "tracing-subscriber",
  "uuid",
@@ -3639,6 +3642,7 @@ dependencies = [
  "futures-core",
  "pin-project-lite",
  "tokio",
+ "tokio-util",
 ]
 
 [[package]]

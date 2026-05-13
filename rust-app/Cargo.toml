@@ -42,9 +42,14 @@ clap = { version = "4", features = ["derive", "env"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 
-# ── Error handling ────────────────────────────────────────────────────────
 anyhow = "1"
+thiserror = "1"
 
+# ── Async trait support ───────────────────────────────────────────────────────
+async-trait = "0.1"
+
+# ── Async stream utilities ────────────────────────────────────────────────────
+tokio-stream = { version = "0.1", features = ["sync"] }
 # ── Prometheus metrics endpoint (exposed on :9090/metrics) ────────────────
 prometheus = { version = "0.13", features = ["process"] }
 axum = "0.7"
