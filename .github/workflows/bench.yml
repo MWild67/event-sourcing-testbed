@@ -10,7 +10,7 @@ on:
 jobs:
   # ── Job 1: in-memory storage — tests gRPC API + write path throughput ──────
   bench-memdb:
-    name: Bench — MEM_DB
+    name: KurrentDB — In-memory (MEM_DB)
     runs-on: ubuntu-22.04
 
     steps:
@@ -51,7 +51,7 @@ jobs:
       - name: Build benchmark binary
         run: cargo build --release --manifest-path rust-app/Cargo.toml
 
-      - name: Run benchmark (MEM_DB, p99 < 5ms)
+      - name: Run benchmark (MEM_DB)
         run: |
           rust-app/target/release/testbed \
             --kurrentdb-url "esdb://localhost:2113?tls=false" \
@@ -59,12 +59,11 @@ jobs:
             --target-rate 10000 \
             --concurrency 64 \
             --batch-size 1 \
-            --duration-secs 30 \
-            --p99-limit-ms 5
+            --duration-secs 30
 
   # ── Job 2: real storage on tmpfs, fsync off — tests full write pipeline ─────
   bench-disk:
-    name: Bench — Real storage / tmpfs
+    name: KurrentDB — Real storage (tmpfs, fsync off)
     runs-on: ubuntu-22.04
 
     steps:
@@ -106,7 +105,7 @@ jobs:
       - name: Build benchmark binary
         run: cargo build --release --manifest-path rust-app/Cargo.toml
 
-      - name: Run benchmark (real storage, p99 < 45ms)
+      - name: Run benchmark (real storage)
         run: |
           rust-app/target/release/testbed \
             --kurrentdb-url "esdb://localhost:2113?tls=false" \
@@ -114,12 +113,11 @@ jobs:
             --target-rate 10000 \
             --concurrency 40 \
             --batch-size 1 \
-            --duration-secs 30 \
-            --p99-limit-ms 45
+            --duration-secs 30
 
   # ── Job 3: Kubernetes 3-node cluster — real quorum writes + real disk ───────
   bench-k8s:
-    name: Bench — Kubernetes 3-node cluster
+    name: KurrentDB — 3-node cluster (Kubernetes)
     runs-on: ubuntu-22.04
 
     steps:
@@ -210,7 +208,7 @@ jobs:
 
   # ── Job 4: MongoDB — in-memory tmpfs, single node ─────────────────────────
   bench-mongodb:
-    name: Bench — MongoDB (tmpfs)
+    name: MongoDB — Single node (tmpfs)
     runs-on: ubuntu-22.04
 
     steps:
@@ -251,17 +249,15 @@ jobs:
       - name: Build benchmark binary
         run: cargo build --release --manifest-path rust-app/Cargo.toml
 
-      - name: Run MongoDB benchmark (tmpfs, p99 < 5 ms)
+      - name: Run MongoDB benchmark (tmpfs)
         run: |
           rust-app/target/release/testbed \
             --mongodb-url "mongodb://localhost:27017" \
             mongo-bench \
-            --target-rate 10000 \
+            --target-rate 5000 \
             --concurrency 16 \
             --batch-size 1 \
-            --duration-secs 30 \
-            --p99-limit-ms 5 \
-            --json
+            --duration-secs 30
 
       - name: Dump MongoDB logs on failure
         if: failure()

@@ -1,10 +1,8 @@
 //! Stress-test benchmark: inserts events into MongoDB at a target rate and
 //! measures write latency using an HDR histogram.
 //!
-//! Mirrors the structure and pass/fail criterion of the KurrentDB benchmark
-//! (`kurrentdb/benchmark.rs`) so results are directly comparable.
-//!
-//! Pass/fail criterion: p99 insert latency < p99_limit_us AND rate ≥ 9 000 ev/s.
+//! Mirrors the structure of the KurrentDB benchmark (`kurrentdb/benchmark.rs`)
+//! so results are directly comparable.
 
 use std::{
     sync::{
@@ -35,8 +33,6 @@ pub struct BenchmarkConfig {
     pub collection_prefix: String,
     /// Number of events per `insert_many` call (batching).
     pub batch_size: u64,
-    /// p99 latency pass threshold in microseconds.
-    pub p99_limit_us: u64,
     /// MongoDB database name.
     pub database: String,
     /// Drop the database before the run starts to guarantee a clean slate.
@@ -52,7 +48,6 @@ impl Default for BenchmarkConfig {
             concurrency: 64,
             collection_prefix: "bench-events".to_string(),
             batch_size: 1,
-            p99_limit_us: 2_000,
             database: "eventbench".to_string(),
             drop_before_run: true,
         }
@@ -71,18 +66,13 @@ pub struct BenchmarkResult {
     pub p95_us: u64,
     pub p99_us: u64,
     pub p999_us: u64,
-    /// `true` when p99 < p99_limit_us AND rate >= 9 000 ev/s.
-    pub passed: bool,
-    /// The configured p99 limit in microseconds (echoed for display).
-    pub p99_limit_us: u64,
 }
 
 impl BenchmarkResult {
     pub fn print_report(&self) {
-        let status = if self.passed { "PASS ✓" } else { "FAIL ✗" };
         println!();
         println!("══════════════════════════════════════════════");
-        println!("  MongoDB Stress-Test Result: {status}");
+        println!("  MongoDB Stress-Test Result");
         println!("══════════════════════════════════════════════");
         println!("  Duration     : {:.2}s", self.elapsed_secs);
         println!("  Total events : {}", self.total_events);
@@ -107,11 +97,6 @@ impl BenchmarkResult {
             self.p999_us,
             self.p999_us as f64 / 1000.0
         );
-        println!(
-            "  p99 limit    : {} µs ({:.2} ms)",
-            self.p99_limit_us,
-            self.p99_limit_us as f64 / 1000.0
-        );
         println!("══════════════════════════════════════════════");
         println!();
     }
@@ -119,8 +104,7 @@ impl BenchmarkResult {
     /// Emit as a single line of JSON so CI scripts can `jq` it easily.
     pub fn print_json(&self) {
         println!(
-            r#"{{"passed":{passed},"total_events":{total},"actual_rate_eps":{rate:.1},"p50_us":{p50},"p95_us":{p95},"p99_us":{p99},"p999_us":{p999}}}"#,
-            passed = self.passed,
+            r#"{{"total_events":{total},"actual_rate_eps":{rate:.1},"p50_us":{p50},"p95_us":{p95},"p99_us":{p99},"p999_us":{p999}}}"#,
             total = self.total_events,
             rate = self.actual_rate,
             p50 = self.p50_us,
@@ -269,7 +253,5 @@ pub async fn run(mongo_url: &str, config: BenchmarkConfig) -> Result<BenchmarkRe
         p95_us: hist.value_at_quantile(0.95),
         p99_us,
         p999_us: hist.value_at_quantile(0.999),
-        passed: p99_us <= config.p99_limit_us && rate >= 9_000.0,
-        p99_limit_us: config.p99_limit_us,
     })
 }

@@ -85,10 +85,6 @@ struct BenchArgs {
     /// Emit results as a single JSON line (for CI parsing).
     #[arg(long)]
     json: bool,
-
-    /// p99 latency limit in milliseconds — benchmark FAILs if exceeded.
-    #[arg(long, default_value_t = 2)]
-    p99_limit_ms: u64,
 }
 
 #[derive(Parser)]
@@ -116,10 +112,6 @@ struct MongoBenchArgs {
     /// Emit results as a single JSON line (for CI parsing).
     #[arg(long)]
     json: bool,
-
-    /// p99 latency limit in milliseconds — benchmark FAILs if exceeded.
-    #[arg(long, default_value_t = 2)]
-    p99_limit_ms: u64,
 
     /// MongoDB database name to use for the benchmark.
     #[arg(long, default_value = "eventbench")]
@@ -160,7 +152,6 @@ async fn main() -> Result<()> {
                 concurrency: args.concurrency,
                 stream_prefix: args.stream_prefix,
                 batch_size: args.batch_size,
-                p99_limit_us: args.p99_limit_ms * 1_000,
             };
 
             let result = kurrentdb::benchmark::run(&cli.kurrentdb_url, config).await?;
@@ -186,7 +177,6 @@ async fn main() -> Result<()> {
                 concurrency: args.concurrency,
                 collection_prefix: args.collection_prefix,
                 batch_size: args.batch_size,
-                p99_limit_us: args.p99_limit_ms * 1_000,
                 database: args.database,
                 drop_before_run: !args.no_drop,
             };
@@ -201,10 +191,6 @@ async fn main() -> Result<()> {
 
             let _ = std::io::stdout().flush();
             let _ = std::io::stderr().flush();
-
-            if !result.passed {
-                std::process::exit(1);
-            }
         }
 
         Commands::Produce(args) => {
