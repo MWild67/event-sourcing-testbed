@@ -269,3 +269,120 @@ jobs:
       - name: Dump MongoDB logs on failure
         if: failure()
         run: docker logs mongodb --tail 50 || true
+
+  # ── Job 5: MongoDB — single-node replica set on Kubernetes (k3d) ──────────
+  #
+  # Mirrors bench-k8s but targets the MongoDB event-store scenario.
+  # Runs both the write-latency benchmark (event-store mode) and the
+  # mongo-event-store-demo command so all 8 event-sourcing properties are
+  # exercised against a real k8s-hosted MongoDB with WiredTiger on-disk
+  # journaling.
+  bench-mongodb-k8s:
+    name: MongoDB — Kubernetes single-node replica set
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install k3d
+        run: curl -s https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | bash
+
+      - name: Create k3d cluster (1 server + 1 agent)
+        run: |
+          k3d cluster create testbed \
+            --agents 1 \
+            --wait \
+            --timeout 120s
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            rust-app/target
+          key: event-sourcing-testbed-${{ runner.os }}-cargo-${{ hashFiles('rust-app/Cargo.lock') }}
+
+      - name: Build benchmark binary
+        run: cargo build --release --manifest-path rust-app/Cargo.toml
+
+      - name: Pre-pull MongoDB image into k3d
+        run: |
+          docker pull mongo:7
+          k3d image import mongo:7 -c testbed
+
+      - name: Deploy Kubernetes manifests
+        run: |
+          kubectl apply -f k8s/00-namespace.yaml
+          kubectl apply -f k8s/01-storageclass.yaml
+          kubectl apply -f k8s/05-mongodb/
+
+      - name: Wait for MongoDB to be ready
+        run: |
+          kubectl rollout status statefulset/mongodb \
+            -n event-store \
+            --timeout=300s
+          # Extra gate: wait until the RS primary is stable and the Rust driver
+          # can discover it via the replicaSet URI parameter.  rollout status
+          # only waits for the readiness probe to pass once; primary election
+          # may still be settling when the next step opens a connection.
+          echo "Waiting for RS primary to stabilise..."
+          for i in $(seq 1 24); do
+            kubectl exec -n event-store mongodb-0 -- \
+              mongosh --quiet mongodb://127.0.0.1:27017/admin \
+              --eval "if (rs.isMaster().ismaster !== true) { throw 'no primary'; }" \
+              2>/dev/null && echo "RS primary is ready" && break
+            echo "  attempt $i/24 — waiting 5 s..."
+            sleep 5
+          done
+
+      - name: Dump pod diagnostics on failure
+        if: failure()
+        run: |
+          echo "=== Pod status ==="
+          kubectl get pods -n event-store -o wide
+          echo "=== PVC status ==="
+          kubectl get pvc -n event-store
+          echo "=== Events ==="
+          kubectl get events -n event-store --sort-by='.lastTimestamp' | tail -40
+          echo "=== Pod descriptions ==="
+          kubectl describe pods -n event-store
+          echo "=== Logs (last 50 lines per pod) ==="
+          for pod in $(kubectl get pods -n event-store -o name); do
+            echo "--- $pod ---"
+            kubectl logs "$pod" -n event-store --tail=50 2>&1 || true
+          done
+
+      - name: Port-forward MongoDB
+        run: |
+          kubectl port-forward -n event-store pod/mongodb-0 27017:27017 &
+          echo "PF_PID=$!" >> "$GITHUB_ENV"
+          # Give the tunnel a moment to establish before writes begin.
+          sleep 3
+
+      - name: Run MongoDB benchmark (Kubernetes, event-store mode)
+        run: |
+          rust-app/target/release/testbed \
+            --mongodb-url "mongodb://localhost:27017" \
+            mongo-bench \
+            --target-rate 10000 \
+            --concurrency 64 \
+            --batch-size 1 \
+            --duration-secs 30 \
+            --event-store-mode
+
+      - name: Run MongoDB event-store demo (all 8 properties)
+        run: |
+          rust-app/target/release/testbed \
+            --mongodb-url "mongodb://localhost:27017/?replicaSet=rs0" \
+            mongo-event-store-demo \
+            --database eventstoredemo \
+            --events 5
+
+      - name: Stop port-forward
+        if: always()
+        run: kill "$PF_PID" 2>/dev/null || true
