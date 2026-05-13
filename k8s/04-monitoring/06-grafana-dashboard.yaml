@@ -211,7 +211,7 @@ data:
           },
           "targets": [
             {
-              "expr": "sum(eventstore_connection_active_client_connections)",
+              "expr": "sum(kurrentdb_connection_active_client_connections) or sum(eventstore_connection_active_client_connections)",
               "legendFormat": "connections",
               "refId": "A"
             }
@@ -240,7 +240,7 @@ data:
           },
           "targets": [
             {
-              "expr": "sum(eventstore_queue_length)",
+              "expr": "sum(kurrentdb_queue_length) or sum(eventstore_queue_length)",
               "legendFormat": "queued items",
               "refId": "A"
             }
@@ -269,7 +269,7 @@ data:
           },
           "targets": [
             {
-              "expr": "count(up{job=\"eventstore\"} == 1)",
+              "expr": "count(up{job=\"kurrentdb\"} == 1)",
               "legendFormat": "alive",
               "refId": "A"
             }
@@ -301,7 +301,7 @@ data:
           },
           "targets": [
             {
-              "expr": "max(eventstore_is_leader) or vector(0)",
+              "expr": "max(kurrentdb_is_leader) or max(eventstore_is_leader) or vector(0)",
               "legendFormat": "leader",
               "refId": "A"
             }
@@ -326,7 +326,7 @@ data:
           },
           "targets": [
             {
-              "expr": "sum by (pod) (rate(eventstore_disk_io_write_bytes[2m]))",
+              "expr": "sum by (pod) (rate(kurrentdb_disk_io_write_bytes[2m])) or sum by (pod) (rate(eventstore_disk_io_write_bytes[2m]))",
               "legendFormat": "{{pod}}",
               "refId": "A"
             }
@@ -352,7 +352,7 @@ data:
           },
           "targets": [
             {
-              "expr": "sum by (pod) (rate(eventstore_writer_flush_size_count[2m]))",
+              "expr": "sum by (pod) (rate(kurrentdb_writer_flush_size_count[2m])) or sum by (pod) (rate(eventstore_writer_flush_size_count[2m]))",
               "legendFormat": "{{pod}} flushes/s",
               "refId": "A"
             }

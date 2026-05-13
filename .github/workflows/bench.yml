@@ -19,21 +19,21 @@ jobs:
 
       - name: Install KurrentDB natively
         run: |
-          curl -s https://packagecloud.io/install/repositories/EventStore/EventStore-OSS/script.deb.sh | sudo bash
-          sudo apt-get install -y eventstore-oss=23.10.8
-          sudo systemctl stop eventstore || true
+          curl -1sLf 'https://dl.cloudsmith.io/public/eventstore/kurrent-latest/setup.deb.sh' | sudo -E bash
+          sudo apt-get install -y kurrentdb
+          sudo systemctl stop kurrentdb || true
           sudo mkdir -p /tmp/esdb /tmp/esdb-log
-          sudo chown eventstore:eventstore /tmp/esdb /tmp/esdb-log
-          sudo mkdir -p /etc/systemd/system/eventstore.service.d
-          printf '[Service]\nEnvironment="EVENTSTORE_DB=/tmp/esdb"\nEnvironment="EVENTSTORE_LOG=/tmp/esdb-log"\nEnvironment="EVENTSTORE_INSECURE=true"\nEnvironment="EVENTSTORE_RUN_PROJECTIONS=None"\nEnvironment="EVENTSTORE_UNSAFE_DISABLE_FLUSH_TO_DISK=true"\nEnvironment="EVENTSTORE_CLUSTER_SIZE=1"\nEnvironment="EVENTSTORE_MEM_DB=true"\n' \
-            | sudo tee /etc/systemd/system/eventstore.service.d/bench.conf
+          sudo chown kurrentdb:kurrentdb /tmp/esdb /tmp/esdb-log
+          sudo mkdir -p /etc/systemd/system/kurrentdb.service.d
+          printf '[Service]\nEnvironment="KURRENTDB_DB=/tmp/esdb"\nEnvironment="KURRENTDB_LOG=/tmp/esdb-log"\nEnvironment="KURRENTDB_INSECURE=true"\nEnvironment="KURRENTDB_RUN_PROJECTIONS=None"\nEnvironment="KURRENTDB_UNSAFE_DISABLE_FLUSH_TO_DISK=true"\nEnvironment="KURRENTDB_CLUSTER_SIZE=1"\nEnvironment="KURRENTDB_MEM_DB=true"\n' \
+            | sudo tee /etc/systemd/system/kurrentdb.service.d/bench.conf
           sudo systemctl daemon-reload
-          sudo systemctl start eventstore
+          sudo systemctl start kurrentdb
           echo "Waiting for KurrentDB to be ready..."
           for i in $(seq 1 30); do
             curl -sf http://localhost:2113/health/live && break || sleep 2
           done
-          ES_PID=$(systemctl show -p MainPID eventstore | cut -d= -f2)
+          ES_PID=$(systemctl show -p MainPID kurrentdb | cut -d= -f2)
           sudo renice -n -15 -p "$ES_PID"
 
       - name: Install Rust toolchain
@@ -54,7 +54,7 @@ jobs:
       - name: Run benchmark (MEM_DB)
         run: |
           rust-app/target/release/testbed \
-            --kurrentdb-url "esdb://localhost:2113?tls=false" \
+            --kurrentdb-url "kurrentdb://localhost:2113?tls=false" \
             bench \
             --target-rate 10000 \
             --concurrency 64 \
@@ -72,22 +72,22 @@ jobs:
 
       - name: Install KurrentDB natively
         run: |
-          curl -s https://packagecloud.io/install/repositories/EventStore/EventStore-OSS/script.deb.sh | sudo bash
-          sudo apt-get install -y eventstore-oss=23.10.8
-          sudo systemctl stop eventstore || true
+          curl -1sLf 'https://dl.cloudsmith.io/public/eventstore/kurrent-latest/setup.deb.sh' | sudo -E bash
+          sudo apt-get install -y kurrentdb
+          sudo systemctl stop kurrentdb || true
           sudo mkdir -p /tmp/esdb /tmp/esdb-log
           sudo mount -t tmpfs -o size=512m tmpfs /tmp/esdb
-          sudo chown eventstore:eventstore /tmp/esdb /tmp/esdb-log
-          sudo mkdir -p /etc/systemd/system/eventstore.service.d
-          printf '[Service]\nEnvironment="EVENTSTORE_DB=/tmp/esdb"\nEnvironment="EVENTSTORE_LOG=/tmp/esdb-log"\nEnvironment="EVENTSTORE_INSECURE=true"\nEnvironment="EVENTSTORE_RUN_PROJECTIONS=None"\nEnvironment="EVENTSTORE_UNSAFE_DISABLE_FLUSH_TO_DISK=true"\nEnvironment="EVENTSTORE_CLUSTER_SIZE=1"\n' \
-            | sudo tee /etc/systemd/system/eventstore.service.d/bench.conf
+          sudo chown kurrentdb:kurrentdb /tmp/esdb /tmp/esdb-log
+          sudo mkdir -p /etc/systemd/system/kurrentdb.service.d
+          printf '[Service]\nEnvironment="KURRENTDB_DB=/tmp/esdb"\nEnvironment="KURRENTDB_LOG=/tmp/esdb-log"\nEnvironment="KURRENTDB_INSECURE=true"\nEnvironment="KURRENTDB_RUN_PROJECTIONS=None"\nEnvironment="KURRENTDB_UNSAFE_DISABLE_FLUSH_TO_DISK=true"\nEnvironment="KURRENTDB_CLUSTER_SIZE=1"\n' \
+            | sudo tee /etc/systemd/system/kurrentdb.service.d/bench.conf
           sudo systemctl daemon-reload
-          sudo systemctl start eventstore
+          sudo systemctl start kurrentdb
           echo "Waiting for KurrentDB to be ready..."
           for i in $(seq 1 30); do
             curl -sf http://localhost:2113/health/live && break || sleep 2
           done
-          ES_PID=$(systemctl show -p MainPID eventstore | cut -d= -f2)
+          ES_PID=$(systemctl show -p MainPID kurrentdb | cut -d= -f2)
           sudo renice -n -15 -p "$ES_PID"
 
       - name: Install Rust toolchain
@@ -108,7 +108,7 @@ jobs:
       - name: Run benchmark (real storage)
         run: |
           rust-app/target/release/testbed \
-            --kurrentdb-url "esdb://localhost:2113?tls=false" \
+            --kurrentdb-url "kurrentdb://localhost:2113?tls=false" \
             bench \
             --target-rate 10000 \
             --concurrency 40 \
@@ -151,18 +151,18 @@ jobs:
 
       - name: Pre-pull KurrentDB image into k3d
         run: |
-          docker pull eventstore/eventstore:23.10.0-jammy
-          k3d image import eventstore/eventstore:23.10.0-jammy -c testbed
+          docker pull kurrentplatform/kurrentdb:latest
+          k3d image import kurrentplatform/kurrentdb:latest -c testbed
 
       - name: Deploy Kubernetes manifests
         run: |
           kubectl apply -f k8s/00-namespace.yaml
           kubectl apply -f k8s/01-storageclass.yaml
-          kubectl apply -f k8s/02-eventstore/
+          kubectl apply -f k8s/02-kurrentdb/
 
       - name: Wait for KurrentDB cluster to be ready
         run: |
-          kubectl rollout status statefulset/eventstore \
+          kubectl rollout status statefulset/kurrentdb \
             -n event-store \
             --timeout=600s
 
@@ -185,20 +185,20 @@ jobs:
 
       - name: Run benchmark (Kubernetes, 3-node quorum writes)
         run: |
-          kubectl port-forward -n event-store pod/eventstore-0 19999:2113 &
+          kubectl port-forward -n event-store pod/kurrentdb-0 19999:2113 &
           PF_GOSSIP=$!
           sleep 3
           LEADER_IP=$(curl -sf http://localhost:19999/gossip | jq -r '.members[] | select(.state == "Leader") | .httpEndPointIp')
           kill $PF_GOSSIP 2>/dev/null || true
           echo "Leader IP: $LEADER_IP"
-          LEADER_POD=$(kubectl get pods -n event-store -l app=eventstore -o json | jq -r --arg ip "$LEADER_IP" '.items[] | select(.status.podIP == $ip) | .metadata.name')
+          LEADER_POD=$(kubectl get pods -n event-store -l app=kurrentdb -o json | jq -r --arg ip "$LEADER_IP" '.items[] | select(.status.podIP == $ip) | .metadata.name')
           echo "Leader pod: $LEADER_POD"
           test -n "$LEADER_POD"
           kubectl port-forward -n event-store "pod/$LEADER_POD" 2113:2113 &
           PF_PID=$!
           sleep 3
           rust-app/target/release/testbed \
-            --kurrentdb-url "esdb://localhost:2113?tls=false" \
+            --kurrentdb-url "kurrentdb://localhost:2113?tls=false" \
             bench \
             --target-rate 10000 \
             --duration-secs 30 \

@@ -23,7 +23,7 @@ struct Cli {
     #[arg(
         long,
         env = "KURRENTDB_URL",
-        default_value = "esdb://localhost:2113,localhost:2114,localhost:2115?tls=false"
+        default_value = "kurrentdb://localhost:2113,localhost:2114,localhost:2115?tls=false"
     )]
     kurrentdb_url: String,
 

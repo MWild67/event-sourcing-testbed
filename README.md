@@ -152,7 +152,7 @@ event-sourcing-testbed/
 ├── k8s/
 │   ├── 00-namespace.yaml            # Namespace: event-store
 │   ├── 01-storageclass.yaml         # StorageClass (WaitForFirstConsumer)
-│   ├── 02-eventstore/
+│   ├── 02-kurrentdb/
 │   │   ├── 01-services.yaml         # Headless + ClusterIP services
 │   │   └── 02-statefulset.yaml      # 3-replica StatefulSet + PVC templates
 │   ├── 03-rabbitmq/
@@ -333,12 +333,12 @@ make test-monitoring
 | `node_cpu_seconds_total{mode="iowait"}` | Disk I/O Wait %          |
 | `node_disk_reads_completed_total`   | Read IOPS                   |
 | `node_disk_writes_completed_total`  | Write IOPS                  |
-| `up{job="eventstore"}`              | KurrentDB cluster health |
+| `up{job="kurrentdb"}`              | KurrentDB cluster health |
 | `up{job="rabbitmq"}`                | RabbitMQ health             |
 
 **Pass criteria:**
 
-- Prometheus has active scrape targets for `node-exporter`, `eventstore`, `rabbitmq`
+- Prometheus has active scrape targets for `node-exporter`, `kurrentdb`, `rabbitmq`
 - All five metric families return data
 - Grafana API returns the "Event Store Namespace" dashboard
 
@@ -432,12 +432,12 @@ mongo-bench options:
 → Increase `--concurrency` to amortise individual request latency.
 → On Windows/Podman the benchmark will never pass — see the platform note in Quick Start.
 
-**`eventstore-bench` container exits immediately / benchmark reports 0 events**
+**`kurrentdb-bench` container exits immediately / benchmark reports 0 events**
 → The container crashed (OOM or internal fault). Because it uses tmpfs, all state is lost on exit.
-→ A simple `podman start eventstore-bench` is not enough — tmpfs mounts are not recreated.
-→ Recreate it from scratch: `podman rm eventstore-bench && podman compose up -d eventstore-bench`
+→ A simple `podman start kurrentdb-bench` is not enough — tmpfs mounts are not recreated.
+→ Recreate it from scratch: `podman rm kurrentdb-bench && podman compose up -d kurrentdb-bench`
 → Wait ~15 s for the `IS LEADER... SPARTA!` log line before running the benchmark:
-  `podman logs -f eventstore-bench`
+  `podman logs -f kurrentdb-bench`
 
 **Failover test fails — recovery > 60 s**
 → Check `kubelet` pod eviction timer: `kubectl describe node <node>` — default `node.kubernetes.io/not-ready:NoExecute` tolerance is **5 minutes** for system components.

@@ -35,13 +35,13 @@ down: ## Stop and remove local containers
 
 bench-local: build ## Run the KurrentDB performance benchmark (requires 'make up' first)
 	@$(RUNTIME) run --rm --network event-sourcing-testbed_event-net $(FULL_IMAGE) \
-	  --kurrentdb-url esdb://eventstore-bench:2113?tls=false \
+	  --kurrentdb-url kurrentdb://kurrentdb-bench:2113?tls=false \
 	  bench --target-rate 10000 --concurrency 20 --batch-size 1 --duration-secs 30
 
 mongo-bench-local: build ## Run the MongoDB performance benchmark (requires 'make up' first)
 	@$(RUNTIME) run --rm --network event-sourcing-testbed_event-net $(FULL_IMAGE) \
 	  --mongodb-url mongodb://mongodb:27017 \
-	  mongo-bench --target-rate 10000 --concurrency 64 --batch-size 1 --duration-secs 30 --p99-limit-ms 5
+	  mongo-bench --target-rate 10000 --concurrency 64 --batch-size 1 --duration-secs 30
 
 # ── Build & publish Rust image ────────────────────────────────────────────────
 build: ## Build the Rust benchmark image
@@ -54,12 +54,12 @@ push: build ## Build and push image to REGISTRY
 deploy: ## Apply all Kubernetes manifests in order
 	kubectl apply -f k8s/00-namespace.yaml
 	kubectl apply -f k8s/01-storageclass.yaml
-	kubectl apply -f k8s/02-eventstore/
+	kubectl apply -f k8s/02-kurrentdb/
 	kubectl apply -f k8s/03-rabbitmq/
 	kubectl apply -f k8s/04-monitoring/
 	@echo ""
 	@echo "Waiting for KurrentDB to be ready (this may take ~60s)..."
-	kubectl rollout status statefulset/eventstore -n $(NAMESPACE) --timeout=180s
+	kubectl rollout status statefulset/kurrentdb -n $(NAMESPACE) --timeout=180s
 	@echo "Waiting for RabbitMQ to be ready..."
 	kubectl rollout status statefulset/rabbitmq    -n $(NAMESPACE) --timeout=180s
 	@echo ""
@@ -96,7 +96,7 @@ test-mongodb-direct: ## Test 05: Run MongoDB benchmark directly (requires local 
 
 # ── Utility ───────────────────────────────────────────────────────────────────
 logs-es: ## Tail KurrentDB logs
-	kubectl logs -n $(NAMESPACE) -l app=eventstore -f --max-log-requests=3
+	kubectl logs -n $(NAMESPACE) -l app=kurrentdb -f --max-log-requests=3
 
 logs-rmq: ## Tail RabbitMQ logs
 	kubectl logs -n $(NAMESPACE) -l app=rabbitmq -f --max-log-requests=3
@@ -108,4 +108,4 @@ pf-prom: ## Port-forward Prometheus to localhost:9090
 	kubectl port-forward svc/prometheus -n $(NAMESPACE) 9090:9090
 
 pf-es: ## Port-forward KurrentDB to localhost:2113
-	kubectl port-forward svc/eventstore -n $(NAMESPACE) 2113:2113
+	kubectl port-forward svc/kurrentdb -n $(NAMESPACE) 2113:2113

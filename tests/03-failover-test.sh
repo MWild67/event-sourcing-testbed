@@ -22,7 +22,7 @@
 set -euo pipefail
 
 NS="event-store"
-STS="eventstore"
+STS="kurrentdb"
 RECOVERY_TIMEOUT=60     # seconds — the hard SLA
 POLL_INTERVAL=2         # seconds between health checks
 ES_HTTP="${ES_HTTP:-http://localhost:2113}"   # adjust if testing locally

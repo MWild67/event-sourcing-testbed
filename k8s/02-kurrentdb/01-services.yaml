@@ -1,20 +1,20 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # KurrentDB Services
-#   - eventstore-headless  : pod-to-pod gossip / cluster DNS discovery
-#   - eventstore           : client-facing load-balanced service
+#   - kurrentdb-headless  : pod-to-pod gossip / cluster DNS discovery
+#   - kurrentdb           : client-facing load-balanced service
 # ─────────────────────────────────────────────────────────────────────────────
 apiVersion: v1
 kind: Service
 metadata:
-  name: eventstore-headless
+  name: kurrentdb-headless
   namespace: event-store
   labels:
-    app: eventstore
+    app: kurrentdb
 spec:
   clusterIP: None
   publishNotReadyAddresses: true
   selector:
-    app: eventstore
+    app: kurrentdb
   ports:
     - name: http-gossip
       port: 2113
@@ -27,14 +27,14 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: eventstore
+  name: kurrentdb
   namespace: event-store
   labels:
-    app: eventstore
+    app: kurrentdb
 spec:
   type: ClusterIP
   selector:
-    app: eventstore
+    app: kurrentdb
   ports:
     - name: http
       port: 2113

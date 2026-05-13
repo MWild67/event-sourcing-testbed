@@ -1,26 +1,26 @@
 services:
 
   # ── KurrentDB node 0 ────────────────────────────────────────────────────
-  eventstore-0:
-    image: docker.io/eventstore/eventstore:23.10.8-jammy
-    container_name: eventstore-0
+  kurrentdb-0:
+    image: kurrentplatform/kurrentdb:latest
+    container_name: kurrentdb-0
     environment:
-      EVENTSTORE_CLUSTER_SIZE: 3
-      EVENTSTORE_GOSSIP_SEED: "eventstore-1:2113,eventstore-2:2113"
-      EVENTSTORE_CLUSTER_GOSSIP_PORT: 2113
-      EVENTSTORE_DISCOVER_VIA_DNS: "false"
-      EVENTSTORE_INSECURE: "true"
-      EVENTSTORE_INT_IP: "0.0.0.0"
-      EVENTSTORE_EXT_IP: "0.0.0.0"
-      EVENTSTORE_HTTP_PORT: 2113
-      EVENTSTORE_ADVERTISE_HOST_TO_CLIENT_AS: "localhost"
-      EVENTSTORE_ADVERTISE_HTTP_PORT_TO_CLIENT_AS: 2113
-      EVENTSTORE_RUN_PROJECTIONS: "None"
-      EVENTSTORE_START_STANDARD_PROJECTIONS: "false"
-      EVENTSTORE_ENABLE_ATOM_PUB_OVER_HTTP: "true"
-      EVENTSTORE_UNSAFE_DISABLE_FLUSH_TO_DISK: "true"
-      EVENTSTORE_DB: /data/db
-      EVENTSTORE_LOG: /data/log
+      KURRENTDB_CLUSTER_SIZE: 3
+      KURRENTDB_GOSSIP_SEED: "kurrentdb-1:2113,kurrentdb-2:2113"
+      KURRENTDB_CLUSTER_GOSSIP_PORT: 2113
+      KURRENTDB_DISCOVER_VIA_DNS: "false"
+      KURRENTDB_INSECURE: "true"
+      KURRENTDB_INT_IP: "0.0.0.0"
+      KURRENTDB_EXT_IP: "0.0.0.0"
+      KURRENTDB_HTTP_PORT: 2113
+      KURRENTDB_ADVERTISE_HOST_TO_CLIENT_AS: "localhost"
+      KURRENTDB_ADVERTISE_HTTP_PORT_TO_CLIENT_AS: 2113
+      KURRENTDB_RUN_PROJECTIONS: "None"
+      KURRENTDB_START_STANDARD_PROJECTIONS: "false"
+      KURRENTDB_ENABLE_ATOM_PUB_OVER_HTTP: "true"
+      KURRENTDB_UNSAFE_DISABLE_FLUSH_TO_DISK: "true"
+      KURRENTDB_DB: /data/db
+      KURRENTDB_LOG: /data/log
     tmpfs:
       - /data/db
       - /data/log
@@ -35,26 +35,26 @@ services:
       retries: 10
 
   # ── KurrentDB node 1 ────────────────────────────────────────────────────
-  eventstore-1:
-    image: docker.io/eventstore/eventstore:23.10.8-jammy
-    container_name: eventstore-1
+  kurrentdb-1:
+    image: kurrentplatform/kurrentdb:latest
+    container_name: kurrentdb-1
     environment:
-      EVENTSTORE_CLUSTER_SIZE: 3
-      EVENTSTORE_GOSSIP_SEED: "eventstore-0:2113,eventstore-2:2113"
-      EVENTSTORE_CLUSTER_GOSSIP_PORT: 2113
-      EVENTSTORE_DISCOVER_VIA_DNS: "false"
-      EVENTSTORE_INSECURE: "true"
-      EVENTSTORE_INT_IP: "0.0.0.0"
-      EVENTSTORE_EXT_IP: "0.0.0.0"
-      EVENTSTORE_HTTP_PORT: 2113
-      EVENTSTORE_ADVERTISE_HOST_TO_CLIENT_AS: "localhost"
-      EVENTSTORE_ADVERTISE_HTTP_PORT_TO_CLIENT_AS: 2114
-      EVENTSTORE_RUN_PROJECTIONS: "None"
-      EVENTSTORE_START_STANDARD_PROJECTIONS: "false"
-      EVENTSTORE_ENABLE_ATOM_PUB_OVER_HTTP: "true"
-      EVENTSTORE_UNSAFE_DISABLE_FLUSH_TO_DISK: "true"
-      EVENTSTORE_DB: /data/db
-      EVENTSTORE_LOG: /data/log
+      KURRENTDB_CLUSTER_SIZE: 3
+      KURRENTDB_GOSSIP_SEED: "kurrentdb-0:2113,kurrentdb-2:2113"
+      KURRENTDB_CLUSTER_GOSSIP_PORT: 2113
+      KURRENTDB_DISCOVER_VIA_DNS: "false"
+      KURRENTDB_INSECURE: "true"
+      KURRENTDB_INT_IP: "0.0.0.0"
+      KURRENTDB_EXT_IP: "0.0.0.0"
+      KURRENTDB_HTTP_PORT: 2113
+      KURRENTDB_ADVERTISE_HOST_TO_CLIENT_AS: "localhost"
+      KURRENTDB_ADVERTISE_HTTP_PORT_TO_CLIENT_AS: 2114
+      KURRENTDB_RUN_PROJECTIONS: "None"
+      KURRENTDB_START_STANDARD_PROJECTIONS: "false"
+      KURRENTDB_ENABLE_ATOM_PUB_OVER_HTTP: "true"
+      KURRENTDB_UNSAFE_DISABLE_FLUSH_TO_DISK: "true"
+      KURRENTDB_DB: /data/db
+      KURRENTDB_LOG: /data/log
     tmpfs:
       - /data/db
       - /data/log
@@ -69,26 +69,26 @@ services:
       retries: 10
 
   # ── KurrentDB node 2 ────────────────────────────────────────────────────
-  eventstore-2:
-    image: docker.io/eventstore/eventstore:23.10.8-jammy
-    container_name: eventstore-2
+  kurrentdb-2:
+    image: kurrentplatform/kurrentdb:latest
+    container_name: kurrentdb-2
     environment:
-      EVENTSTORE_CLUSTER_SIZE: 3
-      EVENTSTORE_GOSSIP_SEED: "eventstore-0:2113,eventstore-1:2113"
-      EVENTSTORE_CLUSTER_GOSSIP_PORT: 2113
-      EVENTSTORE_DISCOVER_VIA_DNS: "false"
-      EVENTSTORE_INSECURE: "true"
-      EVENTSTORE_INT_IP: "0.0.0.0"
-      EVENTSTORE_EXT_IP: "0.0.0.0"
-      EVENTSTORE_HTTP_PORT: 2113
-      EVENTSTORE_ADVERTISE_HOST_TO_CLIENT_AS: "localhost"
-      EVENTSTORE_ADVERTISE_HTTP_PORT_TO_CLIENT_AS: 2115
-      EVENTSTORE_RUN_PROJECTIONS: "None"
-      EVENTSTORE_START_STANDARD_PROJECTIONS: "false"
-      EVENTSTORE_ENABLE_ATOM_PUB_OVER_HTTP: "true"
-      EVENTSTORE_UNSAFE_DISABLE_FLUSH_TO_DISK: "true"
-      EVENTSTORE_DB: /data/db
-      EVENTSTORE_LOG: /data/log
+      KURRENTDB_CLUSTER_SIZE: 3
+      KURRENTDB_GOSSIP_SEED: "kurrentdb-0:2113,kurrentdb-1:2113"
+      KURRENTDB_CLUSTER_GOSSIP_PORT: 2113
+      KURRENTDB_DISCOVER_VIA_DNS: "false"
+      KURRENTDB_INSECURE: "true"
+      KURRENTDB_INT_IP: "0.0.0.0"
+      KURRENTDB_EXT_IP: "0.0.0.0"
+      KURRENTDB_HTTP_PORT: 2113
+      KURRENTDB_ADVERTISE_HOST_TO_CLIENT_AS: "localhost"
+      KURRENTDB_ADVERTISE_HTTP_PORT_TO_CLIENT_AS: 2115
+      KURRENTDB_RUN_PROJECTIONS: "None"
+      KURRENTDB_START_STANDARD_PROJECTIONS: "false"
+      KURRENTDB_ENABLE_ATOM_PUB_OVER_HTTP: "true"
+      KURRENTDB_UNSAFE_DISABLE_FLUSH_TO_DISK: "true"
+      KURRENTDB_DB: /data/db
+      KURRENTDB_LOG: /data/log
     tmpfs:
       - /data/db
       - /data/log
@@ -106,22 +106,22 @@ services:
   # Used by the local stress-test to eliminate 3-node quorum latency over the
   # Podman VM bridge network (adds ~100 ms per write on Windows).
   # Production/Kubernetes benchmarks use the 3-node cluster (real hardware).
-  eventstore-bench:
-    image: docker.io/eventstore/eventstore:23.10.8-jammy
-    container_name: eventstore-bench
+  kurrentdb-bench:
+    image: kurrentplatform/kurrentdb:latest
+    container_name: kurrentdb-bench
     environment:
-      EVENTSTORE_CLUSTER_SIZE: 1
-      EVENTSTORE_INSECURE: "true"
-      EVENTSTORE_INT_IP: "0.0.0.0"
-      EVENTSTORE_EXT_IP: "0.0.0.0"
-      EVENTSTORE_HTTP_PORT: 2113
-      EVENTSTORE_RUN_PROJECTIONS: "None"
-      EVENTSTORE_START_STANDARD_PROJECTIONS: "false"
-      EVENTSTORE_ENABLE_ATOM_PUB_OVER_HTTP: "true"
-      EVENTSTORE_UNSAFE_DISABLE_FLUSH_TO_DISK: "true"
-      EVENTSTORE_DB: /data/db
-      EVENTSTORE_LOG: /data/log
-      EVENTSTORE_INDEX: /data/index
+      KURRENTDB_CLUSTER_SIZE: 1
+      KURRENTDB_INSECURE: "true"
+      KURRENTDB_INT_IP: "0.0.0.0"
+      KURRENTDB_EXT_IP: "0.0.0.0"
+      KURRENTDB_HTTP_PORT: 2113
+      KURRENTDB_RUN_PROJECTIONS: "None"
+      KURRENTDB_START_STANDARD_PROJECTIONS: "false"
+      KURRENTDB_ENABLE_ATOM_PUB_OVER_HTTP: "true"
+      KURRENTDB_UNSAFE_DISABLE_FLUSH_TO_DISK: "true"
+      KURRENTDB_DB: /data/db
+      KURRENTDB_LOG: /data/log
+      KURRENTDB_INDEX: /data/index
     tmpfs:
       - /data/db
       - /data/log
@@ -137,7 +137,7 @@ services:
       retries: 10
 
   # ── MongoDB single-node (event-sourcing benchmark) ────────────────────────
-  # Intentionally single-node to match the eventstore-bench service and give a
+  # Intentionally single-node to match the kurrentdb-bench service and give a
   # fair apples-to-apples latency comparison.  journalCommitInterval is left at
   # its default (100 ms) to avoid artificially inflating performance.
   mongodb:

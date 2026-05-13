@@ -1,10 +1,10 @@
 //! KurrentDB gRPC client wrapper.
 //!
-//! Thin async wrapper around the official `eventstore` crate, exposing only
+//! Thin async wrapper around the official `kurrentdb` crate, exposing only
 //! the append and health-probe operations needed by the benchmark harness.
 
 use anyhow::{Context, Result};
-use eventstore::{AppendToStreamOptions, Client, ClientSettings, EventData, ExpectedRevision};
+use kurrentdb::{AppendToStreamOptions, Client, ClientSettings, EventData, StreamState};
 use serde::Serialize;
 use uuid::Uuid;
 
@@ -16,13 +16,15 @@ impl KurrentClient {
     /// Connect to KurrentDB.
     ///
     /// `url` examples:
-    ///   "esdb://localhost:2113?tls=false"
-    ///   "esdb://kurrent-0:2113,kurrent-1:2113,kurrent-2:2113?tls=false"
+    ///   "kurrentdb://localhost:2113?tls=false"
+    ///   "kurrentdb://kurrent-0:2113,kurrent-1:2113,kurrent-2:2113?tls=false"
     pub async fn connect(url: &str) -> Result<Self> {
         let settings: ClientSettings = url
             .parse()
             .with_context(|| format!("invalid KurrentDB URL: {url}"))?;
-        let inner = Client::new(settings).context("failed to create KurrentDB client")?;
+        let inner = Client::new(settings)
+            .map_err(|e| anyhow::anyhow!("{e}"))
+            .context("failed to create KurrentDB client")?;
         Ok(Self { inner })
     }
 
@@ -38,7 +40,7 @@ impl KurrentClient {
             .with_context(|| format!("failed to serialise event type '{event_type}'"))?
             .id(Uuid::new_v4());
 
-        let opts = AppendToStreamOptions::default().expected_revision(ExpectedRevision::Any);
+        let opts = AppendToStreamOptions::default().stream_state(StreamState::Any);
 
         let result = self
             .inner
@@ -66,7 +68,7 @@ impl KurrentClient {
             })
             .collect();
 
-        let opts = AppendToStreamOptions::default().expected_revision(ExpectedRevision::Any);
+        let opts = AppendToStreamOptions::default().stream_state(StreamState::Any);
 
         let result = self
             .inner

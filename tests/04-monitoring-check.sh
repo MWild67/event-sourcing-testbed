@@ -8,7 +8,7 @@
 #        • node_cpu_seconds_total{mode="iowait"}   — Disk I/O Wait
 #        • node_disk_reads_completed_total          — Read IOPS
 #        • node_disk_writes_completed_total         — Write IOPS
-#        • up{job="eventstore"}                     — Storage cluster health
+#        • up{job="kurrentdb"}                     — Storage cluster health
 #   3. Grafana is running and the "Event Store Namespace" dashboard is loaded.
 #
 # Usage: ./tests/04-monitoring-check.sh
@@ -55,7 +55,7 @@ TARGETS=$(curl -sf "${PROM_BASE}/api/v1/targets" | grep -oP '"job":"[^"]+"' | so
 echo "  Active jobs:"
 echo "$TARGETS" | sed 's/^/    /'
 
-for JOB in node-exporter eventstore rabbitmq; do
+for JOB in node-exporter kurrentdb rabbitmq; do
     echo "$TARGETS" | grep -q "\"job\":\"$JOB\"" \
       || fail "Prometheus target '$JOB' not found — check annotations and scrape config"
     pass "Target '$JOB' is present"
@@ -78,7 +78,7 @@ check_metric() {
 check_metric 'node_cpu_seconds_total{mode="iowait"}'  "Disk I/O Wait"
 check_metric 'node_disk_reads_completed_total'         "Read IOPS"
 check_metric 'node_disk_writes_completed_total'        "Write IOPS"
-check_metric 'up{job="eventstore"}'                    "KurrentDB cluster health"
+check_metric 'up{job="kurrentdb"}'                    "KurrentDB cluster health"
 check_metric 'up{job="rabbitmq"}'                      "RabbitMQ health"
 
 # ── Check Grafana dashboard ───────────────────────────────────────────────────

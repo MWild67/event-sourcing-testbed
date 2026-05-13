@@ -33,7 +33,7 @@ data:
             target_label: node
 
       # ── KurrentDB: write latency, queue depth, cluster health ──────────
-      - job_name: eventstore
+      - job_name: kurrentdb
         kubernetes_sd_configs:
           - role: pod
             namespaces:
@@ -41,7 +41,7 @@ data:
         relabel_configs:
           - source_labels: [__meta_kubernetes_pod_label_app]
             action: keep
-            regex: eventstore
+            regex: kurrentdb
           - source_labels: [__address__]
             action: replace
             regex: ([^:]+):.*

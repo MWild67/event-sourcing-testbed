@@ -12,7 +12,7 @@
 # Usage:
 #   ./tests/02-stress-test.sh                     # run as K8s Job (default)
 #   DIRECT=1 ./tests/02-stress-test.sh            # run testbed binary directly
-#   KURRENT_URL=esdb://myhost:2113?tls=false \
+#   KURRENT_URL=kurrentdb://myhost:2113?tls=false \
 #     DIRECT=1 ./tests/02-stress-test.sh
 # ─────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
@@ -22,8 +22,8 @@ JOB="stress-test-$(date +%s)"
 IMAGE="${TESTBED_IMAGE:-event-sourcing-testbed:latest}"
 # K8s default: 3-node cluster (real hardware, sub-ms networking → OK)
 # Direct default: single-node bench service (avoids Podman VM bridge overhead)
-KURRENT_URL="${KURRENT_URL:-esdb://eventstore.event-store.svc.cluster.local:2113?tls=false}"
-KURRENT_URL_DIRECT="${KURRENT_URL_DIRECT:-esdb://localhost:2116?tls=false}"
+KURRENT_URL="${KURRENT_URL:-kurrentdb://kurrentdb.event-store.svc.cluster.local:2113?tls=false}"
+KURRENT_URL_DIRECT="${KURRENT_URL_DIRECT:-kurrentdb://localhost:2116?tls=false}"
 DIRECT="${DIRECT:-0}"
 
 TARGET_RATE=10000
@@ -71,7 +71,7 @@ else
     require_cmd kubectl
 
     step "Verifying KurrentDB cluster is healthy"
-    READY=$(kubectl get statefulset eventstore -n "$NS" \
+    READY=$(kubectl get statefulset kurrentdb -n "$NS" \
               -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo "0")
     [[ "$READY" -ge 2 ]] \
       || fail "KurrentDB needs ≥2 ready replicas, got $READY. Deploy first with 'make deploy'."

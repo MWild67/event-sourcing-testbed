@@ -10,7 +10,7 @@ path = "src/main.rs"
 
 [dependencies]
 # ── KurrentDB gRPC client ───────────────────────────────────────────────
-eventstore = "3"
+kurrentdb = "1"
 
 # ── MongoDB async driver ───────────────────────────────────────────────────
 mongodb = "3"
