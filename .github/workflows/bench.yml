@@ -171,16 +171,20 @@ jobs:
       - name: Dump pod diagnostics on failure
         if: failure()
         run: |
+          kubectl cluster-info 2>/dev/null || {
+            echo "No k8s cluster reachable — skipping pod diagnostics"
+            exit 0
+          }
           echo "=== Pod status ==="
-          kubectl get pods -n event-store -o wide
+          kubectl get pods -n event-store -o wide || true
           echo "=== PVC status ==="
-          kubectl get pvc -n event-store
+          kubectl get pvc -n event-store || true
           echo "=== Events ==="
-          kubectl get events -n event-store --sort-by='.lastTimestamp' | tail -40
+          kubectl get events -n event-store --sort-by='.lastTimestamp' 2>/dev/null | tail -40 || true
           echo "=== Pod descriptions ==="
-          kubectl describe pods -n event-store
+          kubectl describe pods -n event-store || true
           echo "=== Logs (last 50 lines per pod) ==="
-          for pod in $(kubectl get pods -n event-store -o name); do
+          for pod in $(kubectl get pods -n event-store -o name 2>/dev/null); do
             echo "--- $pod ---"
             kubectl logs "$pod" -n event-store --tail=50 2>&1 || true
           done
@@ -343,16 +347,22 @@ jobs:
       - name: Dump pod diagnostics on failure
         if: failure()
         run: |
+          # Bail out cleanly if the k3d cluster was never created (e.g. build
+          # step failed before kubectl had a valid context).
+          kubectl cluster-info 2>/dev/null || {
+            echo "No k8s cluster reachable — skipping pod diagnostics"
+            exit 0
+          }
           echo "=== Pod status ==="
-          kubectl get pods -n event-store -o wide
+          kubectl get pods -n event-store -o wide || true
           echo "=== PVC status ==="
-          kubectl get pvc -n event-store
+          kubectl get pvc -n event-store || true
           echo "=== Events ==="
-          kubectl get events -n event-store --sort-by='.lastTimestamp' | tail -40
+          kubectl get events -n event-store --sort-by='.lastTimestamp' 2>/dev/null | tail -40 || true
           echo "=== Pod descriptions ==="
-          kubectl describe pods -n event-store
+          kubectl describe pods -n event-store || true
           echo "=== Logs (last 50 lines per pod) ==="
-          for pod in $(kubectl get pods -n event-store -o name); do
+          for pod in $(kubectl get pods -n event-store -o name 2>/dev/null); do
             echo "--- $pod ---"
             kubectl logs "$pod" -n event-store --tail=50 2>&1 || true
           done
