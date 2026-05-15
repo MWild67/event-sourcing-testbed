@@ -653,30 +653,26 @@ jobs:
           PG_P99:      ${{ needs.bench-postgres.outputs.p99_us }}
           PG_P999:     ${{ needs.bench-postgres.outputs.p999_us }}
         run: |
-          python3 - << 'PYEOF'
-          import os
+          # Convert microseconds to ms string; emit "n/a" when the value is empty
+          # (happens when a bench job was skipped or failed).
+          fmt_ms()   { [ -n "$1" ] && awk "BEGIN{printf \"%.2f\", $1/1000}" || echo "n/a"; }
+          fmt_rate() { [ -n "$1" ] && echo "$1"                             || echo "n/a"; }
 
-          def rate(v):
-              try:    return f"{float(v):,.0f}"
-              except: return "—"
-
-          def ms(us):
-              try:    return f"{float(us)/1000:.2f}"
-              except: return "—"
-
-          rows = [
-              ("KurrentDB",  "tmpfs + UNSAFE_DISABLE_FLUSH_TO_DISK", os.environ.get("KDB_RATE",""), os.environ.get("KDB_P50",""), os.environ.get("KDB_P95",""), os.environ.get("KDB_P99",""), os.environ.get("KDB_P999","")),
-              ("MongoDB",    "tmpfs + j:false write concern",         os.environ.get("MDB_RATE",""), os.environ.get("MDB_P50",""), os.environ.get("MDB_P95",""), os.environ.get("MDB_P99",""), os.environ.get("MDB_P999","")),
-              ("PostgreSQL", "tmpfs + fsync=off + synchronous_commit=off", os.environ.get("PG_RATE",""),  os.environ.get("PG_P50",""),  os.environ.get("PG_P95",""),  os.environ.get("PG_P99",""),  os.environ.get("PG_P999","")),
-          ]
-
-          summary = os.environ.get("GITHUB_STEP_SUMMARY", "/dev/stdout")
-          with open(summary, "a") as f:
-              f.write("## :bar_chart: Docker Benchmark Comparison\n\n")
-              f.write("> **Conditions:** event-store mode · 10 k ev/s target · 30 s · concurrency 64 · same ubuntu-22.04 runner\n\n")
-              f.write("| Backend | Durability | Rate (ev/s) | p50 (ms) | p95 (ms) | p99 (ms) | p99.9 (ms) |\n")
-              f.write("|---------|------------|------------:|:--------:|:--------:|:--------:|:----------:|\n")
-              for name, dur, r, p50, p95, p99, p999 in rows:
-                  f.write(f"| **{name}** | {dur} | {rate(r)} | {ms(p50)} | {ms(p95)} | {ms(p99)} | {ms(p999)} |\n")
-              f.write("\n_Lower latency and higher rate is better. All backends use in-memory storage (no disk I/O) for a fair semantic comparison._\n")
-          PYEOF
+          {
+            echo "## Docker Benchmark Comparison"
+            echo ""
+            echo "> **Conditions:** event-store mode · 10 k ev/s target · 30 s · 64 concurrent tasks · ubuntu-22.04 runner"
+            echo "> **Durability level:** OS-buffer write, no fsync (all three backends equivalent)"
+            echo ""
+            echo "| Backend | Storage / flags | Rate (ev/s) | p50 (ms) | p95 (ms) | p99 (ms) | p99.9 (ms) |"
+            echo "|---------|-----------------|------------:|:--------:|:--------:|:--------:|:----------:|"
+            printf "| **KurrentDB** | tmpfs + UNSAFE_DISABLE_FLUSH_TO_DISK=true | %s | %s | %s | %s | %s |\n" \
+              "$(fmt_rate "$KDB_RATE")" "$(fmt_ms "$KDB_P50")" "$(fmt_ms "$KDB_P95")" "$(fmt_ms "$KDB_P99")" "$(fmt_ms "$KDB_P999")"
+            printf "| **MongoDB** | tmpfs + j:true write concern | %s | %s | %s | %s | %s |\n" \
+              "$(fmt_rate "$MDB_RATE")" "$(fmt_ms "$MDB_P50")" "$(fmt_ms "$MDB_P95")" "$(fmt_ms "$MDB_P99")" "$(fmt_ms "$MDB_P999")"
+            printf "| **PostgreSQL** | tmpfs + fsync=off + synchronous_commit=on | %s | %s | %s | %s | %s |\n" \
+              "$(fmt_rate "$PG_RATE")" "$(fmt_ms "$PG_P50")" "$(fmt_ms "$PG_P95")" "$(fmt_ms "$PG_P99")" "$(fmt_ms "$PG_P999")"
+            echo ""
+            echo "_Lower latency and higher rate is better._"
+            echo "_All backends write to tmpfs (RAM). Numbers reflect protocol + semantic overhead only, not production throughput._"
+          } >> "$GITHUB_STEP_SUMMARY"
