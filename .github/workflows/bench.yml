@@ -134,7 +134,7 @@ jobs:
 
   # ── Job 3: Kubernetes 3-node cluster — real quorum writes + real disk ───────
   bench-kurrentdb-k8s:
-    name: KurrentDB — Kubernetes (3-node cluster)
+    name: KurrentDB — Kubernetes (single-node, in-memory)
     runs-on: ubuntu-22.04
     outputs:
       rate:    ${{ steps.bench.outputs.rate }}
@@ -150,10 +150,10 @@ jobs:
       - name: Install k3d
         run: curl -s https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | TAG=v5.8.3 bash
 
-      - name: Create k3d cluster (1 server + 3 agents)
+      - name: Create k3d cluster (1 server + 1 agent)
         run: |
           k3d cluster create testbed \
-            --agents 3 \
+            --agents 1 \
             --wait \
             --timeout 120s
 
@@ -177,17 +177,78 @@ jobs:
           docker pull kurrentplatform/kurrentdb:latest
           k3d image import kurrentplatform/kurrentdb:latest -c testbed
 
-      - name: Deploy Kubernetes manifests
+      - name: Deploy KurrentDB (single-node, emptyDir Memory, no fsync)
         run: |
           kubectl apply -f k8s/00-namespace.yaml
-          kubectl apply -f k8s/01-storageclass.yaml
-          kubectl apply -f k8s/02-kurrentdb/
+          kubectl apply -f k8s/02-kurrentdb/01-services.yaml
+          # Single-node StatefulSet with emptyDir Memory (tmpfs) and
+          # UNSAFE_DISABLE_FLUSH_TO_DISK=true.
+          # Matches the MongoDB k8s job (emptyDir Memory + j:true) and the
+          # PostgreSQL k8s job (emptyDir Memory + fsync=off).
+          # On tmpfs, fdatasync() is a no-op for all three backends, so all
+          # are at OS-buffer durability level — same as the Docker bench jobs.
+          kubectl apply -f - << 'YAML_EOF'
+          apiVersion: apps/v1
+          kind: StatefulSet
+          metadata:
+            name: kurrentdb
+            namespace: event-store
+          spec:
+            serviceName: kurrentdb-headless
+            replicas: 1
+            selector:
+              matchLabels:
+                app: kurrentdb
+            template:
+              metadata:
+                labels:
+                  app: kurrentdb
+              spec:
+                containers:
+                  - name: kurrentdb
+                    image: kurrentplatform/kurrentdb:latest
+                    imagePullPolicy: Never
+                    ports:
+                      - containerPort: 2113
+                    env:
+                      - name: KURRENTDB_CLUSTER_SIZE
+                        value: "1"
+                      - name: KURRENTDB_INSECURE
+                        value: "true"
+                      - name: KURRENTDB_RUN_PROJECTIONS
+                        value: "None"
+                      - name: KURRENTDB_START_STANDARD_PROJECTIONS
+                        value: "false"
+                      - name: KURRENTDB_UNSAFE_DISABLE_FLUSH_TO_DISK
+                        value: "true"
+                      - name: KURRENTDB_DB
+                        value: /data/db
+                      - name: KURRENTDB_LOG
+                        value: /data/log
+                      - name: KURRENTDB_ENABLE_ATOM_PUB_OVER_HTTP
+                        value: "true"
+                    volumeMounts:
+                      - name: data
+                        mountPath: /data
+                    readinessProbe:
+                      httpGet:
+                        path: /health/live
+                        port: 2113
+                      initialDelaySeconds: 15
+                      periodSeconds: 5
+                      failureThreshold: 12
+                volumes:
+                  - name: data
+                    emptyDir:
+                      medium: Memory
+                      sizeLimit: 512Mi
+          YAML_EOF
 
-      - name: Wait for KurrentDB cluster to be ready
+      - name: Wait for KurrentDB to be ready
         run: |
           kubectl rollout status statefulset/kurrentdb \
             -n event-store \
-            --timeout=600s
+            --timeout=300s
 
       - name: Dump pod diagnostics on failure
         if: failure()
@@ -210,19 +271,10 @@ jobs:
             kubectl logs "$pod" -n event-store --tail=50 2>&1 || true
           done
 
-      - name: Run KurrentDB benchmark (Kubernetes, 3-node cluster)
+      - name: Run KurrentDB benchmark (Kubernetes, single-node, in-memory)
         id: bench
         run: |
-          kubectl port-forward -n event-store pod/kurrentdb-0 19999:2113 &
-          PF_GOSSIP=$!
-          sleep 3
-          LEADER_IP=$(curl -sf http://localhost:19999/gossip | jq -r '.members[] | select(.state == "Leader") | .httpEndPointIp')
-          kill $PF_GOSSIP 2>/dev/null || true
-          echo "Leader IP: $LEADER_IP"
-          LEADER_POD=$(kubectl get pods -n event-store -l app=kurrentdb -o json | jq -r --arg ip "$LEADER_IP" '.items[] | select(.status.podIP == $ip) | .metadata.name')
-          echo "Leader pod: $LEADER_POD"
-          test -n "$LEADER_POD"
-          kubectl port-forward -n event-store "pod/$LEADER_POD" 2113:2113 &
+          kubectl port-forward -n event-store pod/kurrentdb-0 2113:2113 &
           PF_PID=$!
           sleep 3
           RESULT=$(rust-app/target/release/testbed \
@@ -230,7 +282,7 @@ jobs:
             kurrentdb-bench \
             --target-rate 10000 \
             --duration-secs 30 \
-            --concurrency 50 \
+            --concurrency 64 \
             --batch-size 1 \
             --json)
           kill $PF_PID 2>/dev/null || true
@@ -393,7 +445,6 @@ jobs:
       - name: Deploy Kubernetes manifests
         run: |
           kubectl apply -f k8s/00-namespace.yaml
-          kubectl apply -f k8s/01-storageclass.yaml
           kubectl apply -f k8s/05-mongodb/
 
       - name: Wait for MongoDB to be ready
@@ -610,7 +661,6 @@ jobs:
       - name: Deploy PostgreSQL into Kubernetes
         run: |
           kubectl apply -f k8s/00-namespace.yaml
-          kubectl apply -f k8s/01-storageclass.yaml
           kubectl apply -f k8s/06-postgres/
 
       - name: Wait for PostgreSQL StatefulSet rollout
@@ -742,15 +792,16 @@ jobs:
             echo "## Kubernetes Benchmark Comparison"
             echo ""
             echo "> **Conditions:** event-store mode · k3d cluster · port-forward tunnel · ubuntu-22.04 runner"
-            echo "> KurrentDB: 3-node cluster, concurrency 50. MongoDB/PostgreSQL: single-node, concurrency 64."
+            echo "> All backends: single-node, emptyDir Memory (tmpfs), OS-buffer durability (no fsync), concurrency 64."
+            echo "> Difference from Docker tier: k8s pod networking + port-forward loopback overhead only."
             echo ""
             echo "| Backend | Deployment | Rate (ev/s) | p50 (ms) | p95 (ms) | p99 (ms) | p99.9 (ms) |"
             echo "|---------|------------|------------:|:--------:|:--------:|:--------:|:----------:|"
-            printf "| **KurrentDB** | k3d 3-node StatefulSet | %s | %s | %s | %s | %s |\n" \
+            printf "| **KurrentDB** | k3d single-node (emptyDir Memory, UNSAFE_DISABLE_FLUSH) | %s | %s | %s | %s | %s |\n" \
               "$(fmt_rate "$KDB_K8S_RATE")" "$(fmt_ms "$KDB_K8S_P50")" "$(fmt_ms "$KDB_K8S_P95")" "$(fmt_ms "$KDB_K8S_P99")" "$(fmt_ms "$KDB_K8S_P999")"
-            printf "| **MongoDB** | k3d single-node replica set | %s | %s | %s | %s | %s |\n" \
+            printf "| **MongoDB** | k3d single-node (emptyDir Memory, j:true) | %s | %s | %s | %s | %s |\n" \
               "$(fmt_rate "$MDB_K8S_RATE")" "$(fmt_ms "$MDB_K8S_P50")" "$(fmt_ms "$MDB_K8S_P95")" "$(fmt_ms "$MDB_K8S_P99")" "$(fmt_ms "$MDB_K8S_P999")"
-            printf "| **PostgreSQL** | k3d single-node (emptyDir) | %s | %s | %s | %s | %s |\n" \
+            printf "| **PostgreSQL** | k3d single-node (emptyDir Memory, fsync=off) | %s | %s | %s | %s | %s |\n" \
               "$(fmt_rate "$PG_K8S_RATE")" "$(fmt_ms "$PG_K8S_P50")" "$(fmt_ms "$PG_K8S_P95")" "$(fmt_ms "$PG_K8S_P99")" "$(fmt_ms "$PG_K8S_P999")"
             echo ""
             echo "_Lower latency and higher rate is better._"

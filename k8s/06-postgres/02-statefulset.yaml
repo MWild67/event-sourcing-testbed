@@ -67,9 +67,10 @@ spec:
             - name: postgres-data
               mountPath: /var/lib/postgresql/data
       volumes:
-        # Use an in-memory emptyDir instead of a PVC so the benchmark sees
-        # tmpfs speeds (matching the Docker bench job) and avoids disk I/O
-        # stalls that cause periodic connection failures over port-forward.
+        # emptyDir Memory (tmpfs) keeps durability at the same OS-buffer level
+        # as the Docker benchmark job (--tmpfs + fsync=off).
+        # Matches the MongoDB and KurrentDB k8s benchmark jobs, which also use
+        # emptyDir Memory, so storage I/O is never a variable across the three.
         - name: postgres-data
           emptyDir:
             medium: Memory

@@ -39,11 +39,28 @@ The Rust benchmark harness drives each backend at 10 000 events/second and measu
 
 ### What is being measured
 
-Every job runs one backend in isolation on a **fresh ubuntu-22.04 GitHub Actions runner
-(2 vCPU, 7 GB RAM)**.  The Rust harness fires 10 000 events/second for 30 seconds using
-64 concurrent Tokio tasks, each writing to its own dedicated stream.  Latency is the
-wall-clock time from *before* `pool.acquire()` / gRPC call to *after* the server
-acknowledgement — it includes all protocol and semantic overhead.
+The CI workflow runs **7 benchmark scenarios** on every push to `main`.
+Each scenario runs one backend in isolation on a fresh ubuntu-22.04 runner (2 vCPU, 7 GB RAM).
+
+| # | Scenario | Backend | Deployment | Storage |
+|---|----------|---------|------------|---------|
+| 1 | `bench-kurrentdb-memdb` | KurrentDB | Docker (native) | MemDb flag — pure in-memory, zero I/O |
+| 2 | `bench-kurrentdb` | KurrentDB | Docker | `--tmpfs` (RAM) + `UNSAFE_DISABLE_FLUSH_TO_DISK=true` |
+| 3 | `bench-kurrentdb-k8s` | KurrentDB | k3d (single-node) | `emptyDir Memory` (RAM) + `UNSAFE_DISABLE_FLUSH_TO_DISK=true` |
+| 4 | `bench-mongodb` | MongoDB | Docker | `--tmpfs` (RAM) + `j:true` write concern |
+| 5 | `bench-mongodb-k8s` | MongoDB | k3d (single-node) | `emptyDir Memory` (RAM) + `j:true` write concern |
+| 6 | `bench-postgres` | PostgreSQL | Docker | `--tmpfs` (RAM) + `fsync=off` |
+| 7 | `bench-postgres-k8s` | PostgreSQL | k3d (single-node) | `emptyDir Memory` (RAM) + `fsync=off` |
+
+Scenario 1 is the theoretical maximum — KurrentDB with no persistence at all.  
+Scenarios 2, 4, 6 (Docker) and 3, 5, 7 (k8s) each run the real database server with
+persistence enabled.  The difference between a Docker and its k8s counterpart is purely
+deployment overhead: k8s pod networking and the port-forward loopback tunnel.
+
+All 6 "real DB" scenarios share the same storage type (RAM-backed tmpfs) and the same
+durability level (OS-buffer, no fsync) so that storage I/O is never a variable — only
+protocol and semantic overhead are being measured.  See the durability alignment section
+below for why tmpfs is required to keep all three backends at the same level.
 
 ### Benchmark internals
 
@@ -80,16 +97,22 @@ ensures every in-flight write is counted before the histogram is printed.
 
 ### Durability alignment — why this is a fair comparison
 
-All three backends are configured at exactly the same **"OS-buffer" durability level**:
-data is written to the OS page cache (tmpfs in CI, so effectively RAM), but `fsync()` is
-never called.  A crash would lose the last few events.  This level is chosen because it is
-the lowest common denominator that all three backends support:
+All six "real DB" scenarios are configured at exactly the same **"OS-buffer" durability level**:
+data is written to the OS page cache (tmpfs, so effectively RAM), but `fsync()` is
+never called.  A crash would lose the last few events.
 
 | Backend | Setting | What it means |
 |---------|---------|---------------|
 | **KurrentDB** | `UNSAFE_DISABLE_FLUSH_TO_DISK=true` | Events written to tmpfs; `fsync()` skipped |
-| **MongoDB** | `j:true` write concern + `--tmpfs /data/db` | Journal record written to tmpfs before ACK; no `fsync()` |
+| **MongoDB** | `j:true` write concern + tmpfs mount | Journal record written to tmpfs before ACK; `fdatasync()` is a no-op on tmpfs |
 | **PostgreSQL** | `fsync=off` + `full_page_writes=off` + tmpfs | WAL record written to tmpfs before ACK (`synchronous_commit` default = on); no `fsync()` |
+
+**Why tmpfs is required (not just fsync=off):**  
+MongoDB's `j:true` calls `fdatasync()` on the journal file. On a real disk this is an
+actual blocking flush — making MongoDB inherently slower than KurrentDB and PostgreSQL
+(which both skip fsync entirely). On tmpfs, `fdatasync()` is a kernel no-op since there
+is no backing disk to flush to. This is the only way to put all three backends at the
+same OS-buffer durability level.
 
 > **Why not `synchronous_commit=off` for PostgreSQL?**  
 > That setting acknowledges the commit before the WAL record is written to the OS at all —
@@ -98,9 +121,9 @@ the lowest common denominator that all three backends support:
 > PostgreSQL an unfair extra advantage.
 
 > **Why not `j:false` for MongoDB?**  
-> `j:false` acknowledges before the journal record reaches the OS — the same
-> sub-OS-buffer shortcut that `synchronous_commit=off` provides.  Using `j:true` on tmpfs
-> keeps MongoDB at the same level as the other two backends.
+> `j:false` acknowledges before the journal record reaches the OS (sub-OS-buffer) — the
+> same shortcut that `synchronous_commit=off` provides for PostgreSQL.  Using `j:true` on
+> tmpfs keeps MongoDB at the correct OS-buffer level.
 
 ### What the numbers do *not* tell you
 
@@ -108,9 +131,10 @@ the lowest common denominator that all three backends support:
   `synchronous_commit=on`, `j:true`), PostgreSQL would be 10–100× slower (disk-bound).
   KurrentDB is optimised for sequential append with batched WAL flushing and would retain
   much more of its in-memory performance at production durability levels.
-- **Distributed / replicated performance.** All jobs run single-node.  KurrentDB is
-  designed for quorum-replicated clusters; PostgreSQL streaming replication adds
-  significant write-path overhead.
+- **Distributed / replicated performance.** All benchmark scenarios run single-node.  
+  KurrentDB is designed for quorum-replicated clusters; PostgreSQL streaming replication
+  adds significant write-path overhead.  The KurrentDB HA deployment (3-node StatefulSet
+  in `k8s/02-kurrentdb/`) is not benchmarked here to keep the comparison fair.
 - **Read workloads, subscriptions, or projections.** KurrentDB provides native catch-up
   subscriptions, persistent consumer groups, and server-side projections.  These have no
   equivalent in a raw PostgreSQL table and are not benchmarked here.
@@ -157,54 +181,80 @@ summary table.
 ## CI Pipeline
 
 The GitHub Actions workflow (`.github/workflows/bench.yml`) runs **8 jobs** on every push
-to `main`.  All jobs use `ubuntu-22.04` (2 vCPU, 7 GB RAM) runners.
+to `main`: 7 benchmark jobs + 1 report job.  All use `ubuntu-22.04` (2 vCPU, 7 GB RAM) runners.
 
 ### Job summary
 
-| Job | Backend | Mode | Storage | Notes |
-|-----|---------|------|---------|-------|
-| `bench-kurrentdb-memdb` | KurrentDB | in-memory | tmpfs | `MemDb` flag; no persistence layer |
-| `bench-kurrentdb` | KurrentDB | Docker | tmpfs + `UNSAFE_DISABLE_FLUSH_TO_DISK=true` | 64-way concurrency; captures `--json` output |
-| `bench-kurrentdb-k8s` | KurrentDB | k3d | emptyDir (Memory) | k3d pinned to `v5.8.3` |
-| `bench-mongodb` | MongoDB | Docker | `--tmpfs /data/db` + `j:true` | captures `--json` output |
-| `bench-mongodb-k8s` | MongoDB | k3d | emptyDir (Memory) | k3d pinned to `v5.8.3` |
-| `bench-postgres` | PostgreSQL | Docker | `--tmpfs /var/lib/postgresql/data` + `fsync=off` | `max_connections=200`; captures `--json` output |
-| `bench-postgres-k8s` | PostgreSQL | k3d | emptyDir (Memory) + `fsync=off` | k3d pinned to `v5.8.3` |
-| `report` | — | — | — | Reads outputs from the three Docker jobs; writes comparison table to run summary |
+| Job | Backend | Deploy | Storage | Durability |
+|-----|---------|--------|---------|------------|
+| `bench-kurrentdb-memdb` | KurrentDB | Docker (native) | RAM (MemDb flag) | none — no I/O at all |
+| `bench-kurrentdb` | KurrentDB | Docker | tmpfs | OS-buffer, no fsync |
+| `bench-kurrentdb-k8s` | KurrentDB | k3d single-node | emptyDir Memory | OS-buffer, no fsync |
+| `bench-mongodb` | MongoDB | Docker | tmpfs | OS-buffer, no fsync |
+| `bench-mongodb-k8s` | MongoDB | k3d single-node | emptyDir Memory | OS-buffer, no fsync |
+| `bench-postgres` | PostgreSQL | Docker | tmpfs | OS-buffer, no fsync |
+| `bench-postgres-k8s` | PostgreSQL | k3d single-node | emptyDir Memory | OS-buffer, no fsync |
+| `report` | — | — | — | Reads all 6 bench outputs; writes two comparison tables to run summary |
 
 ### How the Docker benchmark jobs work
 
 Each Docker bench job follows the same pattern:
 
 1. **Build** the Rust binary in release mode (`cargo build --release`).
-2. **Start** the backend container with tmpfs storage and durability flags.
+2. **Start** the backend container with a `--tmpfs` mount and OS-buffer durability flags.
 3. **Wait** for the backend to become ready (health-check loop with `--ping`).
 4. **Run** the benchmark binary with `--json` and capture stdout into `$RESULT`.
 5. **Parse** `$RESULT` with a one-liner Python `json.load` to extract the five fields.
 6. **Write** each field to `$GITHUB_OUTPUT` so the `report` job can read them via
    `needs.<job>.outputs.<field>`.
 
+The k8s jobs follow the same parse-and-output pattern after the benchmark step.
+
 ### The `report` job
 
-`report` runs with `if: always()` so it executes even if one benchmark fails.
-It uses `needs: [bench-kurrentdb, bench-mongodb, bench-postgres]` to consume outputs.
-A short Python script assembles a Markdown table and writes it to `$GITHUB_STEP_SUMMARY`:
+`report` runs with `if: always()` so it executes even if a benchmark fails.
+It uses `needs` on all six bench jobs and consumes their `outputs` to build
+**two side-by-side comparison tables** written to `$GITHUB_STEP_SUMMARY`:
+
+- **Docker Benchmark Comparison** — scenarios 2, 4, 6 (pure semantic overhead, no deployment overhead)
+- **Kubernetes Benchmark Comparison** — scenarios 3, 5, 7 (same durability, adds k8s pod networking + port-forward overhead)
+
+If a job was skipped or failed, its cells show `n/a`.
+
+Example output:
 
 ```
-## Benchmark Comparison
+## Docker Benchmark Comparison
+> Conditions: event-store mode · 10 k ev/s target · 30 s · 64 concurrent tasks
+> Durability level: OS-buffer write, no fsync (all three backends equivalent)
 
-| Backend     | Durability              | Rate (ev/s) | p50 (µs) | p95 (µs) | p99 (µs) | p99.9 (µs) |
-|-------------|-------------------------|-------------|----------|----------|----------|------------|
-| KurrentDB   | OS-buffer, no fsync     | 9 959       | 689      | 1 203    | 1 581    | 2 047      |
-| MongoDB     | OS-buffer, no fsync     | 9 887       | 712      | 1 318    | 1 694    | 2 303      |
-| PostgreSQL  | OS-buffer, no fsync     | 9 941       | 701      | 1 241    | 1 612    | 2 111      |
+| Backend    | Storage / flags                            | Rate (ev/s) | p50 (ms) | p95 (ms) | p99 (ms) | p99.9 (ms) |
+|------------|--------------------------------------------|------------:|:--------:|:--------:|:--------:|:----------:|
+| KurrentDB  | tmpfs + UNSAFE_DISABLE_FLUSH_TO_DISK=true  | 9959.1      | 0.69     | 1.20     | 1.58     | 2.05       |
+| MongoDB    | tmpfs + j:true write concern               | 9887.3      | 0.71     | 1.32     | 1.69     | 2.30       |
+| PostgreSQL | tmpfs + fsync=off + synchronous_commit=on  | 9941.0      | 0.70     | 1.24     | 1.61     | 2.11       |
+
+## Kubernetes Benchmark Comparison
+> Conditions: event-store mode · k3d cluster · port-forward tunnel
+> All backends: single-node, emptyDir Memory (tmpfs), OS-buffer durability, concurrency 64
+
+| Backend    | Deployment                                        | Rate (ev/s) | p50 (ms) | ...
+|------------|---------------------------------------------------|------------:|:--------:|
+| KurrentDB  | k3d single-node (emptyDir Memory, UNSAFE_DISABLE) | 8200.0      | 0.85     |
+| MongoDB    | k3d single-node (emptyDir Memory, j:true)         | 7900.0      | 0.92     |
+| PostgreSQL | k3d single-node (emptyDir Memory, fsync=off)      | 8100.0      | 0.88     |
 ```
 
 ### k3d jobs
 
-k3d is pinned to `TAG=v5.8.3` in all three k8s jobs.  Without a pinned version the
+All three k8s jobs pin k3d to `TAG=v5.8.3`.  Without a pinned version the
 `k3d-install.sh` script calls the GitHub API to resolve "latest", which 502-fails
 intermittently on GitHub-hosted runners.
+
+Each k8s benchmark job deploys a **single-node** instance using `emptyDir: {medium: Memory}`
+(tmpfs) so the storage type is identical to the Docker jobs.  The KurrentDB k8s job uses
+an inline StatefulSet (not the production 3-node PVC manifest in `k8s/02-kurrentdb/`) for
+this reason.  The production HA manifests remain unchanged for real deployments.
 
 ---
 

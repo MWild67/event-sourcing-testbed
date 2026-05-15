@@ -138,14 +138,12 @@ spec:
           configMap:
             name: mongodb-init
             defaultMode: 0755
-  volumeClaimTemplates:
-    - metadata:
-        name: data
-        labels:
-          app: mongodb
-      spec:
-        accessModes: ["ReadWriteOnce"]
-        storageClassName: event-store-local
-        resources:
-          requests:
-            storage: 10Gi
+        # emptyDir Memory (tmpfs) keeps durability at the same OS-buffer level
+        # as the Docker benchmark job (--tmpfs /data/db + j:true write concern).
+        # On tmpfs, WiredTiger's fdatasync() is a no-op — no backing disk.
+        # This is the only way to align MongoDB with KurrentDB/PostgreSQL, which
+        # use UNSAFE_DISABLE_FLUSH_TO_DISK and fsync=off respectively.
+        - name: data
+          emptyDir:
+            medium: Memory
+            sizeLimit: 2Gi
