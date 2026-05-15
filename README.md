@@ -45,6 +45,39 @@ Every job runs one backend in isolation on a **fresh ubuntu-22.04 GitHub Actions
 wall-clock time from *before* `pool.acquire()` / gRPC call to *after* the server
 acknowledgement — it includes all protocol and semantic overhead.
 
+### Benchmark internals
+
+**Rate pacing**  
+A token-bucket loop fires one insert per slot at the target interval (`1 / rate`).
+If all 64 concurrency slots are in-flight when a tick fires, the tick is skipped
+(non-blocking `try_acquire_owned`) rather than queued — this prevents artificial
+backpressure buildup and keeps the offered rate honest.
+
+**Warm-up phase**  
+Before the timed window opens, the harness fires `concurrency + 4` (68) concurrent
+pings to pre-heat connection pools and JIT-compiled server code.  Warm-up latency is
+discarded; only the 30-second steady-state window is reported.
+
+**HDR histogram**  
+Each completed write records its latency (in microseconds) into a
+3-significant-digit HDR histogram.  HDR histograms are lossless for the reported
+percentiles up to 2^63 µs and do not require buffering individual samples, so
+memory usage is constant regardless of event count.
+
+**Concurrency model**  
+```
+Arc<Semaphore>(max_in_flight = min(concurrency, 96))
+│
+├─ token-bucket tick fires → try_acquire_owned()
+│   ├─ permit acquired → spawn(async { write event, record latency, drop permit })
+│   └─ permit unavailable → skip tick (back-pressure signal)
+│
+└─ after timed window → acquire_many(max_in_flight) to drain all in-flight tasks
+```
+The semaphore bound prevents unbounded goroutine fan-out when the backend is slower
+than the target rate (e.g. first seconds of warm-up).  Draining after the window
+ensures every in-flight write is counted before the histogram is printed.
+
 ### Durability alignment — why this is a fair comparison
 
 All three backends are configured at exactly the same **"OS-buffer" durability level**:
@@ -92,6 +125,86 @@ After each push to `main` the **"Benchmark Comparison Summary"** job writes a si
 Markdown table to the Actions run summary page (the `:bar_chart:` tab on the run detail
 page).  Each Docker benchmark job also echoes its raw JSON line to the step log so
 individual numbers can be inspected without digging through histogram output.
+
+### JSON output format
+
+Pass `--json` to any bench command to get a single-line JSON result on stdout
+(all log output goes to stderr so it never pollutes the captured line):
+
+```json
+{
+  "actual_rate_eps": 9959.1,
+  "target_rate_eps": 10000,
+  "duration_secs":   30,
+  "total_events":    298773,
+  "p50_us":          689,
+  "p75_us":          821,
+  "p95_us":          1203,
+  "p99_us":          1581,
+  "p999_us":         2047,
+  "p9999_us":        3071,
+  "concurrency":     64,
+  "batch_size":      1
+}
+```
+
+All latency values are in **microseconds**.  The CI `report` job reads `actual_rate_eps`
+and the four percentile fields (`p50_us`, `p95_us`, `p99_us`, `p999_us`) to build the
+summary table.
+
+---
+
+## CI Pipeline
+
+The GitHub Actions workflow (`.github/workflows/bench.yml`) runs **8 jobs** on every push
+to `main`.  All jobs use `ubuntu-22.04` (2 vCPU, 7 GB RAM) runners.
+
+### Job summary
+
+| Job | Backend | Mode | Storage | Notes |
+|-----|---------|------|---------|-------|
+| `bench-kurrentdb-memdb` | KurrentDB | in-memory | tmpfs | `MemDb` flag; no persistence layer |
+| `bench-kurrentdb` | KurrentDB | Docker | tmpfs + `UNSAFE_DISABLE_FLUSH_TO_DISK=true` | 64-way concurrency; captures `--json` output |
+| `bench-kurrentdb-k8s` | KurrentDB | k3d | emptyDir (Memory) | k3d pinned to `v5.8.3` |
+| `bench-mongodb` | MongoDB | Docker | `--tmpfs /data/db` + `j:true` | captures `--json` output |
+| `bench-mongodb-k8s` | MongoDB | k3d | emptyDir (Memory) | k3d pinned to `v5.8.3` |
+| `bench-postgres` | PostgreSQL | Docker | `--tmpfs /var/lib/postgresql/data` + `fsync=off` | `max_connections=200`; captures `--json` output |
+| `bench-postgres-k8s` | PostgreSQL | k3d | emptyDir (Memory) + `fsync=off` | k3d pinned to `v5.8.3` |
+| `report` | — | — | — | Reads outputs from the three Docker jobs; writes comparison table to run summary |
+
+### How the Docker benchmark jobs work
+
+Each Docker bench job follows the same pattern:
+
+1. **Build** the Rust binary in release mode (`cargo build --release`).
+2. **Start** the backend container with tmpfs storage and durability flags.
+3. **Wait** for the backend to become ready (health-check loop with `--ping`).
+4. **Run** the benchmark binary with `--json` and capture stdout into `$RESULT`.
+5. **Parse** `$RESULT` with a one-liner Python `json.load` to extract the five fields.
+6. **Write** each field to `$GITHUB_OUTPUT` so the `report` job can read them via
+   `needs.<job>.outputs.<field>`.
+
+### The `report` job
+
+`report` runs with `if: always()` so it executes even if one benchmark fails.
+It uses `needs: [bench-kurrentdb, bench-mongodb, bench-postgres]` to consume outputs.
+A short Python script assembles a Markdown table and writes it to `$GITHUB_STEP_SUMMARY`:
+
+```
+## Benchmark Comparison
+
+| Backend     | Durability              | Rate (ev/s) | p50 (µs) | p95 (µs) | p99 (µs) | p99.9 (µs) |
+|-------------|-------------------------|-------------|----------|----------|----------|------------|
+| KurrentDB   | OS-buffer, no fsync     | 9 959       | 689      | 1 203    | 1 581    | 2 047      |
+| MongoDB     | OS-buffer, no fsync     | 9 887       | 712      | 1 318    | 1 694    | 2 303      |
+| PostgreSQL  | OS-buffer, no fsync     | 9 941       | 701      | 1 241    | 1 612    | 2 111      |
+```
+
+### k3d jobs
+
+k3d is pinned to `TAG=v5.8.3` in all three k8s jobs.  Without a pinned version the
+`k3d-install.sh` script calls the GitHub API to resolve "latest", which 502-fails
+intermittently on GitHub-hosted runners.
 
 ---
 
@@ -144,6 +257,9 @@ make bench-local
 # Run the MongoDB benchmark
 make mongo-bench-local
 
+# Run the PostgreSQL benchmark
+make pg-bench-local
+
 # Explore the UIs
 start http://localhost:2113/web   # KurrentDB
 start http://localhost:15672       # RabbitMQ  (guest / guest)
@@ -167,6 +283,9 @@ make bench-local
 
 # Run the MongoDB benchmark
 make mongo-bench-local
+
+# Run the PostgreSQL benchmark
+make pg-bench-local
 
 # Explore the UIs
 xdg-open http://localhost:2113/web   # KurrentDB
@@ -343,10 +462,68 @@ rust-app/target/release/testbed \
 
 ---
 
+### Test 06 — PostgreSQL Write-Latency Stress Test
+
+Inserts events into a PostgreSQL 16 instance at **10 000 events/second** for 30 seconds
+using 64 concurrent Tokio tasks (`sqlx` + `PgPool`, `max_connections=128`,
+`test_before_acquire=false`).
+
+> **`test_before_acquire=false`** is critical.  The sqlx 0.8 default is `true`, which
+> pings every idle connection before checkout.  At 64 concurrent tasks this doubles
+> the effective query rate (10k pings + 10k inserts = 20k QPS), saturating PostgreSQL's
+> `max_connections` limit and causing `PoolTimedOut` errors.  With the flag disabled the
+> warm-up pre-heats connections once and they are reused without re-validation.
+
+```bash
+# Start PostgreSQL locally first:
+docker compose up -d postgres
+# or with Podman:
+podman compose up -d postgres
+
+# Run via the testbed binary:
+rust-app/target/release/testbed \
+  --postgres-url "postgres://postgres:postgres@localhost:5432/eventbench" \
+  pg-bench \
+  --target-rate 10000 \
+  --concurrency 64 \
+  --duration-secs 30 \
+  --p99-limit-ms 5
+
+# Emit JSON (for scripting):
+rust-app/target/release/testbed \
+  --postgres-url "postgres://postgres:postgres@localhost:5432/eventbench" \
+  pg-bench --json
+```
+
+**Pass criteria:**
+
+- Actual rate ≥ 9 000 ev/s
+- **p99 insert latency < p99-limit-ms** (default 2 ms in CI; 5 ms recommended locally)
+
+**Schema used by the benchmark:**
+
+```sql
+CREATE TABLE IF NOT EXISTS events (
+    stream_id   TEXT        NOT NULL,
+    version     BIGINT      NOT NULL,
+    event_type  TEXT        NOT NULL,
+    payload     JSONB       NOT NULL,
+    inserted_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (stream_id, version)
+);
+```
+
+Each task owns one `stream_id` and increments `version` monotonically.  The
+`PRIMARY KEY (stream_id, version)` constraint enforces optimistic-concurrency
+guarantees identical to KurrentDB's stream version check.  In `--event-store-mode`
+the insert is wrapped in a versioned CTE that rejects out-of-order writes atomically.
+
+---
+
 ### Test 02 — Performance Benchmark (I/O Stress Test)
 
 Appends events to KurrentDB at **10 000 events/second** for 30 seconds
-using 50 concurrent Tokio tasks across separate streams.
+using 64 concurrent Tokio tasks across separate streams.
 Latency is measured with a 3-significant-digit HDR histogram.
 
 ```bash
@@ -521,3 +698,31 @@ Common bench flags (all three bench commands):
 → Verify the headless service DNS resolves inside pods:
   `kubectl exec -it rabbitmq-0 -n event-store -- nslookup rabbitmq-headless`
 → Check that the `rabbitmq-peer-discovery` RBAC role has `endpoints/get` permission.
+
+**PostgreSQL pool timeouts (`PoolTimedOut` / `sorry, too many clients`)**
+→ Root cause: sqlx 0.8 defaults `test_before_acquire` to `true`, pinging every idle
+  connection on checkout.  At 64 concurrent tasks this doubles effective QPS and
+  exhausts `max_connections`.
+→ Fix already applied: `PgPoolOptions::new().test_before_acquire(false)`.
+→ If you see it again after a sqlx upgrade, check the changelog for default changes.
+→ PostgreSQL Docker container is started with `-c max_connections=200` — if you
+  change `--concurrency` above 96, also raise `max_connections` accordingly.
+
+**k3d install fails with HTTP 502**
+→ The `k3d-install.sh` script calls the GitHub API to resolve the "latest" tag.
+  GitHub-hosted runners intermittently 502 on this API under load.
+→ Fix already applied: all k8s jobs pin `TAG=v5.8.3` to bypass the API call entirely:
+  `wget -q -O - https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | TAG=v5.8.3 bash`
+→ To upgrade k3d, change the tag value in all three k8s jobs simultaneously.
+
+**Benchmark reports 0 events / exits before 30 s**
+→ The backend was not ready when the benchmark started.  The readiness wait loop
+  timed out.  Increase the sleep/retry count in the `--ping` loop or add a longer
+  `sleep` before the bench command.
+→ For KurrentDB: wait for `IS LEADER... SPARTA!` in container logs before benchmarking.
+
+**`cargo build` fails with `aws-lc-sys` / `cmake` errors on Windows**
+→ The Rust app links against `aws-lc-rs` (via `rustls`).  On Windows this requires
+  cmake and NASM.  Install via `winget install Kitware.CMake NASM.NASM`.
+→ Alternatively, build inside the Dockerfile (Linux) where the build environment is
+  already set up: `make build` uses `docker buildx` / `podman build`.
