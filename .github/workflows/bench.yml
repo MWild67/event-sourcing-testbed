@@ -150,10 +150,11 @@ jobs:
       - name: Install k3d
         run: curl -s https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | TAG=v5.8.3 bash
 
-      - name: Create k3d cluster (1 server + 1 agent)
+      - name: Create k3d cluster
         run: |
           k3d cluster create testbed \
-            --agents 1 \
+            --servers 1 \
+            --no-lb \
             --wait \
             --timeout 120s
 
@@ -207,7 +208,7 @@ jobs:
                 containers:
                   - name: kurrentdb
                     image: kurrentplatform/kurrentdb:latest
-                    imagePullPolicy: Never
+                    imagePullPolicy: IfNotPresent
                     ports:
                       - containerPort: 2113
                     env:
@@ -234,9 +235,10 @@ jobs:
                       httpGet:
                         path: /health/live
                         port: 2113
-                      initialDelaySeconds: 15
+                      initialDelaySeconds: 30
                       periodSeconds: 5
-                      failureThreshold: 12
+                      timeoutSeconds: 5
+                      failureThreshold: 30
                 volumes:
                   - name: data
                     emptyDir:
