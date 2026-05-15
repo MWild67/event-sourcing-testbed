@@ -205,6 +205,11 @@ jobs:
                 labels:
                   app: kurrentdb
               spec:
+                # enableServiceLinks: false is REQUIRED for KurrentDB.
+                # Kubernetes injects KURRENTDB_PORT_2113_TCP, KURRENTDB_SERVICE_HOST,
+                # etc. into every pod.  KurrentDB treats every KURRENTDB_* env var as
+                # a configuration option; unknown ones are fatal (exit 1).
+                enableServiceLinks: false
                 containers:
                   - name: kurrentdb
                     image: kurrentplatform/kurrentdb:latest
