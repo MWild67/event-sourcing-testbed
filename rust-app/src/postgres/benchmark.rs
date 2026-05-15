@@ -178,20 +178,20 @@ pub async fn run(pg_url: &str, config: BenchmarkConfig) -> Result<BenchmarkResul
     // so those pending requests time out, producing the periodic WARN bursts
     // seen in CI logs.
     //
-    // Firing `concurrency` simultaneous pings here ensures every connection
-    // slot is open before the timed measurement window starts.
+    // We warm up max_in_flight + 4 connections: the extra 4 act as a small
+    // buffer so the pool never has to create a connection on the hot path
+    // even if a task briefly holds its connection longer than expected.
+    let max_in_flight = (config.concurrency as usize).min(96);
     {
-        let warm_handles: Vec<_> = (0..config.concurrency as usize)
+        let warm_count = max_in_flight + 4;
+        let warm_handles: Vec<_> = (0..warm_count)
             .map(|_| {
                 let c = Arc::clone(&client);
                 tokio::spawn(async move { c.ping().await.ok() })
             })
             .collect();
         futures::future::join_all(warm_handles).await;
-        info!(
-            connections = config.concurrency,
-            "connection pool warmed up"
-        );
+        info!(connections = warm_count, "connection pool warmed up");
     }
 
     // ── Timed loop ────────────────────────────────────────────────────────────
@@ -202,7 +202,6 @@ pub async fn run(pg_url: &str, config: BenchmarkConfig) -> Result<BenchmarkResul
     let ticks_per_sec = ((config.target_rate as f64) / (batch_size as f64)).ceil() as u64;
     let tick_us = 1_000_000u64 / ticks_per_sec.max(1);
 
-    let max_in_flight = (config.concurrency as usize).min(96);
     let in_flight = Arc::new(tokio::sync::Semaphore::new(max_in_flight));
 
     let duration = Duration::from_secs(config.duration_secs);

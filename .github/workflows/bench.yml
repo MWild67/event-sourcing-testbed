@@ -233,7 +233,7 @@ jobs:
           docker run -d \
             --name mongodb \
             -p 27017:27017 \
-            -v /tmp/mongodb:/data/db \
+            --tmpfs /data/db \
             mongo:7 \
             mongod --quiet --bind_ip_all --replSet rs0 --wiredTigerCacheSizeGB 0.25
           echo "Waiting for MongoDB to be ready..."
@@ -449,7 +449,9 @@ jobs:
             -p 5432:5432 \
             --tmpfs /var/lib/postgresql/data \
             postgres:16 \
-            -c synchronous_commit=on
+            -c synchronous_commit=off \
+            -c fsync=off \
+            -c full_page_writes=off
 
       - name: Wait for PostgreSQL to be ready
         run: |

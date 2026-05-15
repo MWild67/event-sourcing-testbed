@@ -256,13 +256,14 @@ impl MongoClient {
             })
             .collect();
 
-        // Apply journaled write concern on the event insert only — the fsync
-        // cost here is what makes this comparable to KurrentDB's durable append.
-        // Applying j:true at the ClientOptions level would interfere with server
-        // selection and cause connection timeouts on some MongoDB configurations.
+        // Apply explicit write concern on the event insert — w:1, j:false so
+        // MongoDB acknowledges on memory write without waiting for a journal
+        // flush.  This matches the "no flush to stable storage" posture used by
+        // KurrentDB (UNSAFE_DISABLE_FLUSH_TO_DISK) and PostgreSQL (fsync=off)
+        // in the Docker benchmark jobs, keeping all three backends comparable.
         let journal_wc = WriteConcern::builder()
             .w(Acknowledgment::Nodes(1))
-            .journal(true)
+            .journal(false)
             .build();
 
         coll.insert_many(docs?)
