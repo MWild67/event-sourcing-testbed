@@ -35,6 +35,8 @@ spec:
             - fsync=off
             - -c
             - full_page_writes=off
+            - -c
+            - max_connections=200
           ports:
             - containerPort: 5432
           env:
