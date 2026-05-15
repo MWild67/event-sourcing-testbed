@@ -22,7 +22,12 @@ spec:
           #   fsync=off               — checkpoint pages are not fsynced to disk
           #   full_page_writes=off    — skips writing full pages to WAL after checkpoint
           # These settings maximise throughput on tmpfs-backed storage.
-          command:
+          #
+          # NOTE: use `args:` (not `command:`) so the image ENTRYPOINT
+          # (docker-entrypoint.sh) still runs to initialise the data directory.
+          # `command:` would replace the entrypoint, leaving an uninitialised
+          # emptyDir and causing the pod to crash-loop.
+          args:
             - postgres
             - -c
             - synchronous_commit=off
