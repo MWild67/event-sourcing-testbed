@@ -1,6 +1,7 @@
 # Event Sourcing Testbed
 
-A fully automated testbed for event sourcing using **Rust**, **RabbitMQ**, and **KurrentDB** on Kubernetes.
+A performance testbed that compares three event-store backends — **KurrentDB**, **MongoDB**, and **PostgreSQL** — under identical conditions on GitHub Actions.
+The Rust benchmark harness drives each backend at 10 000 events/second and measures write latency with an HDR histogram.
 
 ## Architecture
 
@@ -23,17 +24,76 @@ A fully automated testbed for event sourcing using **Rust**, **RabbitMQ**, and *
 
 | Component       | Version              | Role                                  |
 |-----------------|----------------------|---------------------------------------|
-| KurrentDB    | 23.10.0              | Append-only event log (gRPC/HTTP)     |
+| KurrentDB       | 23.10.0              | Append-only event log (gRPC/HTTP)     |
+| MongoDB         | 7.x                  | Document store — event-store mode     |
+| PostgreSQL      | 16                   | Relational DB — versioned CTE inserts |
 | RabbitMQ        | 3.13 + management    | Event fan-out (topic exchange)        |
-| Rust app        | Tokio + lapin        | Benchmark harness & event producer    |
-| MongoDB         | 7.x                  | Event-log alternative — write latency comparison |
+| Rust app        | Tokio async          | Benchmark harness & event producer    |
 | Prometheus      | v2.51                | Metrics collection                    |
 | Grafana         | 10.4                 | Dashboards                            |
 | node-exporter   | v1.7                 | Disk I/O, IOPS, CPU iowait            |
 
 ---
 
-## Prerequisites
+## Understanding the benchmark numbers
+
+### What is being measured
+
+Every job runs one backend in isolation on a **fresh ubuntu-22.04 GitHub Actions runner
+(2 vCPU, 7 GB RAM)**.  The Rust harness fires 10 000 events/second for 30 seconds using
+64 concurrent Tokio tasks, each writing to its own dedicated stream.  Latency is the
+wall-clock time from *before* `pool.acquire()` / gRPC call to *after* the server
+acknowledgement — it includes all protocol and semantic overhead.
+
+### Durability alignment — why this is a fair comparison
+
+All three backends are configured at exactly the same **"OS-buffer" durability level**:
+data is written to the OS page cache (tmpfs in CI, so effectively RAM), but `fsync()` is
+never called.  A crash would lose the last few events.  This level is chosen because it is
+the lowest common denominator that all three backends support:
+
+| Backend | Setting | What it means |
+|---------|---------|---------------|
+| **KurrentDB** | `UNSAFE_DISABLE_FLUSH_TO_DISK=true` | Events written to tmpfs; `fsync()` skipped |
+| **MongoDB** | `j:true` write concern + `--tmpfs /data/db` | Journal record written to tmpfs before ACK; no `fsync()` |
+| **PostgreSQL** | `fsync=off` + `full_page_writes=off` + tmpfs | WAL record written to tmpfs before ACK (`synchronous_commit` default = on); no `fsync()` |
+
+> **Why not `synchronous_commit=off` for PostgreSQL?**  
+> That setting acknowledges the commit before the WAL record is written to the OS at all —
+> data lives only in PostgreSQL's internal shared-memory buffers.  KurrentDB and MongoDB
+> both write to the OS buffer before acknowledging, so `synchronous_commit=off` would give
+> PostgreSQL an unfair extra advantage.
+
+> **Why not `j:false` for MongoDB?**  
+> `j:false` acknowledges before the journal record reaches the OS — the same
+> sub-OS-buffer shortcut that `synchronous_commit=off` provides.  Using `j:true` on tmpfs
+> keeps MongoDB at the same level as the other two backends.
+
+### What the numbers do *not* tell you
+
+- **Production throughput.** On a real disk with full durability (`fsync=on`,
+  `synchronous_commit=on`, `j:true`), PostgreSQL would be 10–100× slower (disk-bound).
+  KurrentDB is optimised for sequential append with batched WAL flushing and would retain
+  much more of its in-memory performance at production durability levels.
+- **Distributed / replicated performance.** All jobs run single-node.  KurrentDB is
+  designed for quorum-replicated clusters; PostgreSQL streaming replication adds
+  significant write-path overhead.
+- **Read workloads, subscriptions, or projections.** KurrentDB provides native catch-up
+  subscriptions, persistent consumer groups, and server-side projections.  These have no
+  equivalent in a raw PostgreSQL table and are not benchmarked here.
+- **Concurrent writers to the same stream.** Each task writes to its own dedicated stream,
+  so optimistic-concurrency conflicts never occur.  Workloads with high per-stream
+  contention would penalise PostgreSQL's row-level locking more than KurrentDB's
+  append-only log.
+
+### Reading CI results
+
+After each push to `main` the **"Benchmark Comparison Summary"** job writes a side-by-side
+Markdown table to the Actions run summary page (the `:bar_chart:` tab on the run detail
+page).  Each Docker benchmark job also echoes its raw JSON line to the step log so
+individual numbers can be inspected without digging through histogram output.
+
+---
 
 | Tool              | Version          | Platform        |
 |-------------------|------------------|-----------------|
@@ -158,24 +218,39 @@ event-sourcing-testbed/
 │   ├── 03-rabbitmq/
 │   │   ├── 01-services.yaml
 │   │   └── 02-statefulset.yaml      # RBAC + ConfigMap + StatefulSet
-│   └── 04-monitoring/
-│       ├── 01-node-exporter.yaml    # DaemonSet for Disk I/O metrics
-│       ├── 02-prometheus-rbac.yaml  # ServiceAccount + ClusterRole
-│       ├── 03-prometheus-config.yaml# Scrape targets (ES, RMQ, node-exporter)
-│       ├── 04-prometheus.yaml       # Deployment + Service
-│       ├── 05-grafana-datasource.yaml
-│       ├── 06-grafana-dashboard.yaml# Full dashboard JSON (ConfigMap)
-│       └── 07-grafana.yaml          # Deployment + Service
+│   ├── 04-monitoring/
+│   │   ├── 01-node-exporter.yaml    # DaemonSet for Disk I/O metrics
+│   │   ├── 02-prometheus-rbac.yaml  # ServiceAccount + ClusterRole
+│   │   ├── 03-prometheus-config.yaml# Scrape targets (ES, RMQ, node-exporter)
+│   │   ├── 04-prometheus.yaml       # Deployment + Service
+│   │   ├── 05-grafana-datasource.yaml
+│   │   ├── 06-grafana-dashboard.yaml# Full dashboard JSON (ConfigMap)
+│   │   └── 07-grafana.yaml          # Deployment + Service
+│   ├── 05-mongodb/
+│   │   ├── 01-services.yaml
+│   │   └── 02-statefulset.yaml      # emptyDir (Memory) + replica-set init
+│   └── 06-postgres/
+│       ├── 01-services.yaml
+│       └── 02-statefulset.yaml      # emptyDir (Memory) + fsync=off
 │
 ├── rust-app/
 │   ├── Cargo.toml
 │   ├── Dockerfile
 │   └── src/
-│       ├── main.rs                  # CLI entry point (bench / produce / ping)
+│       ├── main.rs                  # CLI entry point
 │       ├── events.rs                # Domain events + benchmark payload
-│       ├── kurrentdb/client.rs   # KurrentDB gRPC wrapper
-│       ├── rabbitmq_client.rs       # AMQP producer (lapin)
-│       └── benchmark.rs             # HDR-histogram stress test
+│       ├── kurrentdb/
+│       │   ├── client.rs            # KurrentDB gRPC wrapper
+│       │   └── benchmark.rs         # HDR-histogram stress test
+│       ├── mongodb/
+│       │   ├── client.rs            # MongoDB driver wrapper + write concern
+│       │   ├── benchmark.rs         # HDR-histogram stress test
+│       │   └── event_store.rs       # Event-store demo (8 properties)
+│       ├── postgres/
+│       │   ├── client.rs            # sqlx PgPool wrapper (test_before_acquire=false)
+│       │   ├── benchmark.rs         # HDR-histogram stress test
+│       │   └── event_store.rs       # Event-store demo (8 properties)
+│       └── rabbitmq_client.rs       # AMQP producer (lapin)
 │
 └── tests/
     ├── 01-validate-storage.sh       # StorageClass + WaitForFirstConsumer
@@ -387,35 +462,33 @@ open http://localhost:3000   # admin / admin
 testbed [OPTIONS] <COMMAND>
 
 Options:
-  --kurrentdb-url  ESDB connection URL  [env: KURRENTDB_URL]
-  --rabbitmq-url    AMQP URL             [env: RABBITMQ_URL]
-  --mongodb-url     MongoDB URL          [env: MONGODB_URL]
+  --kurrentdb-url  KurrentDB gRPC URL   [env: KURRENTDB_URL]
+  --rabbitmq-url   AMQP URL             [env: RABBITMQ_URL]
+  --mongodb-url    MongoDB URL          [env: MONGODB_URL]
+  --postgres-url   PostgreSQL URL       [env: POSTGRES_URL]
 
 Commands:
-  bench        Run the KurrentDB write-latency stress test
-  mongo-bench  Run the MongoDB write-latency stress test
-  produce      Continuously produce events to KurrentDB + RabbitMQ
-  ping         Probe KurrentDB + RabbitMQ connectivity and exit
-  mongo-ping   Probe MongoDB connectivity and exit
-
-bench options:
-  --target-rate    <N>     Target events/second  [default: 10000]
-  --duration-secs  <N>     Run duration          [default: 30]
-  --concurrency    <N>     Parallel tasks        [default: 64]
-  --batch-size     <N>     Events per gRPC call  [default: 1]
-  --p99-limit-ms   <N>     Failure threshold ms  [default: 2]
-  --json                   Emit results as JSON  (for CI parsing)
-
-mongo-bench options:
-  --target-rate    <N>     Target events/second  [default: 10000]
-  --duration-secs  <N>     Run duration          [default: 30]
-  --concurrency    <N>     Parallel tasks        [default: 64]
-  --batch-size     <N>     Docs per insert_many  [default: 1]
-  --database       <NAME>  MongoDB database      [default: eventbench]
-  --p99-limit-ms   <N>     Failure threshold ms  [default: 2]
-  --no-drop                Skip pre-run DB drop
-  --json                   Emit results as JSON  (for CI parsing)
+  kurrentdb-bench         Run the KurrentDB write-latency stress test
+  mongo-bench             Run the MongoDB write-latency stress test
+  pg-bench                Run the PostgreSQL write-latency stress test
+  produce                 Continuously produce events to KurrentDB + RabbitMQ
+  ping                    Probe KurrentDB + RabbitMQ connectivity and exit
+  mongo-ping              Probe MongoDB connectivity and exit
+  pg-ping                 Probe PostgreSQL connectivity and exit
+  mongo-event-store-demo  Demonstrate 8 event-sourcing properties (MongoDB)
+  pg-event-store-demo     Demonstrate 8 event-sourcing properties (PostgreSQL)
 ```
+
+Common bench flags (all three bench commands):
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--target-rate` | 10000 | Target events/second |
+| `--concurrency` | 64 | Parallel insert tasks |
+| `--batch-size` | 1 | Events per call/insert |
+| `--duration-secs` | 30 | Run duration |
+| `--event-store-mode` | off | Enable versioned inserts + unique constraint |
+| `--json` | off | Emit results as a single JSON line (for CI parsing) |
 
 ---
 

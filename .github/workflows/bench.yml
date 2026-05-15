@@ -66,6 +66,12 @@ jobs:
   bench-kurrentdb:
     name: KurrentDB — Docker (tmpfs, fsync off)
     runs-on: ubuntu-22.04
+    outputs:
+      rate:    ${{ steps.bench.outputs.rate }}
+      p50_us:  ${{ steps.bench.outputs.p50_us }}
+      p95_us:  ${{ steps.bench.outputs.p95_us }}
+      p99_us:  ${{ steps.bench.outputs.p99_us }}
+      p999_us: ${{ steps.bench.outputs.p999_us }}
 
     steps:
       - name: Checkout
@@ -108,14 +114,23 @@ jobs:
         run: cargo build --release --manifest-path rust-app/Cargo.toml
 
       - name: Run KurrentDB benchmark (Docker, tmpfs)
+        id: bench
         run: |
-          rust-app/target/release/testbed \
+          RESULT=$(rust-app/target/release/testbed \
             --kurrentdb-url "kurrentdb://localhost:2113?tls=false" \
             kurrentdb-bench \
             --target-rate 10000 \
-            --concurrency 40 \
+            --concurrency 64 \
             --batch-size 1 \
-            --duration-secs 30
+            --duration-secs 30 \
+            --json)
+          echo "$RESULT"
+          echo "rate=$(echo "$RESULT"    | python3 -c "import sys,json; d=json.load(sys.stdin); print(round(d['actual_rate_eps'],1))")"
+          echo "rate=$(echo "$RESULT"    | python3 -c "import sys,json; d=json.load(sys.stdin); print(round(d['actual_rate_eps'],1))")" >> "$GITHUB_OUTPUT"
+          echo "p50_us=$(echo "$RESULT"  | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['p50_us'])")"  >> "$GITHUB_OUTPUT"
+          echo "p95_us=$(echo "$RESULT"  | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['p95_us'])")"  >> "$GITHUB_OUTPUT"
+          echo "p99_us=$(echo "$RESULT"  | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['p99_us'])")"  >> "$GITHUB_OUTPUT"
+          echo "p999_us=$(echo "$RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['p999_us'])")" >> "$GITHUB_OUTPUT"
 
   # ── Job 3: Kubernetes 3-node cluster — real quorum writes + real disk ───────
   bench-kurrentdb-k8s:
@@ -216,6 +231,12 @@ jobs:
   bench-mongodb:
     name: MongoDB — Docker (tmpfs)
     runs-on: ubuntu-22.04
+    outputs:
+      rate:    ${{ steps.bench.outputs.rate }}
+      p50_us:  ${{ steps.bench.outputs.p50_us }}
+      p95_us:  ${{ steps.bench.outputs.p95_us }}
+      p99_us:  ${{ steps.bench.outputs.p99_us }}
+      p999_us: ${{ steps.bench.outputs.p999_us }}
 
     steps:
       - name: Checkout
@@ -272,15 +293,24 @@ jobs:
         run: cargo build --release --manifest-path rust-app/Cargo.toml
 
       - name: Run MongoDB benchmark (Docker, event-store mode)
+        id: bench
         run: |
-          rust-app/target/release/testbed \
+          RESULT=$(rust-app/target/release/testbed \
             --mongodb-url "mongodb://localhost:27017" \
             mongo-bench \
             --target-rate 10000 \
             --concurrency 64 \
             --batch-size 1 \
             --duration-secs 30 \
-            --event-store-mode
+            --event-store-mode \
+            --json)
+          echo "$RESULT"
+          echo "rate=$(echo "$RESULT"    | python3 -c "import sys,json; d=json.load(sys.stdin); print(round(d['actual_rate_eps'],1))")"
+          echo "rate=$(echo "$RESULT"    | python3 -c "import sys,json; d=json.load(sys.stdin); print(round(d['actual_rate_eps'],1))")" >> "$GITHUB_OUTPUT"
+          echo "p50_us=$(echo "$RESULT"  | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['p50_us'])")"  >> "$GITHUB_OUTPUT"
+          echo "p95_us=$(echo "$RESULT"  | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['p95_us'])")"  >> "$GITHUB_OUTPUT"
+          echo "p99_us=$(echo "$RESULT"  | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['p99_us'])")"  >> "$GITHUB_OUTPUT"
+          echo "p999_us=$(echo "$RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['p999_us'])")" >> "$GITHUB_OUTPUT"
 
       - name: Validate MongoDB event-store features
         run: |
@@ -421,6 +451,12 @@ jobs:
   bench-postgres:
     name: PostgreSQL — Docker (tmpfs)
     runs-on: ubuntu-22.04
+    outputs:
+      rate:    ${{ steps.bench.outputs.rate }}
+      p50_us:  ${{ steps.bench.outputs.p50_us }}
+      p95_us:  ${{ steps.bench.outputs.p95_us }}
+      p99_us:  ${{ steps.bench.outputs.p99_us }}
+      p999_us: ${{ steps.bench.outputs.p999_us }}
     steps:
       - uses: actions/checkout@v4
 
@@ -449,7 +485,6 @@ jobs:
             -p 5432:5432 \
             --tmpfs /var/lib/postgresql/data \
             postgres:16 \
-            -c synchronous_commit=off \
             -c fsync=off \
             -c full_page_writes=off \
             -c max_connections=200
@@ -464,15 +499,24 @@ jobs:
           docker exec pg pg_isready -U postgres -d eventbench
 
       - name: Run PostgreSQL benchmark (Docker, event-store mode)
+        id: bench
         run: |
-          rust-app/target/release/testbed \
+          RESULT=$(rust-app/target/release/testbed \
             --postgres-url "postgres://postgres:postgres@localhost:5432/eventbench" \
             pg-bench \
             --target-rate 10000 \
             --concurrency 64 \
             --batch-size 1 \
             --duration-secs 30 \
-            --event-store-mode
+            --event-store-mode \
+            --json)
+          echo "$RESULT"
+          echo "rate=$(echo "$RESULT"    | python3 -c "import sys,json; d=json.load(sys.stdin); print(round(d['actual_rate_eps'],1))")"
+          echo "rate=$(echo "$RESULT"    | python3 -c "import sys,json; d=json.load(sys.stdin); print(round(d['actual_rate_eps'],1))")" >> "$GITHUB_OUTPUT"
+          echo "p50_us=$(echo "$RESULT"  | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['p50_us'])")"  >> "$GITHUB_OUTPUT"
+          echo "p95_us=$(echo "$RESULT"  | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['p95_us'])")"  >> "$GITHUB_OUTPUT"
+          echo "p99_us=$(echo "$RESULT"  | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['p99_us'])")"  >> "$GITHUB_OUTPUT"
+          echo "p999_us=$(echo "$RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['p999_us'])")" >> "$GITHUB_OUTPUT"
 
       - name: Validate PostgreSQL event-store features
         run: |
@@ -582,3 +626,57 @@ jobs:
           kubectl get pods -n event-store || true
           kubectl describe statefulset/postgres -n event-store || true
           kubectl logs statefulset/postgres -n event-store --tail=50 || true
+
+  # ── Report: side-by-side comparison of the three Docker backends ───────────
+  report:
+    name: Benchmark Comparison Summary
+    runs-on: ubuntu-22.04
+    if: always()
+    needs: [bench-kurrentdb, bench-mongodb, bench-postgres]
+
+    steps:
+      - name: Write comparison table to job summary
+        env:
+          KDB_RATE:    ${{ needs.bench-kurrentdb.outputs.rate }}
+          KDB_P50:     ${{ needs.bench-kurrentdb.outputs.p50_us }}
+          KDB_P95:     ${{ needs.bench-kurrentdb.outputs.p95_us }}
+          KDB_P99:     ${{ needs.bench-kurrentdb.outputs.p99_us }}
+          KDB_P999:    ${{ needs.bench-kurrentdb.outputs.p999_us }}
+          MDB_RATE:    ${{ needs.bench-mongodb.outputs.rate }}
+          MDB_P50:     ${{ needs.bench-mongodb.outputs.p50_us }}
+          MDB_P95:     ${{ needs.bench-mongodb.outputs.p95_us }}
+          MDB_P99:     ${{ needs.bench-mongodb.outputs.p99_us }}
+          MDB_P999:    ${{ needs.bench-mongodb.outputs.p999_us }}
+          PG_RATE:     ${{ needs.bench-postgres.outputs.rate }}
+          PG_P50:      ${{ needs.bench-postgres.outputs.p50_us }}
+          PG_P95:      ${{ needs.bench-postgres.outputs.p95_us }}
+          PG_P99:      ${{ needs.bench-postgres.outputs.p99_us }}
+          PG_P999:     ${{ needs.bench-postgres.outputs.p999_us }}
+        run: |
+          python3 - << 'PYEOF'
+          import os
+
+          def rate(v):
+              try:    return f"{float(v):,.0f}"
+              except: return "—"
+
+          def ms(us):
+              try:    return f"{float(us)/1000:.2f}"
+              except: return "—"
+
+          rows = [
+              ("KurrentDB",  "tmpfs + UNSAFE_DISABLE_FLUSH_TO_DISK", os.environ.get("KDB_RATE",""), os.environ.get("KDB_P50",""), os.environ.get("KDB_P95",""), os.environ.get("KDB_P99",""), os.environ.get("KDB_P999","")),
+              ("MongoDB",    "tmpfs + j:false write concern",         os.environ.get("MDB_RATE",""), os.environ.get("MDB_P50",""), os.environ.get("MDB_P95",""), os.environ.get("MDB_P99",""), os.environ.get("MDB_P999","")),
+              ("PostgreSQL", "tmpfs + fsync=off + synchronous_commit=off", os.environ.get("PG_RATE",""),  os.environ.get("PG_P50",""),  os.environ.get("PG_P95",""),  os.environ.get("PG_P99",""),  os.environ.get("PG_P999","")),
+          ]
+
+          summary = os.environ.get("GITHUB_STEP_SUMMARY", "/dev/stdout")
+          with open(summary, "a") as f:
+              f.write("## :bar_chart: Docker Benchmark Comparison\n\n")
+              f.write("> **Conditions:** event-store mode · 10 k ev/s target · 30 s · concurrency 64 · same ubuntu-22.04 runner\n\n")
+              f.write("| Backend | Durability | Rate (ev/s) | p50 (ms) | p95 (ms) | p99 (ms) | p99.9 (ms) |\n")
+              f.write("|---------|------------|------------:|:--------:|:--------:|:--------:|:----------:|\n")
+              for name, dur, r, p50, p95, p99, p999 in rows:
+                  f.write(f"| **{name}** | {dur} | {rate(r)} | {ms(p50)} | {ms(p95)} | {ms(p99)} | {ms(p999)} |\n")
+              f.write("\n_Lower latency and higher rate is better. All backends use in-memory storage (no disk I/O) for a fair semantic comparison._\n")
+          PYEOF

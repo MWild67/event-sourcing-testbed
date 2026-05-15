@@ -256,14 +256,17 @@ impl MongoClient {
             })
             .collect();
 
-        // Apply explicit write concern on the event insert — w:1, j:false so
-        // MongoDB acknowledges on memory write without waiting for a journal
-        // flush.  This matches the "no flush to stable storage" posture used by
-        // KurrentDB (UNSAFE_DISABLE_FLUSH_TO_DISK) and PostgreSQL (fsync=off)
-        // in the Docker benchmark jobs, keeping all three backends comparable.
+        // Apply explicit write concern on the event insert — w:1, j:true so
+        // MongoDB acknowledges only after the journal record is written to the
+        // OS buffer (tmpfs in CI).  This matches KurrentDB's
+        // UNSAFE_DISABLE_FLUSH_TO_DISK posture: data in OS buffer, no fsync().
+        // PostgreSQL is configured with synchronous_commit=on + fsync=off,
+        // which also writes WAL to the OS buffer before acknowledging.
+        // All three backends therefore operate at the same "OS-buffer" durability
+        // level; none of them calls fsync() so no disk I/O occurs on tmpfs.
         let journal_wc = WriteConcern::builder()
             .w(Acknowledgment::Nodes(1))
-            .journal(false)
+            .journal(true)
             .build();
 
         coll.insert_many(docs?)

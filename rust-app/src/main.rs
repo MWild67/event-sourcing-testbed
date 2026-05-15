@@ -209,7 +209,10 @@ struct PgEventStoreDemoArgs {
 #[tokio::main]
 async fn main() -> Result<()> {
     // Initialise structured logging; RUST_LOG overrides the default level.
+    // Logs go to stderr so that --json benchmark output on stdout can be
+    // captured cleanly (e.g. RESULT=$(testbed ... --json) in CI scripts).
     fmt()
+        .with_writer(std::io::stderr)
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
         )
