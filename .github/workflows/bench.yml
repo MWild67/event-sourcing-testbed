@@ -127,7 +127,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install k3d
-        run: curl -s https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | bash
+        run: curl -s https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | TAG=v5.8.3 bash
 
       - name: Create k3d cluster (1 server + 3 agents)
         run: |
@@ -310,7 +310,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install k3d
-        run: curl -s https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | bash
+        run: curl -s https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | TAG=v5.8.3 bash
 
       - name: Create k3d cluster (1 server + 1 agent)
         run: |
@@ -509,7 +509,7 @@ jobs:
 
       - name: Install k3d + kubectl
         run: |
-          curl -s https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | bash
+          curl -s https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | TAG=v5.8.3 bash
           curl -LO "https://dl.k8s.io/release/$(curl -sSL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
           chmod +x kubectl && sudo mv kubectl /usr/local/bin/
 

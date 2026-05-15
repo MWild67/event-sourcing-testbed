@@ -25,6 +25,14 @@ impl PostgresClient {
             .max_connections(128)
             // Short connect timeout so the readiness retry loop fails fast.
             .acquire_timeout(Duration::from_secs(5))
+            // sqlx 0.8 defaults test_before_acquire to TRUE, which sends an
+            // extra ping round-trip to PostgreSQL on every connection checkout.
+            // At 64 concurrent tasks targeting 10k ev/s this silently doubles
+            // the query load (10k pings + 10k inserts = 20k qps), saturating
+            // the server and causing the very pool timeouts we were chasing.
+            // Disabling it is safe here: the warm-up phase already validates
+            // every connection, and the benchmark/demo runs are short-lived.
+            .test_before_acquire(false)
             .connect(url)
             .await
             .with_context(|| format!("failed to connect to PostgreSQL: {url}"))?;
