@@ -132,9 +132,9 @@ jobs:
           echo "p99_us=$(echo "$RESULT"  | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['p99_us'])")"  >> "$GITHUB_OUTPUT"
           echo "p999_us=$(echo "$RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['p999_us'])")" >> "$GITHUB_OUTPUT"
 
-  # ── Job 3: Kubernetes 3-node cluster — real quorum writes + real disk ───────
+  # ── Job 3: Kubernetes single-node — emptyDir Memory, no fsync ─────────────
   bench-kurrentdb-k8s:
-    name: KurrentDB — Kubernetes (single-node, in-memory)
+    name: KurrentDB — Kubernetes (single-node, tmpfs)
     runs-on: ubuntu-22.04
     outputs:
       rate:    ${{ steps.bench.outputs.rate }}
@@ -231,14 +231,11 @@ jobs:
                     volumeMounts:
                       - name: data
                         mountPath: /data
-                    readinessProbe:
-                      httpGet:
-                        path: /health/live
-                        port: 2113
-                      initialDelaySeconds: 30
-                      periodSeconds: 5
-                      timeoutSeconds: 5
-                      failureThreshold: 30
+                    # No readiness probe — the in-cluster httpGet probe fires
+                    # before KurrentDB's .NET runtime finishes JIT warm-up and
+                    # silently times out, keeping the pod unready forever.
+                    # We poll the actual HTTP endpoint via port-forward in the
+                    # next step instead (same as the Docker / memdb jobs).
                 volumes:
                   - name: data
                     emptyDir:
@@ -248,9 +245,37 @@ jobs:
 
       - name: Wait for KurrentDB to be ready
         run: |
+          # Wait for the pod to exist and reach Running state.  Without a
+          # readiness probe the StatefulSet rollout is Done as soon as the
+          # container is Running, so this returns quickly.
           kubectl rollout status statefulset/kurrentdb \
             -n event-store \
-            --timeout=300s
+            --timeout=120s
+          kubectl port-forward -n event-store pod/kurrentdb-0 2113:2113 &
+          PF_PID=$!
+          sleep 2
+          echo "Polling KurrentDB /health/live ..."
+          for i in $(seq 1 60); do
+            if curl -sf http://localhost:2113/health/live; then
+              echo "KurrentDB ready after $i probe(s)"
+              kill $PF_PID 2>/dev/null
+              exit 0
+            fi
+            # Every 5 attempts dump pod logs so we can see what KurrentDB
+            # is actually doing without waiting for the step to fail.
+            if [ $((i % 5)) -eq 0 ]; then
+              echo "--- pod logs (last 30 lines, attempt $i) ---"
+              kubectl logs -n event-store pod/kurrentdb-0 --tail=30 2>&1 || true
+              echo "--- end pod logs ---"
+            fi
+            echo "  attempt $i/60 — not ready, waiting 5 s..."
+            sleep 5
+          done
+          kill $PF_PID 2>/dev/null || true
+          echo "=== FINAL pod logs ==="
+          kubectl logs -n event-store pod/kurrentdb-0 --tail=50 2>&1 || true
+          echo "KurrentDB did not become ready within 5 minutes"
+          exit 1
 
       - name: Dump pod diagnostics on failure
         if: failure()
@@ -273,7 +298,7 @@ jobs:
             kubectl logs "$pod" -n event-store --tail=50 2>&1 || true
           done
 
-      - name: Run KurrentDB benchmark (Kubernetes, single-node, in-memory)
+      - name: Run KurrentDB benchmark (Kubernetes, single-node, tmpfs)
         id: bench
         run: |
           kubectl port-forward -n event-store pod/kurrentdb-0 2113:2113 &
@@ -716,13 +741,26 @@ jobs:
         if: always()
         run: kill "$PF_PID" 2>/dev/null || true
 
-      - name: Cluster diagnostics (on failure)
+      - name: Dump pod diagnostics on failure
         if: failure()
         run: |
-          kubectl cluster-info 2>/dev/null || { echo "No k8s cluster reachable"; exit 0; }
-          kubectl get pods -n event-store || true
-          kubectl describe statefulset/postgres -n event-store || true
-          kubectl logs statefulset/postgres -n event-store --tail=50 || true
+          kubectl cluster-info 2>/dev/null || {
+            echo "No k8s cluster reachable — skipping pod diagnostics"
+            exit 0
+          }
+          echo "=== Pod status ==="
+          kubectl get pods -n event-store -o wide || true
+          echo "=== PVC status ==="
+          kubectl get pvc -n event-store || true
+          echo "=== Events ==="
+          kubectl get events -n event-store --sort-by='.lastTimestamp' 2>/dev/null | tail -40 || true
+          echo "=== Pod descriptions ==="
+          kubectl describe pods -n event-store || true
+          echo "=== Logs (last 50 lines per pod) ==="
+          for pod in $(kubectl get pods -n event-store -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs "$pod" -n event-store --tail=50 2>&1 || true
+          done
 
   # ── Report: side-by-side comparison of all six backends ──────────────────
   report:
