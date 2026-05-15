@@ -17,6 +17,19 @@ spec:
       containers:
         - name: postgres
           image: postgres:16
+          # Tune PostgreSQL for CI benchmark performance:
+          #   synchronous_commit=off  — WAL is flushed asynchronously (no per-commit fsync)
+          #   fsync=off               — checkpoint pages are not fsynced to disk
+          #   full_page_writes=off    — skips writing full pages to WAL after checkpoint
+          # These settings maximise throughput on tmpfs-backed storage.
+          command:
+            - postgres
+            - -c
+            - synchronous_commit=off
+            - -c
+            - fsync=off
+            - -c
+            - full_page_writes=off
           ports:
             - containerPort: 5432
           env:
@@ -48,12 +61,12 @@ spec:
           volumeMounts:
             - name: postgres-data
               mountPath: /var/lib/postgresql/data
-  volumeClaimTemplates:
-    - metadata:
-        name: postgres-data
-      spec:
-        accessModes: ["ReadWriteOnce"]
-        storageClassName: event-store-local
-        resources:
-          requests:
-            storage: 10Gi
+      volumes:
+        # Use an in-memory emptyDir instead of a PVC so the benchmark sees
+        # tmpfs speeds (matching the Docker bench job) and avoids disk I/O
+        # stalls that cause periodic connection failures over port-forward.
+        - name: postgres-data
+          emptyDir:
+            medium: Memory
+            sizeLimit: 2Gi
+  # No volumeClaimTemplates — storage provided by the emptyDir above.

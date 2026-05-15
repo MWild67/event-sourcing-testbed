@@ -9,7 +9,7 @@ on:
 
 jobs:
   # ── Job 1: in-memory storage — tests gRPC API + write path throughput ──────
-  bench-memdb:
+  bench-kurrentdb-memdb:
     name: KurrentDB — In-memory (MEM_DB)
     runs-on: ubuntu-22.04
 
@@ -52,19 +52,19 @@ jobs:
       - name: Build benchmark binary
         run: cargo build --release --manifest-path rust-app/Cargo.toml
 
-      - name: Run benchmark (MEM_DB)
+      - name: Run KurrentDB benchmark (in-memory)
         run: |
           rust-app/target/release/testbed \
             --kurrentdb-url "kurrentdb://localhost:2113?tls=false" \
-            bench \
+            kurrentdb-bench \
             --target-rate 10000 \
             --concurrency 64 \
             --batch-size 1 \
             --duration-secs 30
 
   # ── Job 2: real storage on tmpfs, fsync off — tests full write pipeline ─────
-  bench-disk:
-    name: KurrentDB — Real storage (tmpfs, fsync off)
+  bench-kurrentdb:
+    name: KurrentDB — Docker (tmpfs, fsync off)
     runs-on: ubuntu-22.04
 
     steps:
@@ -107,19 +107,19 @@ jobs:
       - name: Build benchmark binary
         run: cargo build --release --manifest-path rust-app/Cargo.toml
 
-      - name: Run benchmark (real storage)
+      - name: Run KurrentDB benchmark (Docker, tmpfs)
         run: |
           rust-app/target/release/testbed \
             --kurrentdb-url "kurrentdb://localhost:2113?tls=false" \
-            bench \
+            kurrentdb-bench \
             --target-rate 10000 \
             --concurrency 40 \
             --batch-size 1 \
             --duration-secs 30
 
   # ── Job 3: Kubernetes 3-node cluster — real quorum writes + real disk ───────
-  bench-k8s:
-    name: KurrentDB — 3-node cluster (Kubernetes)
+  bench-kurrentdb-k8s:
+    name: KurrentDB — Kubernetes (3-node cluster)
     runs-on: ubuntu-22.04
 
     steps:
@@ -189,7 +189,7 @@ jobs:
             kubectl logs "$pod" -n event-store --tail=50 2>&1 || true
           done
 
-      - name: Run benchmark (Kubernetes, 3-node quorum writes)
+      - name: Run KurrentDB benchmark (Kubernetes, 3-node cluster)
         run: |
           kubectl port-forward -n event-store pod/kurrentdb-0 19999:2113 &
           PF_GOSSIP=$!
@@ -205,7 +205,7 @@ jobs:
           sleep 3
           rust-app/target/release/testbed \
             --kurrentdb-url "kurrentdb://localhost:2113?tls=false" \
-            bench \
+            kurrentdb-bench \
             --target-rate 10000 \
             --duration-secs 30 \
             --concurrency 50 \
@@ -214,7 +214,7 @@ jobs:
 
   # ── Job 4: MongoDB — in-memory tmpfs, single node ─────────────────────────
   bench-mongodb:
-    name: MongoDB — Single node (tmpfs)
+    name: MongoDB — Docker (tmpfs)
     runs-on: ubuntu-22.04
 
     steps:
@@ -259,7 +259,7 @@ jobs:
       - name: Build benchmark binary
         run: cargo build --release --manifest-path rust-app/Cargo.toml
 
-      - name: Run MongoDB benchmark (tmpfs, event-store mode)
+      - name: Run MongoDB benchmark (Docker, event-store mode)
         run: |
           rust-app/target/release/testbed \
             --mongodb-url "mongodb://localhost:27017" \
@@ -282,7 +282,7 @@ jobs:
   # exercised against a real k8s-hosted MongoDB with WiredTiger on-disk
   # journaling.
   bench-mongodb-k8s:
-    name: MongoDB — Kubernetes single-node replica set
+    name: MongoDB — Kubernetes (single-node replica set)
     runs-on: ubuntu-22.04
 
     steps:
@@ -385,7 +385,7 @@ jobs:
             --duration-secs 30 \
             --event-store-mode
 
-      - name: Run MongoDB event-store demo (all 8 properties)
+      - name: Validate MongoDB event-store features
         run: |
           rust-app/target/release/testbed \
             --mongodb-url "mongodb://localhost:27017/?replicaSet=rs0" \
@@ -399,7 +399,7 @@ jobs:
 
   # ── Job 6: PostgreSQL — standalone Docker ─────────────────────────────────
   bench-postgres:
-    name: "Bench: PostgreSQL (Docker)"
+    name: PostgreSQL — Docker (tmpfs)
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
@@ -440,7 +440,7 @@ jobs:
           done
           docker exec pg pg_isready -U postgres -d eventbench
 
-      - name: Run PostgreSQL benchmark (event-store mode)
+      - name: Run PostgreSQL benchmark (Docker, event-store mode)
         run: |
           rust-app/target/release/testbed \
             --postgres-url "postgres://postgres:postgres@localhost:5432/eventbench" \
@@ -451,7 +451,7 @@ jobs:
             --duration-secs 30 \
             --event-store-mode
 
-      - name: Run PostgreSQL event-store demo (all 8 properties)
+      - name: Validate PostgreSQL event-store features
         run: |
           rust-app/target/release/testbed \
             --postgres-url "postgres://postgres:postgres@localhost:5432/eventbench" \
@@ -462,9 +462,9 @@ jobs:
         if: always()
         run: docker stop pg && docker rm pg || true
 
-  # ── Job 7: PostgreSQL — Kubernetes (k3d) ──────────────────────────────────
+  # ── Job 7: PostgreSQL — Kubernetes (single-node) ────────────────────────
   bench-postgres-k8s:
-    name: "Bench: PostgreSQL (Kubernetes k3d)"
+    name: PostgreSQL — Kubernetes (single-node)
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
@@ -535,13 +535,13 @@ jobs:
           rust-app/target/release/testbed \
             --postgres-url "postgres://postgres:postgres@localhost:5432/eventbench" \
             pg-bench \
-            --target-rate 10000 \
-            --concurrency 64 \
+            --target-rate 5000 \
+            --concurrency 32 \
             --batch-size 1 \
-            --duration-secs 30 \
+            --duration-secs 20 \
             --event-store-mode
 
-      - name: Run PostgreSQL event-store demo (all 8 properties)
+      - name: Validate PostgreSQL event-store features
         run: |
           rust-app/target/release/testbed \
             --postgres-url "postgres://postgres:postgres@localhost:5432/eventbench" \

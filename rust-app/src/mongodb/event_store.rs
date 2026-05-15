@@ -587,10 +587,19 @@ impl MongoEventStore {
                 self.upcasters
                     .upcast(&envelope.event_type, envelope.schema_version, raw_json);
 
-            let event_json = match upcasted {
+            let mut event_json = match upcasted {
                 UpcastResult::Current(v) | UpcastResult::Migrated { event: v, .. } => v,
                 UpcastResult::Unrecognised(_) => continue,
             };
+
+            // Inject the event_type discriminator so serde(tag) enums
+            // (e.g. `#[serde(tag = "event_type")]`) can deserialise correctly.
+            // The payload stored in MongoDB contains only the event fields;
+            // the discriminator lives in the top-level `event_type` column.
+            if let Some(obj) = event_json.as_object_mut() {
+                obj.entry("event_type")
+                    .or_insert_with(|| serde_json::Value::String(envelope.event_type.clone()));
+            }
 
             match serde_json::from_value::<A::Event>(event_json) {
                 Ok(ev) => state.apply(ev),

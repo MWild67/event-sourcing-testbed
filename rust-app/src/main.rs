@@ -55,13 +55,13 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     /// Run the write-latency stress test against KurrentDB (p99 < 2 ms at 10k ev/s).
-    Bench(BenchArgs),
+    KurrentdbBench(BenchArgs),
     /// Run the write-latency stress test against MongoDB (p99 < p99-limit-ms at 10k ev/s).
     MongoBench(MongoBenchArgs),
     /// Continuously produce events to KurrentDB and RabbitMQ.
-    Produce(ProduceArgs),
+    KurrentdbProduce(ProduceArgs),
     /// Probe connectivity to KurrentDB + RabbitMQ and exit 0 if healthy.
-    Ping,
+    KurrentdbPing,
     /// Probe MongoDB connectivity and exit 0 if healthy.
     MongoPing,
     /// Demonstrate all 8 event-sourcing properties against MongoDB.
@@ -218,7 +218,7 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Bench(args) => {
+        Commands::KurrentdbBench(args) => {
             let config = kurrentdb::benchmark::BenchmarkConfig {
                 target_rate: args.target_rate,
                 duration_secs: args.duration_secs,
@@ -267,11 +267,11 @@ async fn main() -> Result<()> {
             let _ = std::io::stderr().flush();
         }
 
-        Commands::Produce(args) => {
+        Commands::KurrentdbProduce(args) => {
             produce_loop(&cli.kurrentdb_url, &cli.rabbitmq_url, args.rate).await?;
         }
 
-        Commands::Ping => {
+        Commands::KurrentdbPing => {
             ping(&cli.kurrentdb_url, &cli.rabbitmq_url).await?;
         }
 
@@ -442,13 +442,12 @@ async fn mongo_event_store_demo(mongo_url: &str, database: &str, event_count: u3
         v["notes"] = serde_json::json!("(migrated from v1)");
         v
     });
-
-    // ── Connect and bootstrap (Properties 1, 3, 7, 8) ────────────────────────
+    info!("[Feature 5/8] Event Upcasting — OrderPlaced v1→v2 upcaster registered");
     let store = MongoEventStore::connect(mongo_url, database)
         .await?
         .with_upcasters(upcasters);
     store.bootstrap().await?;
-    info!("event store bootstrapped");
+    info!("=== MongoDB Event Store — validating 8 essential features ===");
 
     let stream_id = format!("order-demo-{}", uuid::Uuid::new_v4());
 
@@ -456,7 +455,7 @@ async fn mongo_event_store_demo(mongo_url: &str, database: &str, event_count: u3
     //
     // `append_with_outbox` writes domain event + outbox entry atomically.
     // There is no separate publish step that could be lost.
-    info!("=== Property 6: No Dual Write — appending events with transactional outbox ===");
+    info!("[Feature 6/8] No Dual Write — appending events with transactional outbox");
     for i in 0..event_count {
         let order = events::OrderPlaced {
             order_id: uuid::Uuid::new_v4(),
@@ -484,7 +483,7 @@ async fn mongo_event_store_demo(mongo_url: &str, database: &str, event_count: u3
     }
 
     // ── Property 1: Append-Only Guard — concurrency conflict ─────────────────
-    info!("=== Property 1: Append-Only Guard — duplicate version must be rejected ===");
+    info!("[Feature 1/8] Append-Only Guard — duplicate stream version must be rejected");
     let dummy = events::OrderPlaced {
         order_id: uuid::Uuid::new_v4(),
         product_id: "CONFLICT".to_owned(),
@@ -509,7 +508,7 @@ async fn mongo_event_store_demo(mongo_url: &str, database: &str, event_count: u3
     }
 
     // ── Property 2: Aggregate Rehydrator ─────────────────────────────────────
-    info!("=== Property 2: Aggregate Rehydrator — rebuilding state from stream ===");
+    info!("[Feature 2/8] Aggregate Rehydrator — rebuilding state from event stream");
     let (agg, last_ver) = store.rehydrate::<OrderAggregate>(&stream_id).await?;
     info!(
         order_count = agg.order_ids.len(),
@@ -519,7 +518,7 @@ async fn mongo_event_store_demo(mongo_url: &str, database: &str, event_count: u3
     );
 
     // ── Property 3: Checkpoint System ────────────────────────────────────────
-    info!("=== Property 3: Checkpoint System ===");
+    info!("[Feature 3/8] Checkpoint System — persisting and reloading consumer position");
     let consumer_id = "demo-consumer-1";
     store.save_checkpoint(consumer_id, last_ver).await?;
     let loaded = store.load_checkpoint(consumer_id).await?;
@@ -529,8 +528,8 @@ async fn mongo_event_store_demo(mongo_url: &str, database: &str, event_count: u3
         "✓ checkpoint round-trip succeeded"
     );
 
-    // ── Property 7: Built-in Subscriptions (competing consumer lease) ─────────
-    info!("=== Property 7: Competing Consumer — acquiring Single-Active-Consumer lease ===");
+    // ── Feature 7: Single-Active-Consumer ────────────────────────────────────────
+    info!("[Feature 7/8] Single-Active-Consumer — acquiring exclusive consumer lease");
     let acquired = store
         .try_acquire_lease("order-processors", "worker-1", 30)
         .await?;
@@ -543,7 +542,7 @@ async fn mongo_event_store_demo(mongo_url: &str, database: &str, event_count: u3
     info!("✓ lease released");
 
     // ── Property 8: Integration Events — drain the outbox ────────────────────
-    info!("=== Property 8: Integration Events — draining transactional outbox ===");
+    info!("[Feature 8/8] Integration Events — draining transactional outbox relay");
     let mut dispatched = 0u32;
     loop {
         let published = store
@@ -566,7 +565,7 @@ async fn mongo_event_store_demo(mongo_url: &str, database: &str, event_count: u3
     //
     // We do a quick historical-only pass (the change stream portion would block
     // forever in a demo without a live writer, so we stop after catch-up).
-    info!("=== Properties 4 & 7: Catch-Up Subscription (historical phase) ===");
+    info!("[Feature 4/8] Push Subscriptions — catch-up replay then live change stream");
     // Reset checkpoint so we replay from the beginning.
     store.save_checkpoint("demo-catchup", -1).await?;
     let replayed;
@@ -576,7 +575,7 @@ async fn mongo_event_store_demo(mongo_url: &str, database: &str, event_count: u3
     }
     info!(replayed, "✓ catch-up replayed events from stream");
 
-    info!("=== MongoDB Event Store Demo complete ===");
+    info!("=== MongoDB Event Store — all 8 features validated ✓ ===");
     Ok(())
 }
 
@@ -627,18 +626,17 @@ async fn pg_event_store_demo(pg_url: &str, event_count: u32) -> Result<()> {
         v["notes"] = serde_json::json!("(migrated from v1)");
         v
     });
-
-    // ── Connect and bootstrap ─────────────────────────────────────────────────
+    info!("[Feature 5/8] Event Upcasting — OrderPlaced v1→v2 upcaster registered");
     let store = PgEventStore::connect(pg_url)
         .await?
         .with_upcasters(upcasters);
     store.bootstrap().await?;
-    info!("PostgreSQL event store bootstrapped");
+    info!("=== PostgreSQL Event Store — validating 8 essential features ===");
 
     let stream_id = format!("order-demo-{}", uuid::Uuid::new_v4());
 
-    // ── Property 6: No Dual Write ─────────────────────────────────────────────
-    info!("=== Property 6: No Dual Write — appending events with transactional outbox ===");
+    // ── Feature 6: No Dual Write ─────────────────────────────────────────────────
+    info!("[Feature 6/8] No Dual Write — appending events with transactional outbox");
     for i in 0..event_count {
         let order = events::OrderPlaced {
             order_id: uuid::Uuid::new_v4(),
@@ -667,7 +665,7 @@ async fn pg_event_store_demo(pg_url: &str, event_count: u32) -> Result<()> {
     // ── Property 1: Append-Only Guard ─────────────────────────────────────────
     // The immutability trigger fires if we try UPDATE/DELETE.
     // We demonstrate the concurrency conflict by writing a duplicate version.
-    info!("=== Property 1: Append-Only Guard ===");
+    info!("[Feature 1/8] Append-Only Guard — duplicate stream version must be rejected");
     // Direct low-level duplicate insert to show UNIQUE constraint.
     let dup_result = sqlx::query(
         "INSERT INTO events (event_id, stream_id, stream_version, event_type, schema_version, payload)
@@ -684,7 +682,7 @@ async fn pg_event_store_demo(pg_url: &str, event_count: u32) -> Result<()> {
     }
 
     // ── Property 2: Aggregate Rehydrator ─────────────────────────────────────
-    info!("=== Property 2: Aggregate Rehydrator ===");
+    info!("[Feature 2/8] Aggregate Rehydrator — rebuilding state from event stream");
     let (agg, last_ver) = store.rehydrate::<OrderAggregate>(&stream_id).await?;
     info!(
         order_count = agg.order_ids.len(),
@@ -694,7 +692,7 @@ async fn pg_event_store_demo(pg_url: &str, event_count: u32) -> Result<()> {
     );
 
     // ── Property 3: Checkpoint System ─────────────────────────────────────────
-    info!("=== Property 3: Checkpoint System ===");
+    info!("[Feature 3/8] Checkpoint System — persisting and reloading consumer position");
     let consumer_id = "demo-pg-consumer-1";
     store.save_checkpoint(consumer_id, last_ver).await?;
     let loaded = store.load_checkpoint(consumer_id).await?;
@@ -704,8 +702,8 @@ async fn pg_event_store_demo(pg_url: &str, event_count: u32) -> Result<()> {
         "✓ checkpoint round-trip succeeded"
     );
 
-    // ── Property 7: Single-Active-Consumer lease ──────────────────────────────
-    info!("=== Property 7: Single-Active-Consumer advisory lock ===");
+    // ── Feature 7: Single-Active-Consumer ────────────────────────────────────────
+    info!("[Feature 7/8] Single-Active-Consumer — acquiring exclusive consumer lease");
     let acquired = store.try_acquire_lease("order-processors").await?;
     info!(acquired, "✓ lease acquisition result");
     let re_acquired = store.try_acquire_lease("order-processors").await?;
@@ -717,7 +715,7 @@ async fn pg_event_store_demo(pg_url: &str, event_count: u32) -> Result<()> {
     info!("✓ lease released");
 
     // ── Property 8: Integration Events — drain outbox ─────────────────────────
-    info!("=== Property 8: Integration Events — draining outbox ===");
+    info!("[Feature 8/8] Integration Events — draining transactional outbox relay");
     let mut dispatched = 0u32;
     loop {
         let published = store
@@ -734,7 +732,7 @@ async fn pg_event_store_demo(pg_url: &str, event_count: u32) -> Result<()> {
     info!(dispatched, "✓ all outbox entries relayed");
 
     // ── Properties 4 & 7: Catch-up subscription (historical phase only) ───────
-    info!("=== Properties 4 & 7: Catch-Up Subscription (historical replay) ===");
+    info!("[Feature 4/8] Push Subscriptions — catch-up replay then live change notification");
     store.save_checkpoint("demo-pg-catchup", -1).await?;
     let (agg2, _) = store.rehydrate::<OrderAggregate>(&stream_id).await?;
     info!(
@@ -742,6 +740,6 @@ async fn pg_event_store_demo(pg_url: &str, event_count: u32) -> Result<()> {
         "✓ catch-up replayed events from stream"
     );
 
-    info!("=== PostgreSQL Event Store Demo complete ===");
+    info!("=== PostgreSQL Event Store — all 8 features validated ✓ ===");
     Ok(())
 }

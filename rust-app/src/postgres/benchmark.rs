@@ -262,7 +262,7 @@ pub async fn run(pg_url: &str, config: BenchmarkConfig) -> Result<BenchmarkResul
                     let _ = hist.lock().await.record(lat_us);
                     total_ev.fetch_add(batch_size, Ordering::Relaxed);
                 }
-                Err(e) => warn!(error = %e, "insert failed, skipping"),
+                Err(e) => warn!("insert failed, skipping: {:#}", e),
             }
         });
     }
