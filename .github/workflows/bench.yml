@@ -235,7 +235,7 @@ jobs:
             -p 27017:27017 \
             -v /tmp/mongodb:/data/db \
             mongo:7 \
-            mongod --quiet --bind_ip_all --wiredTigerCacheSizeGB 0.25
+            mongod --quiet --bind_ip_all --replSet rs0 --wiredTigerCacheSizeGB 0.25
           echo "Waiting for MongoDB to be ready..."
           for i in $(seq 1 30); do
             docker exec mongodb mongosh --quiet --eval "db.adminCommand('ping').ok" \
@@ -243,6 +243,18 @@ jobs:
           done
           docker exec mongodb mongosh --quiet --eval "db.adminCommand('ping').ok" \
             mongodb://localhost:27017/admin || { echo "MongoDB failed to start"; docker logs mongodb --tail 20; exit 1; }
+
+      - name: Initialise MongoDB replica set
+        run: |
+          docker exec mongodb mongosh --quiet --eval "rs.initiate({_id:'rs0',members:[{_id:0,host:'127.0.0.1:27017'}]})"
+          echo "Waiting for RS primary..."
+          for i in $(seq 1 20); do
+            docker exec mongodb mongosh --quiet --eval \
+              "if (rs.isMaster().ismaster !== true) { throw 'no primary'; }" \
+              2>/dev/null && echo "RS primary ready" && break
+            echo "  attempt $i/20 — waiting 3 s..."
+            sleep 3
+          done
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -269,6 +281,14 @@ jobs:
             --batch-size 1 \
             --duration-secs 30 \
             --event-store-mode
+
+      - name: Validate MongoDB event-store features
+        run: |
+          rust-app/target/release/testbed \
+            --mongodb-url "mongodb://localhost:27017/?replicaSet=rs0" \
+            mongo-event-store-demo \
+            --database eventstoredemo \
+            --events 5
 
       - name: Dump MongoDB logs on failure
         if: failure()
