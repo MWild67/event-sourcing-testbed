@@ -639,10 +639,10 @@ jobs:
           RESULT=$(rust-app/target/release/testbed \
             --postgres-url "postgres://postgres:postgres@localhost:5432/eventbench" \
             pg-bench \
-            --target-rate 5000 \
-            --concurrency 32 \
+            --target-rate 10000 \
+            --concurrency 64 \
             --batch-size 1 \
-            --duration-secs 20 \
+            --duration-secs 30 \
             --event-store-mode \
             --json)
           echo "$RESULT"
@@ -742,7 +742,7 @@ jobs:
             echo "## Kubernetes Benchmark Comparison"
             echo ""
             echo "> **Conditions:** event-store mode · k3d cluster · port-forward tunnel · ubuntu-22.04 runner"
-            echo "> KurrentDB: 3-node cluster, concurrency 50. MongoDB/PostgreSQL: single-node, concurrency 64/32."
+            echo "> KurrentDB: 3-node cluster, concurrency 50. MongoDB/PostgreSQL: single-node, concurrency 64."
             echo ""
             echo "| Backend | Deployment | Rate (ev/s) | p50 (ms) | p95 (ms) | p99 (ms) | p99.9 (ms) |"
             echo "|---------|------------|------------:|:--------:|:--------:|:--------:|:----------:|"
