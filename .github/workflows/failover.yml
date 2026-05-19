@@ -1,0 +1,217 @@
+name: KurrentDB — Node Failover (≤ 60 s)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Spins up a 4-node k3d cluster (1 server + 3 agents), deploys a real 3-node
+# KurrentDB StatefulSet with pods spread one-per-node, then simulates a worker
+# node power-off by applying NoExecute taints to the leader's node and asserts
+# that KurrentDB recovers quorum (≥ 2/3 replicas ready) within 60 seconds.
+#
+# Why 4 nodes for 3 pods?
+#   topologySpreadConstraints (maxSkew=1, DoNotSchedule) places 1 pod per node,
+#   leaving the 4th node empty.  After the leader's node is cordoned+tainted,
+#   the evicted pod always has a free node to land on → [1,1,1] distribution
+#   → maxSkew = 0.  Recovery is never blocked by scheduling constraints.
+# ─────────────────────────────────────────────────────────────────────────────
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  failover-kurrentdb:
+    name: KurrentDB 3-node — node failure ≤ 60 s
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ── Cluster ────────────────────────────────────────────────────────────
+      - name: Install k3d
+        run: curl -s https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | TAG=v5.8.3 bash
+
+      - name: Create k3d cluster (1 server + 3 agents = 4 nodes)
+        run: |
+          k3d cluster create failover \
+            --servers 1 \
+            --agents 3 \
+            --wait \
+            --timeout 120s
+          echo "Nodes:"
+          kubectl get nodes -o wide
+
+      # ── KurrentDB image ────────────────────────────────────────────────────
+      - name: Pre-pull KurrentDB image into k3d
+        run: |
+          docker pull kurrentplatform/kurrentdb:latest
+          k3d image import kurrentplatform/kurrentdb:latest -c failover
+
+      # ── Deploy ─────────────────────────────────────────────────────────────
+      - name: Deploy namespace and services
+        run: |
+          kubectl apply -f k8s/00-namespace.yaml
+          kubectl apply -f k8s/02-kurrentdb/01-services.yaml
+
+      - name: Deploy KurrentDB 3-node StatefulSet (emptyDir Memory, no PVCs)
+        # Uses emptyDir instead of volumeClaimTemplates so the evicted pod can
+        # reschedule on any available node without waiting for a PV to detach.
+        # UNSAFE_DISABLE_FLUSH_TO_DISK speeds up startup; it does not affect
+        # cluster gossip, leader election, or failover behaviour.
+        run: |
+          kubectl apply -f - <<'YAML_EOF'
+          apiVersion: apps/v1
+          kind: StatefulSet
+          metadata:
+            name: kurrentdb
+            namespace: event-store
+          spec:
+            serviceName: kurrentdb-headless
+            replicas: 3
+            podManagementPolicy: Parallel
+            selector:
+              matchLabels:
+                app: kurrentdb
+            template:
+              metadata:
+                labels:
+                  app: kurrentdb
+              spec:
+                # One pod per node — guarantees a free node is available after
+                # the leader's node is cordoned.
+                topologySpreadConstraints:
+                  - maxSkew: 1
+                    topologyKey: kubernetes.io/hostname
+                    whenUnsatisfiable: DoNotSchedule
+                    labelSelector:
+                      matchLabels:
+                        app: kurrentdb
+                # Prevent Kubernetes service-link env vars (KURRENTDB_PORT_*)
+                # from being injected — KurrentDB treats any KURRENTDB_* env
+                # var as a config key and exits on unknown ones.
+                enableServiceLinks: false
+                terminationGracePeriodSeconds: 10
+                containers:
+                  - name: kurrentdb
+                    image: kurrentplatform/kurrentdb:latest
+                    imagePullPolicy: IfNotPresent
+                    ports:
+                      - name: http
+                        containerPort: 2113
+                      - name: grpc
+                        containerPort: 2114
+                    env:
+                      # ── Cluster formation ──────────────────────────────
+                      - name: KURRENTDB_CLUSTER_SIZE
+                        value: "3"
+                      - name: KURRENTDB_DISCOVER_VIA_DNS
+                        value: "true"
+                      - name: KURRENTDB_CLUSTER_DNS
+                        value: "kurrentdb-headless.event-store.svc.cluster.local"
+                      - name: KURRENTDB_CLUSTER_GOSSIP_PORT
+                        value: "2113"
+                      - name: KURRENTDB_NODE_PORT
+                        value: "2113"
+                      # ── Security (testbed: no TLS) ─────────────────────
+                      - name: KURRENTDB_INSECURE
+                        value: "true"
+                      # ── Projections (off for faster startup) ──────────
+                      - name: KURRENTDB_RUN_PROJECTIONS
+                        value: "None"
+                      - name: KURRENTDB_START_STANDARD_PROJECTIONS
+                        value: "false"
+                      - name: KURRENTDB_ENABLE_ATOM_PUB_OVER_HTTP
+                        value: "true"
+                      # ── Storage (no fsync — emptyDir is tmpfs anyway) ──
+                      - name: KURRENTDB_UNSAFE_DISABLE_FLUSH_TO_DISK
+                        value: "true"
+                      - name: KURRENTDB_DB
+                        value: /data/db
+                      - name: KURRENTDB_LOG
+                        value: /data/log
+                    readinessProbe:
+                      httpGet:
+                        path: /health/live
+                        port: 2113
+                      initialDelaySeconds: 20
+                      periodSeconds: 5
+                      failureThreshold: 6
+                    resources:
+                      requests:
+                        cpu: "200m"
+                        memory: "256Mi"
+                      limits:
+                        cpu: "1"
+                        memory: "1Gi"
+                    volumeMounts:
+                      - name: data
+                        mountPath: /data
+                volumes:
+                  - name: data
+                    emptyDir:
+                      medium: Memory
+                      sizeLimit: 256Mi
+          YAML_EOF
+
+      # ── Gate: cluster must be healthy before the failover test starts ──────
+      - name: Wait for 3/3 KurrentDB replicas ready
+        run: |
+          kubectl rollout status statefulset/kurrentdb \
+            -n event-store \
+            --timeout=300s
+          echo "Pod placement:"
+          kubectl get pods -n event-store -o wide
+
+      - name: Wait for leader election
+        # Polls /info on each pod via kubectl exec.  Exits as soon as any pod
+        # reports state=Leader.  Falls back gracefully if wget is unavailable
+        # in the container (the failover script has its own fallback too).
+        run: |
+          echo "Polling for a leader pod (up to 150 s)..."
+          for i in $(seq 1 30); do
+            for pod in kurrentdb-0 kurrentdb-1 kurrentdb-2; do
+              STATE=$(kubectl exec "$pod" -n event-store -- \
+                wget -qO- http://127.0.0.1:2113/info 2>/dev/null \
+                | grep -oP '"state"\s*:\s*"\K[^"]+' || echo "unknown")
+              echo "  [$pod] state=${STATE}"
+              if [[ "$STATE" == "Leader" ]]; then
+                echo "Leader elected: $pod after $i probe(s)"
+                exit 0
+              fi
+            done
+            echo "  attempt $i/30 — no leader yet, waiting 5 s..."
+            sleep 5
+          done
+          echo "WARNING: no explicit leader detected after 150 s — proceeding anyway"
+          echo "(the failover script will fall back to pod-0 as the target node)"
+
+      # ── Failover test ──────────────────────────────────────────────────────
+      - name: Run node failover test — power-off worker, recover ≤ 60 s
+        run: |
+          chmod +x tests/03-failover-test.sh
+          ./tests/03-failover-test.sh
+
+      # ── Diagnostics ───────────────────────────────────────────────────────
+      - name: Dump diagnostics on failure
+        if: failure()
+        run: |
+          kubectl cluster-info 2>/dev/null || {
+            echo "No k8s cluster reachable — skipping pod diagnostics"
+            exit 0
+          }
+          echo "=== Nodes ==="
+          kubectl get nodes -o wide || true
+          echo "=== Pods ==="
+          kubectl get pods -n event-store -o wide || true
+          echo "=== Events ==="
+          kubectl get events -n event-store --sort-by='.lastTimestamp' 2>/dev/null | tail -40 || true
+          echo "=== Pod descriptions ==="
+          kubectl describe pods -n event-store || true
+          echo "=== Logs (last 50 lines per pod) ==="
+          for pod in $(kubectl get pods -n event-store -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs "$pod" -n event-store --tail=50 2>&1 || true
+          done
