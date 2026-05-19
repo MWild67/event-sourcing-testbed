@@ -189,6 +189,31 @@ services:
       timeout: 5s
       retries: 10
 
+  # ── node-exporter ──────────────────────────────────────────────────────────
+  # Collects per-host Disk I/O Wait, IOPS, CPU, and filesystem metrics.
+  # Runs on the event-net bridge so Prometheus can reach it by service name.
+  # Requires /proc, /sys, and / bind-mounted from the host (read-only).
+  node-exporter:
+    image: prom/node-exporter:v1.7.0
+    container_name: node-exporter
+    command:
+      - --path.procfs=/host/proc
+      - --path.sysfs=/host/sys
+      - --path.rootfs=/host
+      - --collector.diskstats
+      - --collector.cpu
+      - --collector.meminfo
+      - --collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc|run/containerd)($$|/)
+    pid: host
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/host:ro,rslave
+    ports:
+      - "9100:9100"
+    networks:
+      - event-net
+
   # ── Prometheus ────────────────────────────────────────────────────────────
   prometheus:
     image: docker.io/prom/prometheus:v2.51.0

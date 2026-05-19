@@ -1,0 +1,769 @@
+{
+    "title": "Event Store — I/O, IOPS & Cluster Health",
+    "uid": "event-store-docker",
+    "description": "Disk I/O Wait, IOPS, KurrentDB cluster health, and RabbitMQ for the event-store testbed",
+    "schemaVersion": 38,
+    "version": 1,
+    "refresh": "10s",
+    "time": {
+        "from": "now-30m",
+        "to": "now"
+    },
+    "timezone": "browser",
+    "graphTooltip": 1,
+    "panels": [
+        {
+            "type": "row",
+            "id": 1,
+            "title": "💾 Storage Performance",
+            "gridPos": {
+                "h": 1,
+                "w": 24,
+                "x": 0,
+                "y": 0
+            },
+            "collapsed": false
+        },
+        {
+            "type": "timeseries",
+            "id": 2,
+            "title": "Disk I/O Wait %",
+            "description": "Percentage of time the CPU is waiting on disk I/O (node_cpu iowait mode, all CPUs averaged).",
+            "gridPos": {
+                "h": 8,
+                "w": 8,
+                "x": 0,
+                "y": 1
+            },
+            "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+            },
+            "fieldConfig": {
+                "defaults": {
+                    "unit": "percent",
+                    "min": 0,
+                    "color": {
+                        "mode": "palette-classic"
+                    },
+                    "thresholds": {
+                        "mode": "absolute",
+                        "steps": [
+                            {
+                                "color": "green",
+                                "value": null
+                            },
+                            {
+                                "color": "yellow",
+                                "value": 10
+                            },
+                            {
+                                "color": "red",
+                                "value": 30
+                            }
+                        ]
+                    }
+                }
+            },
+            "options": {
+                "legend": {
+                    "calcs": [
+                        "mean",
+                        "max"
+                    ],
+                    "displayMode": "table",
+                    "placement": "bottom"
+                },
+                "tooltip": {
+                    "mode": "multi"
+                }
+            },
+            "targets": [
+                {
+                    "expr": "100 * avg by (instance) (rate(node_cpu_seconds_total{mode=\"iowait\", job=\"node-exporter\"}[2m]))",
+                    "legendFormat": "{{instance}} iowait",
+                    "refId": "A"
+                }
+            ]
+        },
+        {
+            "type": "timeseries",
+            "id": 3,
+            "title": "Disk Read IOPS",
+            "description": "Disk read operations per second across all block devices.",
+            "gridPos": {
+                "h": 8,
+                "w": 8,
+                "x": 8,
+                "y": 1
+            },
+            "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+            },
+            "fieldConfig": {
+                "defaults": {
+                    "unit": "iops",
+                    "min": 0,
+                    "color": {
+                        "mode": "palette-classic"
+                    }
+                }
+            },
+            "options": {
+                "legend": {
+                    "calcs": [
+                        "mean",
+                        "max"
+                    ],
+                    "displayMode": "table",
+                    "placement": "bottom"
+                },
+                "tooltip": {
+                    "mode": "multi"
+                }
+            },
+            "targets": [
+                {
+                    "expr": "sum by (instance) (rate(node_disk_reads_completed_total{job=\"node-exporter\"}[2m]))",
+                    "legendFormat": "{{instance}} reads/s",
+                    "refId": "A"
+                }
+            ]
+        },
+        {
+            "type": "timeseries",
+            "id": 4,
+            "title": "Disk Write IOPS",
+            "description": "Disk write operations per second across all block devices.",
+            "gridPos": {
+                "h": 8,
+                "w": 8,
+                "x": 16,
+                "y": 1
+            },
+            "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+            },
+            "fieldConfig": {
+                "defaults": {
+                    "unit": "iops",
+                    "min": 0,
+                    "color": {
+                        "mode": "palette-classic"
+                    }
+                }
+            },
+            "options": {
+                "legend": {
+                    "calcs": [
+                        "mean",
+                        "max"
+                    ],
+                    "displayMode": "table",
+                    "placement": "bottom"
+                },
+                "tooltip": {
+                    "mode": "multi"
+                }
+            },
+            "targets": [
+                {
+                    "expr": "sum by (instance) (rate(node_disk_writes_completed_total{job=\"node-exporter\"}[2m]))",
+                    "legendFormat": "{{instance}} writes/s",
+                    "refId": "A"
+                }
+            ]
+        },
+        {
+            "type": "timeseries",
+            "id": 5,
+            "title": "Disk Throughput (MB/s)",
+            "description": "Bytes read and written per second (all block devices).",
+            "gridPos": {
+                "h": 8,
+                "w": 12,
+                "x": 0,
+                "y": 9
+            },
+            "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+            },
+            "fieldConfig": {
+                "defaults": {
+                    "unit": "MBs",
+                    "min": 0,
+                    "color": {
+                        "mode": "palette-classic"
+                    }
+                }
+            },
+            "options": {
+                "legend": {
+                    "calcs": [
+                        "mean",
+                        "max"
+                    ],
+                    "displayMode": "table",
+                    "placement": "bottom"
+                }
+            },
+            "targets": [
+                {
+                    "expr": "sum by (instance) (rate(node_disk_read_bytes_total{job=\"node-exporter\"}[2m])) / 1048576",
+                    "legendFormat": "{{instance}} read MB/s",
+                    "refId": "A"
+                },
+                {
+                    "expr": "sum by (instance) (rate(node_disk_written_bytes_total{job=\"node-exporter\"}[2m])) / 1048576",
+                    "legendFormat": "{{instance}} write MB/s",
+                    "refId": "B"
+                }
+            ]
+        },
+        {
+            "type": "timeseries",
+            "id": 6,
+            "title": "Disk I/O Time (ms avg)",
+            "description": "Fraction of time the disk was busy, expressed as ms per second (util %).",
+            "gridPos": {
+                "h": 8,
+                "w": 12,
+                "x": 12,
+                "y": 9
+            },
+            "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+            },
+            "fieldConfig": {
+                "defaults": {
+                    "unit": "ms",
+                    "min": 0,
+                    "color": {
+                        "mode": "palette-classic"
+                    },
+                    "thresholds": {
+                        "mode": "absolute",
+                        "steps": [
+                            {
+                                "color": "green",
+                                "value": null
+                            },
+                            {
+                                "color": "yellow",
+                                "value": 2
+                            },
+                            {
+                                "color": "red",
+                                "value": 10
+                            }
+                        ]
+                    }
+                }
+            },
+            "options": {
+                "legend": {
+                    "calcs": [
+                        "mean",
+                        "max"
+                    ],
+                    "displayMode": "table",
+                    "placement": "bottom"
+                }
+            },
+            "targets": [
+                {
+                    "expr": "rate(node_disk_io_time_seconds_total{job=\"node-exporter\"}[2m]) * 1000",
+                    "legendFormat": "{{device}} @ {{instance}}",
+                    "refId": "A"
+                }
+            ]
+        },
+        {
+            "type": "row",
+            "id": 10,
+            "title": "📦 KurrentDB Cluster Health",
+            "gridPos": {
+                "h": 1,
+                "w": 24,
+                "x": 0,
+                "y": 17
+            },
+            "collapsed": false
+        },
+        {
+            "type": "stat",
+            "id": 11,
+            "title": "ES — Active Connections",
+            "gridPos": {
+                "h": 4,
+                "w": 6,
+                "x": 0,
+                "y": 18
+            },
+            "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+            },
+            "fieldConfig": {
+                "defaults": {
+                    "unit": "short",
+                    "color": {
+                        "mode": "thresholds"
+                    },
+                    "thresholds": {
+                        "mode": "absolute",
+                        "steps": [
+                            {
+                                "color": "green",
+                                "value": null
+                            },
+                            {
+                                "color": "yellow",
+                                "value": 100
+                            },
+                            {
+                                "color": "red",
+                                "value": 500
+                            }
+                        ]
+                    }
+                }
+            },
+            "targets": [
+                {
+                    "expr": "sum(kurrentdb_connection_active_client_connections) or sum(eventstore_connection_active_client_connections)",
+                    "legendFormat": "connections",
+                    "refId": "A"
+                }
+            ]
+        },
+        {
+            "type": "stat",
+            "id": 12,
+            "title": "ES — Queue Length",
+            "gridPos": {
+                "h": 4,
+                "w": 6,
+                "x": 6,
+                "y": 18
+            },
+            "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+            },
+            "fieldConfig": {
+                "defaults": {
+                    "unit": "short",
+                    "color": {
+                        "mode": "thresholds"
+                    },
+                    "thresholds": {
+                        "mode": "absolute",
+                        "steps": [
+                            {
+                                "color": "green",
+                                "value": null
+                            },
+                            {
+                                "color": "yellow",
+                                "value": 1000
+                            },
+                            {
+                                "color": "red",
+                                "value": 5000
+                            }
+                        ]
+                    }
+                }
+            },
+            "targets": [
+                {
+                    "expr": "sum(kurrentdb_queue_length) or sum(eventstore_queue_length)",
+                    "legendFormat": "queued items",
+                    "refId": "A"
+                }
+            ]
+        },
+        {
+            "type": "stat",
+            "id": 13,
+            "title": "ES — Alive Nodes",
+            "gridPos": {
+                "h": 4,
+                "w": 6,
+                "x": 12,
+                "y": 18
+            },
+            "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+            },
+            "fieldConfig": {
+                "defaults": {
+                    "unit": "short",
+                    "color": {
+                        "mode": "thresholds"
+                    },
+                    "thresholds": {
+                        "mode": "absolute",
+                        "steps": [
+                            {
+                                "color": "red",
+                                "value": null
+                            },
+                            {
+                                "color": "yellow",
+                                "value": 2
+                            },
+                            {
+                                "color": "green",
+                                "value": 3
+                            }
+                        ]
+                    }
+                }
+            },
+            "targets": [
+                {
+                    "expr": "count(up{job=\"kurrentdb\"} == 1)",
+                    "legendFormat": "alive",
+                    "refId": "A"
+                }
+            ]
+        },
+        {
+            "type": "stat",
+            "id": 14,
+            "title": "ES — Leader Elected",
+            "description": "1 = a leader node is present; 0 = leaderless (split-brain risk).",
+            "gridPos": {
+                "h": 4,
+                "w": 6,
+                "x": 18,
+                "y": 18
+            },
+            "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+            },
+            "fieldConfig": {
+                "defaults": {
+                    "unit": "bool",
+                    "color": {
+                        "mode": "thresholds"
+                    },
+                    "thresholds": {
+                        "mode": "absolute",
+                        "steps": [
+                            {
+                                "color": "red",
+                                "value": null
+                            },
+                            {
+                                "color": "green",
+                                "value": 1
+                            }
+                        ]
+                    },
+                    "mappings": [
+                        {
+                            "type": "value",
+                            "options": {
+                                "0": {
+                                    "text": "NO LEADER",
+                                    "color": "red"
+                                },
+                                "1": {
+                                    "text": "OK",
+                                    "color": "green"
+                                }
+                            }
+                        }
+                    ]
+                }
+            },
+            "targets": [
+                {
+                    "expr": "max(kurrentdb_is_leader) or max(eventstore_is_leader) or vector(0)",
+                    "legendFormat": "leader",
+                    "refId": "A"
+                }
+            ]
+        },
+        {
+            "type": "timeseries",
+            "id": 15,
+            "title": "ES — Write Bytes/s",
+            "gridPos": {
+                "h": 8,
+                "w": 12,
+                "x": 0,
+                "y": 22
+            },
+            "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+            },
+            "fieldConfig": {
+                "defaults": {
+                    "unit": "Bps",
+                    "min": 0,
+                    "color": {
+                        "mode": "palette-classic"
+                    }
+                }
+            },
+            "options": {
+                "legend": {
+                    "calcs": [
+                        "mean",
+                        "max"
+                    ],
+                    "displayMode": "table",
+                    "placement": "bottom"
+                }
+            },
+            "targets": [
+                {
+                    "expr": "sum by (instance) (rate(kurrentdb_disk_io_write_bytes[2m])) or sum by (instance) (rate(eventstore_disk_io_write_bytes[2m]))",
+                    "legendFormat": "{{instance}}",
+                    "refId": "A"
+                }
+            ]
+        },
+        {
+            "type": "timeseries",
+            "id": 16,
+            "title": "ES — Chunk Flush Count/s",
+            "description": "Writer flushes per second — proxy for event append throughput.",
+            "gridPos": {
+                "h": 8,
+                "w": 12,
+                "x": 12,
+                "y": 22
+            },
+            "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+            },
+            "fieldConfig": {
+                "defaults": {
+                    "unit": "ops",
+                    "min": 0,
+                    "color": {
+                        "mode": "palette-classic"
+                    }
+                }
+            },
+            "options": {
+                "legend": {
+                    "calcs": [
+                        "mean",
+                        "max"
+                    ],
+                    "displayMode": "table",
+                    "placement": "bottom"
+                }
+            },
+            "targets": [
+                {
+                    "expr": "sum by (instance) (rate(kurrentdb_writer_flush_size_count[2m])) or sum by (instance) (rate(eventstore_writer_flush_size_count[2m]))",
+                    "legendFormat": "{{instance}} flushes/s",
+                    "refId": "A"
+                }
+            ]
+        },
+        {
+            "type": "row",
+            "id": 20,
+            "title": "🐇 RabbitMQ Health",
+            "gridPos": {
+                "h": 1,
+                "w": 24,
+                "x": 0,
+                "y": 30
+            },
+            "collapsed": false
+        },
+        {
+            "type": "stat",
+            "id": 21,
+            "title": "RMQ — Messages Ready",
+            "gridPos": {
+                "h": 4,
+                "w": 6,
+                "x": 0,
+                "y": 31
+            },
+            "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+            },
+            "fieldConfig": {
+                "defaults": {
+                    "unit": "short",
+                    "color": {
+                        "mode": "thresholds"
+                    },
+                    "thresholds": {
+                        "mode": "absolute",
+                        "steps": [
+                            {
+                                "color": "green",
+                                "value": null
+                            },
+                            {
+                                "color": "yellow",
+                                "value": 10000
+                            },
+                            {
+                                "color": "red",
+                                "value": 100000
+                            }
+                        ]
+                    }
+                }
+            },
+            "targets": [
+                {
+                    "expr": "sum(rabbitmq_queue_messages_ready)",
+                    "legendFormat": "ready",
+                    "refId": "A"
+                }
+            ]
+        },
+        {
+            "type": "stat",
+            "id": 22,
+            "title": "RMQ — Consumers",
+            "gridPos": {
+                "h": 4,
+                "w": 6,
+                "x": 6,
+                "y": 31
+            },
+            "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+            },
+            "fieldConfig": {
+                "defaults": {
+                    "unit": "short",
+                    "color": {
+                        "mode": "thresholds"
+                    },
+                    "thresholds": {
+                        "mode": "absolute",
+                        "steps": [
+                            {
+                                "color": "red",
+                                "value": null
+                            },
+                            {
+                                "color": "green",
+                                "value": 1
+                            }
+                        ]
+                    }
+                }
+            },
+            "targets": [
+                {
+                    "expr": "sum(rabbitmq_queue_consumers)",
+                    "legendFormat": "consumers",
+                    "refId": "A"
+                }
+            ]
+        },
+        {
+            "type": "timeseries",
+            "id": 23,
+            "title": "RMQ — Publish / Deliver Rate",
+            "gridPos": {
+                "h": 8,
+                "w": 12,
+                "x": 0,
+                "y": 35
+            },
+            "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+            },
+            "fieldConfig": {
+                "defaults": {
+                    "unit": "mps",
+                    "min": 0,
+                    "color": {
+                        "mode": "palette-classic"
+                    }
+                }
+            },
+            "options": {
+                "legend": {
+                    "calcs": [
+                        "mean",
+                        "max"
+                    ],
+                    "displayMode": "table",
+                    "placement": "bottom"
+                }
+            },
+            "targets": [
+                {
+                    "expr": "sum(rate(rabbitmq_channel_messages_published_total[2m]))",
+                    "legendFormat": "published/s",
+                    "refId": "A"
+                },
+                {
+                    "expr": "sum(rate(rabbitmq_channel_messages_delivered_total[2m]))",
+                    "legendFormat": "delivered/s",
+                    "refId": "B"
+                }
+            ]
+        },
+        {
+            "type": "timeseries",
+            "id": 24,
+            "title": "RMQ — Alive Nodes",
+            "gridPos": {
+                "h": 8,
+                "w": 12,
+                "x": 12,
+                "y": 35
+            },
+            "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+            },
+            "fieldConfig": {
+                "defaults": {
+                    "unit": "short",
+                    "min": 0,
+                    "color": {
+                        "mode": "palette-classic"
+                    }
+                }
+            },
+            "options": {
+                "legend": {
+                    "calcs": [
+                        "last"
+                    ],
+                    "displayMode": "table",
+                    "placement": "bottom"
+                }
+            },
+            "targets": [
+                {
+                    "expr": "count(up{job=\"rabbitmq\"} == 1)",
+                    "legendFormat": "alive nodes",
+                    "refId": "A"
+                }
+            ]
+        }
+    ]
+}

@@ -12,3 +12,8 @@ scrape_configs:
     static_configs:
       - targets: ['rabbitmq:15692']
     metrics_path: /metrics
+
+  - job_name: node-exporter
+    static_configs:
+      - targets: ['node-exporter:9100']
+    metrics_path: /metrics
