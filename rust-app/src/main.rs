@@ -840,19 +840,29 @@ async fn kurrentdb_rehydrate_demo(
     info!(event_count, "writing events to stream");
     let write_start = Instant::now();
 
-    for i in 0..event_count {
-        let order = events::OrderPlaced {
-            order_id: uuid::Uuid::new_v4(),
-            product_id: format!("PROD-{i}"),
-            quantity: i + 1,
-            price_usd: (f64::from(i) + 1.0) * 9.99,
-            placed_at: chrono::Utc::now(),
-            schema_version: events::SchemaVersion::default(),
-        };
+    // Build all events first, then flush in batches of 500.
+    // Single-event gRPC round trips are expensive at 50 k scale;
+    // batching amortises the per-call overhead without requiring
+    // a concurrency pool.
+    let batch_size: u32 = 500;
+    let mut i: u32 = 0;
+    while i < event_count {
+        let chunk_end = (i + batch_size).min(event_count);
+        let batch: Vec<events::OrderPlaced> = (i..chunk_end)
+            .map(|j| events::OrderPlaced {
+                order_id: uuid::Uuid::new_v4(),
+                product_id: format!("PROD-{j}"),
+                quantity: j + 1,
+                price_usd: (f64::from(j) + 1.0) * 9.99,
+                placed_at: chrono::Utc::now(),
+                schema_version: events::SchemaVersion::default(),
+            })
+            .collect();
         client
-            .append(&stream_id, "OrderPlaced", &order)
+            .append_batch(&stream_id, "OrderPlaced", &batch)
             .await
-            .map_err(|e| anyhow::anyhow!("append #{i} failed: {e}"))?;
+            .map_err(|e| anyhow::anyhow!("batch append at {i} failed: {e}"))?;
+        i = chunk_end;
     }
     let write_elapsed = write_start.elapsed();
     let write_ms = u64::try_from(write_elapsed.as_millis()).unwrap_or(u64::MAX);
