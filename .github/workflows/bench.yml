@@ -784,13 +784,29 @@ jobs:
 
   # ── Job 8: Rehydration / Replay — all three backends (Docker) ─────────────
   #
-  # Validates that each backend can write N domain events, replay the full
-  # stream from the beginning, and reconstruct aggregate state correctly.
-  # Uses 1 000 events (fast enough for CI) and asserts "passed": true in the
-  # JSON output of each rehydrate-demo subcommand.
+  # Validates that each backend can write 50 000 domain events, replay the
+  # full stream from the beginning, and reconstruct aggregate state correctly.
+  # Metrics are surfaced as job outputs so the report job includes them in
+  # the GitHub Actions step summary.
   rehydrate:
     name: Rehydration / Replay (KurrentDB + MongoDB + PostgreSQL)
     runs-on: ubuntu-22.04
+    outputs:
+      kdb_write_ms:    ${{ steps.kdb.outputs.write_ms }}
+      kdb_replay_ms:   ${{ steps.kdb.outputs.replay_ms }}
+      kdb_write_rate:  ${{ steps.kdb.outputs.write_rate }}
+      kdb_replay_rate: ${{ steps.kdb.outputs.replay_rate }}
+      kdb_passed:      ${{ steps.kdb.outputs.passed }}
+      mongo_write_ms:    ${{ steps.mongo.outputs.write_ms }}
+      mongo_replay_ms:   ${{ steps.mongo.outputs.replay_ms }}
+      mongo_write_rate:  ${{ steps.mongo.outputs.write_rate }}
+      mongo_replay_rate: ${{ steps.mongo.outputs.replay_rate }}
+      mongo_passed:      ${{ steps.mongo.outputs.passed }}
+      pg_write_ms:    ${{ steps.pg.outputs.write_ms }}
+      pg_replay_ms:   ${{ steps.pg.outputs.replay_ms }}
+      pg_write_rate:  ${{ steps.pg.outputs.write_rate }}
+      pg_replay_rate: ${{ steps.pg.outputs.replay_rate }}
+      pg_passed:      ${{ steps.pg.outputs.passed }}
 
     steps:
       - name: Checkout
@@ -868,39 +884,56 @@ jobs:
         run: cargo build --release --manifest-path rust-app/Cargo.toml
 
       - name: KurrentDB — rehydration / replay demo
+        id: kdb
         run: |
           RESULT=$(rust-app/target/release/testbed \
             --kurrentdb-url "kurrentdb://localhost:2113?tls=false" \
             kurrentdb-rehydrate-demo \
-            --events 1000 \
             --json)
           echo "$RESULT"
           # The demo prints a human-readable table then the JSON line last.
-          # Use tail -n 1 to hand only the JSON line to the parser.
-          PASSED=$(echo "$RESULT" | tail -n 1 | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['passed'])")
+          JSON=$(echo "$RESULT" | tail -n 1)
+          echo "write_ms=$(echo "$JSON"    | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['write_ms'])")"          >> "$GITHUB_OUTPUT"
+          echo "replay_ms=$(echo "$JSON"   | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['replay_ms'])")"         >> "$GITHUB_OUTPUT"
+          echo "write_rate=$(echo "$JSON"  | python3 -c "import sys,json; d=json.load(sys.stdin); print(round(d['write_rate_eps'],1))")"  >> "$GITHUB_OUTPUT"
+          echo "replay_rate=$(echo "$JSON" | python3 -c "import sys,json; d=json.load(sys.stdin); print(round(d['replay_rate_eps'],1))")" >> "$GITHUB_OUTPUT"
+          PASSED=$(echo "$JSON" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['passed'])")
+          echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
           [ "$PASSED" = "True" ] || { echo "KurrentDB rehydration FAILED"; exit 1; }
 
       - name: MongoDB — rehydration / replay demo
+        id: mongo
         run: |
           RESULT=$(rust-app/target/release/testbed \
             --mongodb-url "mongodb://localhost:27017/?replicaSet=rs0" \
             mongo-rehydrate-demo \
             --database rehydrate-ci \
-            --events 1000 \
             --json)
           echo "$RESULT"
-          PASSED=$(echo "$RESULT" | tail -n 1 | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['passed'])")
+          JSON=$(echo "$RESULT" | tail -n 1)
+          echo "write_ms=$(echo "$JSON"    | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['write_ms'])")"          >> "$GITHUB_OUTPUT"
+          echo "replay_ms=$(echo "$JSON"   | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['replay_ms'])")"         >> "$GITHUB_OUTPUT"
+          echo "write_rate=$(echo "$JSON"  | python3 -c "import sys,json; d=json.load(sys.stdin); print(round(d['write_rate_eps'],1))")"  >> "$GITHUB_OUTPUT"
+          echo "replay_rate=$(echo "$JSON" | python3 -c "import sys,json; d=json.load(sys.stdin); print(round(d['replay_rate_eps'],1))")" >> "$GITHUB_OUTPUT"
+          PASSED=$(echo "$JSON" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['passed'])")
+          echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
           [ "$PASSED" = "True" ] || { echo "MongoDB rehydration FAILED"; exit 1; }
 
       - name: PostgreSQL — rehydration / replay demo
+        id: pg
         run: |
           RESULT=$(rust-app/target/release/testbed \
             --postgres-url "postgres://postgres:postgres@localhost:5432/eventbench" \
             pg-rehydrate-demo \
-            --events 1000 \
             --json)
           echo "$RESULT"
-          PASSED=$(echo "$RESULT" | tail -n 1 | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['passed'])")
+          JSON=$(echo "$RESULT" | tail -n 1)
+          echo "write_ms=$(echo "$JSON"    | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['write_ms'])")"          >> "$GITHUB_OUTPUT"
+          echo "replay_ms=$(echo "$JSON"   | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['replay_ms'])")"         >> "$GITHUB_OUTPUT"
+          echo "write_rate=$(echo "$JSON"  | python3 -c "import sys,json; d=json.load(sys.stdin); print(round(d['write_rate_eps'],1))")"  >> "$GITHUB_OUTPUT"
+          echo "replay_rate=$(echo "$JSON" | python3 -c "import sys,json; d=json.load(sys.stdin); print(round(d['replay_rate_eps'],1))")" >> "$GITHUB_OUTPUT"
+          PASSED=$(echo "$JSON" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['passed'])")
+          echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
           [ "$PASSED" = "True" ] || { echo "PostgreSQL rehydration FAILED"; exit 1; }
 
       - name: Dump Docker logs on failure
@@ -956,43 +989,106 @@ jobs:
           PG_K8S_P95:    ${{ needs.bench-postgres-k8s.outputs.p95_us }}
           PG_K8S_P99:    ${{ needs.bench-postgres-k8s.outputs.p99_us }}
           PG_K8S_P999:   ${{ needs.bench-postgres-k8s.outputs.p999_us }}
+          RH_KDB_WRITE_MS:    ${{ needs.rehydrate.outputs.kdb_write_ms }}
+          RH_KDB_REPLAY_MS:   ${{ needs.rehydrate.outputs.kdb_replay_ms }}
+          RH_KDB_WRITE_RATE:  ${{ needs.rehydrate.outputs.kdb_write_rate }}
+          RH_KDB_REPLAY_RATE: ${{ needs.rehydrate.outputs.kdb_replay_rate }}
+          RH_KDB_PASSED:      ${{ needs.rehydrate.outputs.kdb_passed }}
+          RH_MDB_WRITE_MS:    ${{ needs.rehydrate.outputs.mongo_write_ms }}
+          RH_MDB_REPLAY_MS:   ${{ needs.rehydrate.outputs.mongo_replay_ms }}
+          RH_MDB_WRITE_RATE:  ${{ needs.rehydrate.outputs.mongo_write_rate }}
+          RH_MDB_REPLAY_RATE: ${{ needs.rehydrate.outputs.mongo_replay_rate }}
+          RH_MDB_PASSED:      ${{ needs.rehydrate.outputs.mongo_passed }}
+          RH_PG_WRITE_MS:     ${{ needs.rehydrate.outputs.pg_write_ms }}
+          RH_PG_REPLAY_MS:    ${{ needs.rehydrate.outputs.pg_replay_ms }}
+          RH_PG_WRITE_RATE:   ${{ needs.rehydrate.outputs.pg_write_rate }}
+          RH_PG_REPLAY_RATE:  ${{ needs.rehydrate.outputs.pg_replay_rate }}
+          RH_PG_PASSED:       ${{ needs.rehydrate.outputs.pg_passed }}
         run: |
-          # Convert microseconds to ms string; emit "n/a" when the value is empty
-          # (happens when a bench job was skipped or failed).
-          fmt_ms()   { [ -n "$1" ] && awk "BEGIN{printf \"%.2f\", $1/1000}" || echo "n/a"; }
-          fmt_rate() { [ -n "$1" ] && echo "$1"                             || echo "n/a"; }
+          # Convert microseconds → ms; emit "n/a" when value is missing.
+          fmt_ms()     { [ -n "$1" ] && awk "BEGIN{printf \"%.2f\", $1/1000}" || echo "n/a"; }
+          fmt_rate()   { [ -n "$1" ] && echo "$1"                             || echo "n/a"; }
+          fmt_rh_ms()  { [ -n "$1" ] && echo "$1"                             || echo "n/a"; }
+          fmt_result() { [ "$1" = "True" ] && echo "✓ PASS" || echo "✗ FAIL"; }
 
           {
-            echo "## Docker Benchmark Comparison"
+            echo "## Benchmark Results"
             echo ""
-            echo "> **Conditions:** event-store mode · 10 k ev/s target · 30 s · 64 concurrent tasks · ubuntu-22.04 runner"
-            echo "> **Durability level:** OS-buffer write, no fsync (all three backends equivalent)"
+            echo "> **Benchmark conditions:** event-store mode · 10 k ev/s target · 30 s · 64 concurrent tasks · ubuntu-22.04 runner"
+            echo "> **Rehydration conditions:** 50 000 events · single-stream sequential write then full replay from revision 0 · Docker"
             echo ""
-            echo "| Backend | Storage / flags | Rate (ev/s) | p50 (ms) | p95 (ms) | p99 (ms) | p99.9 (ms) |"
-            echo "|---------|-----------------|------------:|:--------:|:--------:|:--------:|:----------:|"
-            printf "| **KurrentDB** | tmpfs + UNSAFE_DISABLE_FLUSH_TO_DISK=true | %s | %s | %s | %s | %s |\n" \
+
+            # ── KurrentDB ────────────────────────────────────────────────────
+            echo "### KurrentDB"
+            echo ""
+            echo "**Sustained Write Benchmark**"
+            echo ""
+            echo "| Environment | Rate (ev/s) | p50 (ms) | p95 (ms) | p99 (ms) | p99.9 (ms) |"
+            echo "|-------------|------------:|:--------:|:--------:|:--------:|:----------:|"
+            printf "| Docker (tmpfs · UNSAFE_DISABLE_FLUSH_TO_DISK) | %s | %s | %s | %s | %s |\n" \
               "$(fmt_rate "$KDB_RATE")" "$(fmt_ms "$KDB_P50")" "$(fmt_ms "$KDB_P95")" "$(fmt_ms "$KDB_P99")" "$(fmt_ms "$KDB_P999")"
-            printf "| **MongoDB** | tmpfs + j:true write concern | %s | %s | %s | %s | %s |\n" \
-              "$(fmt_rate "$MDB_RATE")" "$(fmt_ms "$MDB_P50")" "$(fmt_ms "$MDB_P95")" "$(fmt_ms "$MDB_P99")" "$(fmt_ms "$MDB_P999")"
-            printf "| **PostgreSQL** | tmpfs + fsync=off + synchronous_commit=on | %s | %s | %s | %s | %s |\n" \
-              "$(fmt_rate "$PG_RATE")" "$(fmt_ms "$PG_P50")" "$(fmt_ms "$PG_P95")" "$(fmt_ms "$PG_P99")" "$(fmt_ms "$PG_P999")"
-            echo ""
-            echo "## Kubernetes Benchmark Comparison"
-            echo ""
-            echo "> **Conditions:** event-store mode · k3d cluster · port-forward tunnel · ubuntu-22.04 runner"
-            echo "> All backends: single-node, emptyDir Memory (tmpfs), OS-buffer durability (no fsync), concurrency 64."
-            echo "> Difference from Docker tier: k8s pod networking + port-forward loopback overhead only."
-            echo ""
-            echo "| Backend | Deployment | Rate (ev/s) | p50 (ms) | p95 (ms) | p99 (ms) | p99.9 (ms) |"
-            echo "|---------|------------|------------:|:--------:|:--------:|:--------:|:----------:|"
-            printf "| **KurrentDB** | k3d single-node (emptyDir Memory, UNSAFE_DISABLE_FLUSH) | %s | %s | %s | %s | %s |\n" \
+            printf "| Kubernetes k3d (emptyDir Memory · no flush) | %s | %s | %s | %s | %s |\n" \
               "$(fmt_rate "$KDB_K8S_RATE")" "$(fmt_ms "$KDB_K8S_P50")" "$(fmt_ms "$KDB_K8S_P95")" "$(fmt_ms "$KDB_K8S_P99")" "$(fmt_ms "$KDB_K8S_P999")"
-            printf "| **MongoDB** | k3d single-node (emptyDir Memory, j:true) | %s | %s | %s | %s | %s |\n" \
+            echo ""
+            echo "**Rehydration / Replay (50 k events)**"
+            echo ""
+            echo "| Phase | Duration (ms) | Throughput (ev/s) | Result |"
+            echo "|-------|-------------:|------------------:|:------:|"
+            printf "| Write — batched 500 ev/gRPC call | %s | %s | |\n" \
+              "$(fmt_rh_ms "$RH_KDB_WRITE_MS")" "$(fmt_rate "$RH_KDB_WRITE_RATE")"
+            printf "| Replay — gRPC server-stream (1 protobuf msg/event) | %s | %s | %s |\n" \
+              "$(fmt_rh_ms "$RH_KDB_REPLAY_MS")" "$(fmt_rate "$RH_KDB_REPLAY_RATE")" \
+              "$(fmt_result "${RH_KDB_PASSED:-}")"
+            echo ""
+
+            # ── MongoDB ──────────────────────────────────────────────────────
+            echo "### MongoDB"
+            echo ""
+            echo "**Sustained Write Benchmark**"
+            echo ""
+            echo "| Environment | Rate (ev/s) | p50 (ms) | p95 (ms) | p99 (ms) | p99.9 (ms) |"
+            echo "|-------------|------------:|:--------:|:--------:|:--------:|:----------:|"
+            printf "| Docker (tmpfs · j:true write concern) | %s | %s | %s | %s | %s |\n" \
+              "$(fmt_rate "$MDB_RATE")" "$(fmt_ms "$MDB_P50")" "$(fmt_ms "$MDB_P95")" "$(fmt_ms "$MDB_P99")" "$(fmt_ms "$MDB_P999")"
+            printf "| Kubernetes k3d (emptyDir Memory · j:true) | %s | %s | %s | %s | %s |\n" \
               "$(fmt_rate "$MDB_K8S_RATE")" "$(fmt_ms "$MDB_K8S_P50")" "$(fmt_ms "$MDB_K8S_P95")" "$(fmt_ms "$MDB_K8S_P99")" "$(fmt_ms "$MDB_K8S_P999")"
-            printf "| **PostgreSQL** | k3d single-node (emptyDir Memory, fsync=off) | %s | %s | %s | %s | %s |\n" \
+            echo ""
+            echo "**Rehydration / Replay (50 k events)**"
+            echo ""
+            echo "| Phase | Duration (ms) | Throughput (ev/s) | Result |"
+            echo "|-------|-------------:|------------------:|:------:|"
+            printf "| Write — one insertOne() per event | %s | %s | |\n" \
+              "$(fmt_rh_ms "$RH_MDB_WRITE_MS")" "$(fmt_rate "$RH_MDB_WRITE_RATE")"
+            printf "| Replay — bulk cursor (16 MB batch) | %s | %s | %s |\n" \
+              "$(fmt_rh_ms "$RH_MDB_REPLAY_MS")" "$(fmt_rate "$RH_MDB_REPLAY_RATE")" \
+              "$(fmt_result "${RH_MDB_PASSED:-}")"
+            echo ""
+
+            # ── PostgreSQL ───────────────────────────────────────────────────
+            echo "### PostgreSQL"
+            echo ""
+            echo "**Sustained Write Benchmark**"
+            echo ""
+            echo "| Environment | Rate (ev/s) | p50 (ms) | p95 (ms) | p99 (ms) | p99.9 (ms) |"
+            echo "|-------------|------------:|:--------:|:--------:|:--------:|:----------:|"
+            printf "| Docker (tmpfs · fsync=off · synchronous_commit=on) | %s | %s | %s | %s | %s |\n" \
+              "$(fmt_rate "$PG_RATE")" "$(fmt_ms "$PG_P50")" "$(fmt_ms "$PG_P95")" "$(fmt_ms "$PG_P99")" "$(fmt_ms "$PG_P999")"
+            printf "| Kubernetes k3d (emptyDir Memory · fsync=off) | %s | %s | %s | %s | %s |\n" \
               "$(fmt_rate "$PG_K8S_RATE")" "$(fmt_ms "$PG_K8S_P50")" "$(fmt_ms "$PG_K8S_P95")" "$(fmt_ms "$PG_K8S_P99")" "$(fmt_ms "$PG_K8S_P999")"
             echo ""
-            echo "_Lower latency and higher rate is better._"
-            echo "_All backends write to tmpfs (RAM). Numbers reflect protocol + semantic overhead only, not production throughput._"
-            echo "_k8s latency is higher than Docker due to the port-forward loopback tunnel._"
+            echo "**Rehydration / Replay (50 k events)**"
+            echo ""
+            echo "| Phase | Duration (ms) | Throughput (ev/s) | Result |"
+            echo "|-------|-------------:|------------------:|:------:|"
+            printf "| Write — one INSERT per event | %s | %s | |\n" \
+              "$(fmt_rh_ms "$RH_PG_WRITE_MS")" "$(fmt_rate "$RH_PG_WRITE_RATE")"
+            printf "| Replay — single SELECT … ORDER BY stream_version | %s | %s | %s |\n" \
+              "$(fmt_rh_ms "$RH_PG_REPLAY_MS")" "$(fmt_rate "$RH_PG_REPLAY_RATE")" \
+              "$(fmt_result "${RH_PG_PASSED:-}")"
+            echo ""
+
+            echo "---"
+            echo "_All backends use RAM (tmpfs/emptyDir). Numbers reflect protocol + semantic overhead, not production throughput._"
+            echo "_K8s latency is higher than Docker due to the port-forward loopback tunnel._"
+            echo "_KurrentDB replay streams one protobuf message per event over gRPC; SQL/document backends bulk-transfer rows per response — this is the root cause of the replay rate difference._"
           } >> "$GITHUB_STEP_SUMMARY"
