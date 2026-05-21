@@ -875,7 +875,9 @@ jobs:
             --events 1000 \
             --json)
           echo "$RESULT"
-          PASSED=$(echo "$RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['passed'])")
+          # The demo prints a human-readable table then the JSON line last.
+          # Use tail -n 1 to hand only the JSON line to the parser.
+          PASSED=$(echo "$RESULT" | tail -n 1 | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['passed'])")
           [ "$PASSED" = "True" ] || { echo "KurrentDB rehydration FAILED"; exit 1; }
 
       - name: MongoDB — rehydration / replay demo
@@ -887,7 +889,7 @@ jobs:
             --events 1000 \
             --json)
           echo "$RESULT"
-          PASSED=$(echo "$RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['passed'])")
+          PASSED=$(echo "$RESULT" | tail -n 1 | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['passed'])")
           [ "$PASSED" = "True" ] || { echo "MongoDB rehydration FAILED"; exit 1; }
 
       - name: PostgreSQL — rehydration / replay demo
@@ -898,7 +900,7 @@ jobs:
             --events 1000 \
             --json)
           echo "$RESULT"
-          PASSED=$(echo "$RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['passed'])")
+          PASSED=$(echo "$RESULT" | tail -n 1 | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['passed'])")
           [ "$PASSED" = "True" ] || { echo "PostgreSQL rehydration FAILED"; exit 1; }
 
       - name: Dump Docker logs on failure
