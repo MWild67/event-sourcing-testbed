@@ -106,6 +106,7 @@ jobs:
           BACKENDS = [
               (
                   'KurrentDB', kdb,
+                  'In-memory (MEM_DB) — pure process memory',
                   'Docker (tmpfs · UNSAFE_DISABLE_FLUSH_TO_DISK)',
                   'Kubernetes k3d (emptyDir Memory · no flush)',
                   'Write — batched 500 ev/gRPC call',
@@ -113,6 +114,7 @@ jobs:
               ),
               (
                   'MongoDB', mdb,
+                  None,
                   'Docker (tmpfs · j:true write concern)',
                   'Kubernetes k3d (emptyDir Memory · j:true)',
                   'Write — one insertOne() per event',
@@ -120,6 +122,7 @@ jobs:
               ),
               (
                   'PostgreSQL', pg,
+                  None,
                   'Docker (tmpfs · fsync=off · synchronous_commit=on)',
                   'Kubernetes k3d (emptyDir Memory · fsync=off)',
                   'Write — one INSERT per event',
@@ -139,12 +142,20 @@ jobs:
                   ' then full replay from revision 0 · Docker\n\n'
               )
           
-              for name, data, docker_env, k8s_env, rh_write_desc, rh_replay_desc in BACKENDS:
+              for name, data, memdb_env, docker_env, k8s_env, rh_write_desc, rh_replay_desc in BACKENDS:
                   f.write(f'### {name}\n\n')
           
                   f.write('**Sustained Write Benchmark**\n\n')
                   f.write('| Environment | Rate (ev/s) | p50 (ms) | p95 (ms) | p99 (ms) | p99.9 (ms) |\n')
                   f.write('|-------------|------------:|:--------:|:--------:|:--------:|:----------:|\n')
+                  if memdb_env:
+                      f.write(
+                          f'| {memdb_env} | {fmt_v(get(data, "bench_memdb", "rate"))} |'
+                          f' {fmt_ms(get(data, "bench_memdb", "p50_us"))} |'
+                          f' {fmt_ms(get(data, "bench_memdb", "p95_us"))} |'
+                          f' {fmt_ms(get(data, "bench_memdb", "p99_us"))} |'
+                          f' {fmt_ms(get(data, "bench_memdb", "p999_us"))} |\n'
+                      )
                   f.write(
                       f'| {docker_env} | {fmt_v(get(data, "bench_docker", "rate"))} |'
                       f' {fmt_ms(get(data, "bench_docker", "p50_us"))} |'
@@ -174,6 +185,17 @@ jobs:
                       f' {fmt_v(get(data, "rehydrate", "replay_rate"))} |'
                       f' {fmt_result(get(data, "rehydrate", "passed"))} |\n\n'
                   )
+          
+                  # Failover result — only KurrentDB carries this field
+                  fo = get(data, "failover", "passed")
+                  if fo:
+                      f.write('**Node Failover (AC-3)**\n\n')
+                      f.write('| Test | Result |\n')
+                      f.write('|------|:------:|\n')
+                      f.write(
+                          f'| 3-node cluster · leader evicted · quorum restored ≤ 60 s |'
+                          f' {fmt_result(fo)} |\n\n'
+                      )
           
               f.write('---\n')
               f.write(

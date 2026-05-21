@@ -12,6 +12,12 @@ jobs:
   bench-memdb:
     name: KurrentDB — In-memory (MEM_DB)
     runs-on: ubuntu-22.04
+    outputs:
+      rate:    ${{ steps.bench.outputs.rate }}
+      p50_us:  ${{ steps.bench.outputs.p50_us }}
+      p95_us:  ${{ steps.bench.outputs.p95_us }}
+      p99_us:  ${{ steps.bench.outputs.p99_us }}
+      p999_us: ${{ steps.bench.outputs.p999_us }}
     steps:
       - uses: actions/checkout@v4
 
@@ -49,14 +55,22 @@ jobs:
         run: cargo build --release --manifest-path rust-app/Cargo.toml
 
       - name: Benchmark (in-memory)
+        id: bench
         run: |
-          rust-app/target/release/testbed \
+          RESULT=$(rust-app/target/release/testbed \
             --kurrentdb-url "kurrentdb://localhost:2113?tls=false" \
             kurrentdb-bench \
             --target-rate 10000 \
             --concurrency 64 \
             --batch-size 1 \
-            --duration-secs 30
+            --duration-secs 30 \
+            --json)
+          echo "$RESULT"
+          echo "rate=$(echo "$RESULT"    | python3 -c "import sys,json; d=json.load(sys.stdin); print(round(d['actual_rate_eps'],1))")" >> "$GITHUB_OUTPUT"
+          echo "p50_us=$(echo "$RESULT"  | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['p50_us'])")" >> "$GITHUB_OUTPUT"
+          echo "p95_us=$(echo "$RESULT"  | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['p95_us'])")" >> "$GITHUB_OUTPUT"
+          echo "p99_us=$(echo "$RESULT"  | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['p99_us'])")" >> "$GITHUB_OUTPUT"
+          echo "p999_us=$(echo "$RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['p999_us'])")" >> "$GITHUB_OUTPUT"
 
   # ── Docker: tmpfs, fsync off ─────────────────────────────────────────────
   bench-docker:
@@ -360,6 +374,8 @@ jobs:
     name: KurrentDB — Node Failover (≤ 60 s)
     runs-on: ubuntu-22.04
     timeout-minutes: 20
+    outputs:
+      passed: ${{ steps.test.outputs.passed }}
     steps:
       - uses: actions/checkout@v4
 
@@ -501,9 +517,15 @@ jobs:
           echo "WARNING: no explicit leader detected after 150 s — proceeding anyway"
 
       - name: Run node failover test — power-off worker, recover ≤ 60 s
+        id: test
         run: |
           chmod +x tests/03-failover-test.sh
-          ./tests/03-failover-test.sh
+          if ./tests/03-failover-test.sh; then
+            echo "passed=True" >> "$GITHUB_OUTPUT"
+          else
+            echo "passed=False" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
 
       - name: Dump diagnostics on failure
         if: failure()
@@ -528,10 +550,15 @@ jobs:
     name: Save Results & Write Summary
     runs-on: ubuntu-22.04
     if: always()
-    needs: [bench-docker, bench-k8s, rehydrate]
+    needs: [bench-memdb, bench-docker, bench-k8s, rehydrate, failover]
     steps:
       - name: Write step summary
         env:
+          MEMDB_RATE:     ${{ needs.bench-memdb.outputs.rate }}
+          MEMDB_P50:      ${{ needs.bench-memdb.outputs.p50_us }}
+          MEMDB_P95:      ${{ needs.bench-memdb.outputs.p95_us }}
+          MEMDB_P99:      ${{ needs.bench-memdb.outputs.p99_us }}
+          MEMDB_P999:     ${{ needs.bench-memdb.outputs.p999_us }}
           DOCKER_RATE:    ${{ needs.bench-docker.outputs.rate }}
           DOCKER_P50:     ${{ needs.bench-docker.outputs.p50_us }}
           DOCKER_P95:     ${{ needs.bench-docker.outputs.p95_us }}
@@ -547,6 +574,7 @@ jobs:
           RH_WRITE_RATE:  ${{ needs.rehydrate.outputs.write_rate }}
           RH_REPLAY_RATE: ${{ needs.rehydrate.outputs.replay_rate }}
           RH_PASSED:      ${{ needs.rehydrate.outputs.passed }}
+          FO_PASSED:      ${{ needs.failover.outputs.passed }}
         run: |
           fmt_ms()     { [ -n "$1" ] && awk "BEGIN{printf \"%.2f\", $1/1000}" || echo "n/a"; }
           fmt_rate()   { [ -n "$1" ] && echo "$1"                             || echo "n/a"; }
@@ -561,6 +589,8 @@ jobs:
             echo ""
             echo "| Environment | Rate (ev/s) | p50 (ms) | p95 (ms) | p99 (ms) | p99.9 (ms) |"
             echo "|-------------|------------:|:--------:|:--------:|:--------:|:----------:|"
+            printf "| In-memory (MEM_DB) — pure process memory | %s | %s | %s | %s | %s |\n" \
+              "$(fmt_rate "$MEMDB_RATE")" "$(fmt_ms "$MEMDB_P50")" "$(fmt_ms "$MEMDB_P95")" "$(fmt_ms "$MEMDB_P99")" "$(fmt_ms "$MEMDB_P999")"
             printf "| Docker (tmpfs · UNSAFE_DISABLE_FLUSH_TO_DISK) | %s | %s | %s | %s | %s |\n" \
               "$(fmt_rate "$DOCKER_RATE")" "$(fmt_ms "$DOCKER_P50")" "$(fmt_ms "$DOCKER_P95")" "$(fmt_ms "$DOCKER_P99")" "$(fmt_ms "$DOCKER_P999")"
             printf "| Kubernetes k3d (emptyDir Memory · no flush) | %s | %s | %s | %s | %s |\n" \
@@ -575,10 +605,22 @@ jobs:
             printf "| Replay — gRPC server-stream (1 protobuf msg/event) | %s | %s | %s |\n" \
               "$(fmt_rate "$RH_REPLAY_MS")" "$(fmt_rate "$RH_REPLAY_RATE")" \
               "$(fmt_result "${RH_PASSED:-}")"
+            echo ""
+            echo "### Node Failover (AC-3)"
+            echo ""
+            echo "| Test | Result |"
+            echo "|------|:------:|"
+            printf "| 3-node cluster · leader evicted · quorum restored ≤ 60 s | %s |\n" \
+              "$(fmt_result "${FO_PASSED:-}")"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Write results JSON
         env:
+          MEMDB_RATE:     ${{ needs.bench-memdb.outputs.rate }}
+          MEMDB_P50:      ${{ needs.bench-memdb.outputs.p50_us }}
+          MEMDB_P95:      ${{ needs.bench-memdb.outputs.p95_us }}
+          MEMDB_P99:      ${{ needs.bench-memdb.outputs.p99_us }}
+          MEMDB_P999:     ${{ needs.bench-memdb.outputs.p999_us }}
           DOCKER_RATE:    ${{ needs.bench-docker.outputs.rate }}
           DOCKER_P50:     ${{ needs.bench-docker.outputs.p50_us }}
           DOCKER_P95:     ${{ needs.bench-docker.outputs.p95_us }}
@@ -594,11 +636,19 @@ jobs:
           RH_WRITE_RATE:  ${{ needs.rehydrate.outputs.write_rate }}
           RH_REPLAY_RATE: ${{ needs.rehydrate.outputs.replay_rate }}
           RH_PASSED:      ${{ needs.rehydrate.outputs.passed }}
+          FO_PASSED:      ${{ needs.failover.outputs.passed }}
         run: |
           python3 << 'PYEOF'
           import os, json
           d = {
               'db': 'kurrentdb',
+              'bench_memdb': {
+                  'rate':    os.getenv('MEMDB_RATE', ''),
+                  'p50_us':  os.getenv('MEMDB_P50', ''),
+                  'p95_us':  os.getenv('MEMDB_P95', ''),
+                  'p99_us':  os.getenv('MEMDB_P99', ''),
+                  'p999_us': os.getenv('MEMDB_P999', ''),
+              },
               'bench_docker': {
                   'rate':    os.getenv('DOCKER_RATE', ''),
                   'p50_us':  os.getenv('DOCKER_P50', ''),
@@ -619,6 +669,9 @@ jobs:
                   'write_rate':  os.getenv('RH_WRITE_RATE', ''),
                   'replay_rate': os.getenv('RH_REPLAY_RATE', ''),
                   'passed':      os.getenv('RH_PASSED', ''),
+              },
+              'failover': {
+                  'passed': os.getenv('FO_PASSED', ''),
               },
           }
           with open('results.json', 'w') as f:
