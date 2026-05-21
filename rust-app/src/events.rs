@@ -11,7 +11,7 @@ pub struct SchemaVersion(pub u32);
 
 impl Default for SchemaVersion {
     fn default() -> Self {
-        SchemaVersion(1)
+        Self(1)
     }
 }
 

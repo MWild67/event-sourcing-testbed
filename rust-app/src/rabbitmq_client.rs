@@ -7,8 +7,8 @@ use lapin::{
 use serde::Serialize;
 
 const EXCHANGE: &str = "events";
-const QUEUE:    &str = "events.all";
-const ROUTING:  &str = "#";
+const QUEUE: &str = "events.all";
+const ROUTING: &str = "#";
 
 pub struct RmqClient {
     channel: Channel,
@@ -31,7 +31,7 @@ impl RmqClient {
                 EXCHANGE,
                 ExchangeKind::Topic,
                 ExchangeDeclareOptions {
-                    durable:     true,
+                    durable: true,
                     auto_delete: false,
                     ..Default::default()
                 },
@@ -45,7 +45,7 @@ impl RmqClient {
             .queue_declare(
                 QUEUE,
                 QueueDeclareOptions {
-                    durable:     true,
+                    durable: true,
                     auto_delete: false,
                     ..Default::default()
                 },
@@ -55,7 +55,13 @@ impl RmqClient {
             .context("queue_declare failed")?;
 
         channel
-            .queue_bind(QUEUE, EXCHANGE, ROUTING, QueueBindOptions::default(), FieldTable::default())
+            .queue_bind(
+                QUEUE,
+                EXCHANGE,
+                ROUTING,
+                QueueBindOptions::default(),
+                FieldTable::default(),
+            )
             .await
             .context("queue_bind failed")?;
 
@@ -64,6 +70,7 @@ impl RmqClient {
 
     /// Publish a single JSON-encoded event to the topic exchange.
     /// `routing_key` should be the event type (e.g. "order.placed").
+    #[allow(clippy::future_not_send)]
     pub async fn publish<T: Serialize>(&self, routing_key: &str, payload: &T) -> Result<()> {
         let body = serde_json::to_vec(payload)
             .with_context(|| format!("serialise failed for routing key '{routing_key}'"))?;
@@ -75,7 +82,7 @@ impl RmqClient {
                 BasicPublishOptions::default(),
                 &body,
                 BasicProperties::default()
-                    .with_delivery_mode(2)  // persistent
+                    .with_delivery_mode(2) // persistent
                     .with_content_type("application/json".into()),
             )
             .await

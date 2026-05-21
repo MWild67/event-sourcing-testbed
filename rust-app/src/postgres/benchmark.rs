@@ -1,4 +1,4 @@
-//! Stress-test benchmark: inserts events into PostgreSQL at a target rate and
+//! Stress-test benchmark: inserts events into `PostgreSQL` at a target rate and
 //! measures write latency using an HDR histogram.
 //!
 //! Mirrors the structure of [`crate::mongodb::benchmark`] so results are
@@ -32,7 +32,7 @@ pub struct BenchmarkConfig {
     pub stream_prefix: String,
     /// Number of events per `INSERT … VALUES` call.
     pub batch_size: u64,
-    /// PostgreSQL database URL (overrides any URL in the connection string).
+    /// `PostgreSQL` database URL (overrides any URL in the connection string).
     #[allow(dead_code)]
     pub database_url: String,
     /// Truncate the bench table before the run starts.
@@ -73,6 +73,7 @@ pub struct BenchmarkResult {
 }
 
 impl BenchmarkResult {
+    #[allow(clippy::cast_precision_loss)]
     pub fn print_report(&self) {
         println!();
         println!("══════════════════════════════════════════════");
@@ -120,6 +121,12 @@ impl BenchmarkResult {
 
 // ─── Benchmark runner ─────────────────────────────────────────────────────────
 
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::too_many_lines
+)]
 pub async fn run(pg_url: &str, config: BenchmarkConfig) -> Result<BenchmarkResult> {
     info!(
         target_rate = config.target_rate,
@@ -181,7 +188,7 @@ pub async fn run(pg_url: &str, config: BenchmarkConfig) -> Result<BenchmarkResul
     // We warm up max_in_flight + 4 connections: the extra 4 act as a small
     // buffer so the pool never has to create a connection on the hot path
     // even if a task briefly holds its connection longer than expected.
-    let max_in_flight = (config.concurrency as usize).min(96);
+    let max_in_flight = usize::try_from(config.concurrency).unwrap_or(usize::MAX).min(96);
     {
         let warm_count = max_in_flight + 4;
         let warm_handles: Vec<_> = (0..warm_count)
@@ -220,10 +227,7 @@ pub async fn run(pg_url: &str, config: BenchmarkConfig) -> Result<BenchmarkResul
             break;
         }
 
-        let permit = match Arc::clone(&in_flight).try_acquire_owned() {
-            Ok(p) => p,
-            Err(_) => continue,
-        };
+        let Ok(permit) = Arc::clone(&in_flight).try_acquire_owned() else { continue };
 
         let client = Arc::clone(&client);
         let total_ev = Arc::clone(&total_events);
@@ -256,8 +260,8 @@ pub async fn run(pg_url: &str, config: BenchmarkConfig) -> Result<BenchmarkResul
                     .await
             };
             match result {
-                Ok(_) => {
-                    let lat_us = t0.elapsed().as_micros() as u64;
+                Ok(()) => {
+                    let lat_us = u64::try_from(t0.elapsed().as_micros()).unwrap_or(u64::MAX);
                     let _ = hist.lock().await.record(lat_us);
                     total_ev.fetch_add(batch_size, Ordering::Relaxed);
                 }
@@ -266,7 +270,7 @@ pub async fn run(pg_url: &str, config: BenchmarkConfig) -> Result<BenchmarkResul
         });
     }
 
-    let _ = in_flight.acquire_many(max_in_flight as u32).await;
+    let _ = in_flight.acquire_many(u32::try_from(max_in_flight).unwrap_or(96)).await;
 
     let elapsed = wall_start.elapsed();
     let total = total_events.load(Ordering::Relaxed);

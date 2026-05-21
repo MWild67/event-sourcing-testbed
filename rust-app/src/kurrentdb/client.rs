@@ -1,10 +1,12 @@
-//! KurrentDB gRPC client wrapper.
+//! `KurrentDB` gRPC client wrapper.
 //!
 //! Thin async wrapper around the official `kurrentdb` crate, exposing only
 //! the append and health-probe operations needed by the benchmark harness.
 
 use anyhow::{Context, Result};
-use kurrentdb::{AppendToStreamOptions, Client, ClientSettings, EventData, StreamState};
+use kurrentdb::{
+    AppendToStreamOptions, Client, ClientSettings, EventData, ReadStreamOptions, StreamState,
+};
 use serde::Serialize;
 use uuid::Uuid;
 
@@ -13,12 +15,12 @@ pub struct KurrentClient {
 }
 
 impl KurrentClient {
-    /// Connect to KurrentDB.
+    /// Connect to `KurrentDB`.
     ///
     /// `url` examples:
-    ///   "kurrentdb://localhost:2113?tls=false"
+    ///   "<kurrentdb://localhost:2113?tls=false>"
     ///   "kurrentdb://kurrent-0:2113,kurrent-1:2113,kurrent-2:2113?tls=false"
-    pub async fn connect(url: &str) -> Result<Self> {
+    pub fn connect(url: &str) -> Result<Self> {
         let settings: ClientSettings = url
             .parse()
             .with_context(|| format!("invalid KurrentDB URL: {url}"))?;
@@ -30,6 +32,7 @@ impl KurrentClient {
 
     /// Append a single JSON-encoded event to `stream_name`.
     /// Returns the log position of the written event.
+    #[allow(clippy::future_not_send)]
     pub async fn append<T: Serialize>(
         &self,
         stream_name: &str,
@@ -53,6 +56,7 @@ impl KurrentClient {
 
     /// Append a pre-built batch of events in a single gRPC call.
     /// More efficient at high throughput than one-by-one appends.
+    #[allow(clippy::future_not_send)]
     pub async fn append_batch<T: Serialize>(
         &self,
         stream_name: &str,
@@ -79,6 +83,49 @@ impl KurrentClient {
         Ok(result.next_expected_version)
     }
 
+    /// Read all events from `stream_name` in chronological order (position 0
+    /// to end).  Returns a `Vec` of `(event_type, revision, payload)` tuples.
+    ///
+    /// Returns an empty `Vec` if the stream does not exist yet.
+    pub async fn read_stream_events(
+        &self,
+        stream_name: &str,
+    ) -> Result<Vec<(String, u64, serde_json::Value)>> {
+        use kurrentdb::ReadStreamOptions;
+
+        let opts = ReadStreamOptions::default();
+        let mut read_stream = match self.inner.read_stream(stream_name, &opts).await {
+            Ok(s) => s,
+            Err(e) => {
+                let msg = e.to_string();
+                if msg.contains("StreamNotFound")
+                    || msg.contains("stream not found")
+                    || msg.contains("not found")
+                {
+                    return Ok(Vec::new());
+                }
+                return Err(anyhow::anyhow!("read_stream '{stream_name}' failed: {msg}"));
+            }
+        };
+
+        let mut events = Vec::new();
+        loop {
+            match read_stream.next().await {
+                Ok(Some(resolved)) => {
+                    let recorded = resolved.get_original_event();
+                    let event_type = recorded.event_type.clone();
+                    let revision = recorded.revision;
+                    let payload: serde_json::Value =
+                        serde_json::from_slice(&recorded.data).unwrap_or(serde_json::Value::Null);
+                    events.push((event_type, revision, payload));
+                }
+                Ok(None) => break,
+                Err(e) => return Err(anyhow::anyhow!("error reading '{stream_name}': {e}")),
+            }
+        }
+        Ok(events)
+    }
+
     /// Cheap health probe — checks whether the gRPC endpoint responds.
     /// Returns an error if the server is not reachable or not yet ready.
     pub async fn ping(&self) -> Result<()> {
@@ -87,7 +134,7 @@ impl KurrentClient {
         // up and accepting requests (stream just doesn't exist yet).
         match self
             .inner
-            .read_stream("$ping-probe", &Default::default())
+            .read_stream("$ping-probe", &ReadStreamOptions::default())
             .await
         {
             Ok(_) => Ok(()),
@@ -100,7 +147,7 @@ impl KurrentClient {
                 {
                     Ok(())
                 } else {
-                    Err(anyhow::anyhow!("KurrentDB not ready: {}", msg))
+                    Err(anyhow::anyhow!("KurrentDB not ready: {msg}"))
                 }
             }
         }

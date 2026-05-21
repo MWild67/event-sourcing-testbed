@@ -1,28 +1,28 @@
-//! MongoDB as an Event Store — demonstrating the 8 essential event-sourcing
+//! `MongoDB` as an Event Store — demonstrating the 8 essential event-sourcing
 //! properties using idiomatic Rust crates.
 //!
 //! ┌────┬────────────────────────┬───────────────────────────────────────────────┐
 //! │ #  │ Property               │ How it is covered here                        │
 //! ├────┼────────────────────────┼───────────────────────────────────────────────┤
-//! │ 1  │ Append-Only Guard      │ JSON Schema validator + unique stream_version  │
+//! │ 1  │ Append-Only Guard      │ JSON Schema validator + unique `stream_version`  │
 //! │    │                        │ index prevent overwrites; `delete` is blocked  │
 //! │    │                        │ at the collection level via a custom role.     │
 //! │ 2  │ Aggregate Rehydrator   │ `rehydrate()` reads stream from version 0,    │
 //! │    │                        │ feeds events through an `Apply` closure.       │
 //! │ 3  │ Checkpoint System      │ `_checkpoints` collection stores the last      │
 //! │    │                        │ processed `global_position` per consumer.      │
-//! │ 4  │ Event Polling → Push   │ MongoDB Change Streams via `watch()` give a   │
+//! │ 4  │ Event Polling → Push   │ `MongoDB` Change Streams via `watch()` give a   │
 //! │    │                        │ push-based subscription with no polling loop.  │
 //! │ 5  │ Event Upcasting        │ `UpcastRegistry` middleware transforms old     │
 //! │    │                        │ schema versions before handing to consumers.   │
 //! │ 6  │ No Dual Write          │ A single `append_with_outbox` call writes the  │
 //! │    │                        │ event and the integration-event outbox entry   │
-//! │    │                        │ in one MongoDB multi-document transaction.      │
+//! │    │                        │ in one `MongoDB` multi-document transaction.      │
 //! │ 7  │ Built-in Subscriptions │ `CatchUpSubscription` resumes from checkpoint; │
 //! │    │                        │ `CompetingConsumer` uses a mutex document for  │
 //! │    │                        │ Single-Active-Consumer ordering.               │
 //! │ 8  │ Integration Events     │ Transactional outbox in `_integration_outbox`; │
-//! │    │                        │ a relay task publishes to RabbitMQ and marks   │
+//! │    │                        │ a relay task publishes to `RabbitMQ` and marks   │
 //! │    │                        │ entries dispatched atomically.                 │
 //! └────┴────────────────────────┴───────────────────────────────────────────────┘
 
@@ -50,7 +50,7 @@ use crate::events::{SchemaVersion, UpcastResult};
 #[derive(Debug, Error)]
 pub enum EventStoreError {
     /// Attempted to append an event whose `stream_version` already exists.
-    /// Equivalent to KurrentDB's `WrongExpectedVersion`.
+    /// Equivalent to `KurrentDB`'s `WrongExpectedVersion`.
     #[error("optimistic concurrency conflict: stream '{stream}' version {expected} already used")]
     ConcurrencyConflict { stream: String, expected: i64 },
 
@@ -61,7 +61,7 @@ pub enum EventStoreError {
 
 // ─── Envelope ─────────────────────────────────────────────────────────────────
 
-/// Wire format stored in MongoDB for every persisted event.
+/// Wire format stored in `MongoDB` for every persisted event.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EventEnvelope {
     /// UUID string, used as `_id`.
@@ -184,7 +184,7 @@ pub trait Aggregate: Default + Send {
 
 // ─── Event Store ──────────────────────────────────────────────────────────────
 
-/// High-level MongoDB event store client.
+/// High-level `MongoDB` event store client.
 ///
 /// Wraps [`crate::mongodb::client::MongoClient`] with event-sourcing semantics
 /// on top of the raw driver so every property is visible in one place.
@@ -258,7 +258,7 @@ impl MongoEventStore {
             .validation_action(ValidationAction::Error)
             .await
         {
-            Ok(_) => {}
+            Ok(()) => {}
             Err(e) => {
                 if let mongodb::error::ErrorKind::Command(ref cmd) = *e.kind {
                     if cmd.code == 48 {
@@ -319,7 +319,7 @@ impl MongoEventStore {
             "_competing_consumers",
         ] {
             match self.db.create_collection(*name).await {
-                Ok(_) => {}
+                Ok(()) => {}
                 Err(e) => {
                     if let mongodb::error::ErrorKind::Command(ref cmd) = *e.kind {
                         if cmd.code == 48 {
@@ -355,8 +355,9 @@ impl MongoEventStore {
     /// ── Property 1: Append-Only Guard ──────────────────────────────────────
     ///
     /// A duplicate-key error on the unique `(stream_id, stream_version)` index
-    /// surfaces as [`EventStoreError::ConcurrencyConflict`], the MongoDB
-    /// equivalent of KurrentDB's `WrongExpectedVersion`.
+    /// surfaces as [`EventStoreError::ConcurrencyConflict`], the `MongoDB`
+    /// equivalent of `KurrentDB`'s `WrongExpectedVersion`.
+    #[allow(clippy::future_not_send)]
     pub async fn append_with_outbox<T: Serialize>(
         &self,
         stream_id: &str,
@@ -413,6 +414,7 @@ impl MongoEventStore {
     }
 
     /// Append without an outbox entry (for benchmarks / internal use).
+    #[allow(clippy::future_not_send)]
     pub async fn append<T: Serialize>(
         &self,
         stream_id: &str,
@@ -445,6 +447,7 @@ impl MongoEventStore {
         Ok(env)
     }
 
+    #[allow(clippy::future_not_send)]
     async fn append_in_session<T: Serialize>(
         &self,
         stream_id: &str,
@@ -582,7 +585,7 @@ impl MongoEventStore {
 
             // Run upcaster chain before handing to the aggregate.
             let raw_json: serde_json::Value = serde_json::to_value(&envelope.payload)
-                .unwrap_or(serde_json::Value::Object(Default::default()));
+                .unwrap_or(serde_json::Value::Object(serde_json::Map::default()));
             let upcasted =
                 self.upcasters
                     .upcast(&envelope.event_type, envelope.schema_version, raw_json);
@@ -744,7 +747,7 @@ impl MongoEventStore {
         lease_ttl_secs: u32,
     ) -> Result<bool> {
         let now = chrono::Utc::now();
-        let expires_at = now + chrono::Duration::seconds(lease_ttl_secs as i64);
+        let expires_at = now + chrono::Duration::seconds(i64::from(lease_ttl_secs));
 
         // Either create (no existing lease) or take over an expired one.
         let result = self
@@ -792,7 +795,7 @@ impl MongoEventStore {
     /// ── Property 8: Integration Events ─────────────────────────────────────
     ///
     /// Reads the oldest un-dispatched entry from `_integration_outbox`,
-    /// invokes `publish` (e.g. to RabbitMQ), then atomically marks it
+    /// invokes `publish` (e.g. to `RabbitMQ`), then atomically marks it
     /// as dispatched.  The caller runs this in a background loop.
     ///
     /// Because the outbox entry was written inside the same transaction as the
@@ -810,10 +813,7 @@ impl MongoEventStore {
             .await
             .context("failed to query integration outbox")?;
 
-        let doc = match entry {
-            Some(d) => d,
-            None => return Ok(false),
-        };
+        let Some(doc) = entry else { return Ok(false) };
 
         let id = doc
             .get_str("_id")
@@ -853,7 +853,7 @@ impl MongoEventStore {
         loop {
             tokio::select! {
                 biased;
-                _ = &mut shutdown => {
+                () = &mut shutdown => {
                     info!("integration event relay loop shutting down");
                     return Ok(());
                 }

@@ -1,4 +1,4 @@
-//! Stress-test benchmark: appends events to KurrentDB at a target rate and
+//! Stress-test benchmark: appends events to `KurrentDB` at a target rate and
 //! measures write latency using an HDR histogram.
 
 use std::{
@@ -59,6 +59,7 @@ pub struct BenchmarkResult {
 }
 
 impl BenchmarkResult {
+    #[allow(clippy::cast_precision_loss)]
     pub fn print_report(&self) {
         println!();
         println!("══════════════════════════════════════════════");
@@ -111,6 +112,11 @@ impl BenchmarkResult {
 /// avoid HTTP/2 head-of-line blocking that occurs when many concurrent streams
 /// share one connection.  Connections are staggered over 1 second so the
 /// server doesn't see a simultaneous handshake storm.
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
 pub async fn run(kurrent_url: &str, config: BenchmarkConfig) -> Result<BenchmarkResult> {
     info!(
         target_rate = config.target_rate,
@@ -122,7 +128,7 @@ pub async fn run(kurrent_url: &str, config: BenchmarkConfig) -> Result<Benchmark
 
     // Validate connectivity — retry for up to 30 s so a freshly-started
     // KurrentDB has time to elect a leader before benchmark tasks start.
-    let probe = KurrentClient::connect(kurrent_url).await?;
+    let probe = KurrentClient::connect(kurrent_url)?;
     let mut ready = false;
     for attempt in 1..=30 {
         match probe.ping().await {
@@ -155,7 +161,9 @@ pub async fn run(kurrent_url: &str, config: BenchmarkConfig) -> Result<Benchmark
 
     // Semaphore bounds concurrent in-flight writes below Kestrel's HTTP/2
     // max-concurrent-streams limit (default 100).
-    let max_in_flight = (config.concurrency as usize).min(96);
+    let max_in_flight = usize::try_from(config.concurrency)
+        .unwrap_or(usize::MAX)
+        .min(96);
     let in_flight = Arc::new(tokio::sync::Semaphore::new(max_in_flight));
 
     let duration = Duration::from_secs(config.duration_secs);
@@ -173,9 +181,8 @@ pub async fn run(kurrent_url: &str, config: BenchmarkConfig) -> Result<Benchmark
         }
 
         // Non-blocking: skip this tick if the write pipeline is already full.
-        let permit = match Arc::clone(&in_flight).try_acquire_owned() {
-            Ok(p) => p,
-            Err(_) => continue,
+        let Ok(permit) = Arc::clone(&in_flight).try_acquire_owned() else {
+            continue;
         };
 
         let client = Arc::clone(&client);
@@ -195,7 +202,7 @@ pub async fn run(kurrent_url: &str, config: BenchmarkConfig) -> Result<Benchmark
                 .await
             {
                 Ok(_) => {
-                    let lat_us = t0.elapsed().as_micros() as u64;
+                    let lat_us = u64::try_from(t0.elapsed().as_micros()).unwrap_or(u64::MAX);
                     let _ = hist.lock().await.record(lat_us);
                     total_events.fetch_add(batch_size, Ordering::Relaxed);
                 }
@@ -206,7 +213,9 @@ pub async fn run(kurrent_url: &str, config: BenchmarkConfig) -> Result<Benchmark
 
     // Wait for all in-flight writes to complete before computing results.
     // acquire_many(max_in_flight) blocks until every permit has been returned.
-    let _ = in_flight.acquire_many(max_in_flight as u32).await;
+    let _ = in_flight
+        .acquire_many(u32::try_from(max_in_flight).unwrap_or(96))
+        .await;
 
     let elapsed = wall_start.elapsed();
     let total = total_events.load(Ordering::Relaxed);

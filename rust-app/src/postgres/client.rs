@@ -1,4 +1,4 @@
-//! Thin async wrapper around sqlx's PostgreSQL connection pool.
+//! Thin async wrapper around sqlx's `PostgreSQL` connection pool.
 //!
 //! Mirrors the interface of [`crate::mongodb::client::MongoClient`] so the
 //! benchmark harness can swap backends without structural changes.
@@ -54,7 +54,7 @@ impl PostgresClient {
     /// Create the simple benchmark table (no version / global-position columns).
     pub async fn ensure_bench_table(&self) -> Result<()> {
         sqlx::query(
-            r#"
+            r"
             CREATE TABLE IF NOT EXISTS bench_events (
                 event_id    TEXT        NOT NULL PRIMARY KEY,
                 stream_id   TEXT        NOT NULL,
@@ -64,7 +64,7 @@ impl PostgresClient {
                 payload     BYTEA       NOT NULL,
                 created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
             )
-            "#,
+            ",
         )
         .execute(&self.pool)
         .await
@@ -80,10 +80,10 @@ impl PostgresClient {
     }
 
     /// Create the event-store-mode table: adds the unique version constraint
-    /// and a `global_position` identity column — mirrors KurrentDB semantics.
+    /// and a `global_position` identity column — mirrors `KurrentDB` semantics.
     pub async fn ensure_bench_table_event_store(&self) -> Result<()> {
         sqlx::query(
-            r#"
+            r"
             CREATE TABLE IF NOT EXISTS bench_events (
                 event_id        TEXT        NOT NULL PRIMARY KEY,
                 stream_id       TEXT        NOT NULL,
@@ -98,7 +98,7 @@ impl PostgresClient {
                 -- a conflict = WrongExpectedVersion equivalent.
                 UNIQUE (stream_id, stream_version)
             )
-            "#,
+            ",
         )
         .execute(&self.pool)
         .await
@@ -127,6 +127,7 @@ impl PostgresClient {
     // ── Writes ────────────────────────────────────────────────────────────────
 
     /// Insert a batch of events in a single round-trip using `INSERT … VALUES`.
+    #[allow(clippy::future_not_send, clippy::cast_possible_wrap)]
     pub async fn append_batch<T: Serialize>(
         &self,
         stream_id: &str,
@@ -160,7 +161,8 @@ impl PostgresClient {
     /// Insert a batch with monotonic `stream_version` and `global_position`.
     /// A unique-constraint violation on `(stream_id, stream_version)` surfaces
     /// as an `anyhow` error wrapping the duplicate-key DB error — equivalent to
-    /// KurrentDB's `WrongExpectedVersion`.
+    /// `KurrentDB`'s `WrongExpectedVersion`.
+    #[allow(clippy::future_not_send, clippy::cast_possible_wrap)]
     pub async fn append_batch_versioned<T: Serialize>(
         &self,
         stream_id: &str,
@@ -184,7 +186,7 @@ impl PostgresClient {
             // contention and connection-pool pressure under high concurrency.
             let payload_bytes = serde_json::to_vec(&payloads[0]).unwrap_or_default();
             sqlx::query(
-                r#"
+                r"
                 WITH ver AS (
                     INSERT INTO stream_versions (stream_id, version)
                     VALUES ($1, 1)
@@ -196,7 +198,7 @@ impl PostgresClient {
                     (event_id, stream_id, stream_version, event_type, seq, task_id, payload)
                 SELECT $2, $1, ver.start_ver, $3, $4, $5, $6
                 FROM ver
-                "#,
+                ",
             )
             .bind(stream_id)
             .bind(Uuid::new_v4().to_string())
@@ -219,13 +221,13 @@ impl PostgresClient {
         // Each query uses one pool connection sequentially, so peak concurrent
         // connection count equals concurrency (64), well within the pool limit.
         let row = sqlx::query(
-            r#"
+            r"
             INSERT INTO stream_versions (stream_id, version)
             VALUES ($1, $2)
             ON CONFLICT (stream_id) DO UPDATE
                 SET version = stream_versions.version + $2
             RETURNING version - $2  -- version before this batch
-            "#,
+            ",
         )
         .bind(stream_id)
         .bind(batch_len)

@@ -20,7 +20,7 @@ use tracing_subscriber::{fmt, EnvFilter};
     about   = "Event-sourcing testbed — KurrentDB + RabbitMQ + MongoDB + PostgreSQL benchmark tool"
 )]
 struct Cli {
-    /// KurrentDB connection URL.
+    /// `KurrentDB` connection URL.
     #[arg(
         long,
         env = "KURRENTDB_URL",
@@ -28,7 +28,7 @@ struct Cli {
     )]
     kurrentdb_url: String,
 
-    /// RabbitMQ AMQP URL.
+    /// `RabbitMQ` AMQP URL.
     #[arg(
         long,
         env = "RABBITMQ_URL",
@@ -36,11 +36,11 @@ struct Cli {
     )]
     rabbitmq_url: String,
 
-    /// MongoDB connection URL.
+    /// `MongoDB` connection URL.
     #[arg(long, env = "MONGODB_URL", default_value = "mongodb://localhost:27017")]
     mongodb_url: String,
 
-    /// PostgreSQL connection URL.
+    /// `PostgreSQL` connection URL.
     #[arg(
         long,
         env = "POSTGRES_URL",
@@ -54,24 +54,30 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Run the write-latency stress test against KurrentDB (p99 < 2 ms at 10k ev/s).
+    /// Run the write-latency stress test against `KurrentDB` (p99 < 2 ms at 10k ev/s).
     KurrentdbBench(BenchArgs),
-    /// Run the write-latency stress test against MongoDB (p99 < p99-limit-ms at 10k ev/s).
+    /// Run the write-latency stress test against `MongoDB` (p99 < p99-limit-ms at 10k ev/s).
     MongoBench(MongoBenchArgs),
-    /// Continuously produce events to KurrentDB and RabbitMQ.
+    /// Continuously produce events to `KurrentDB` and `RabbitMQ`.
     KurrentdbProduce(ProduceArgs),
-    /// Probe connectivity to KurrentDB + RabbitMQ and exit 0 if healthy.
+    /// Probe connectivity to `KurrentDB` + `RabbitMQ` and exit 0 if healthy.
     KurrentdbPing,
-    /// Probe MongoDB connectivity and exit 0 if healthy.
+    /// Probe `MongoDB` connectivity and exit 0 if healthy.
     MongoPing,
-    /// Demonstrate all 8 event-sourcing properties against MongoDB.
+    /// Demonstrate all 8 event-sourcing properties against `MongoDB`.
     MongoEventStoreDemo(MongoEventStoreDemoArgs),
-    /// Run the write-latency stress test against PostgreSQL.
+    /// Run the write-latency stress test against `PostgreSQL`.
     PgBench(PgBenchArgs),
-    /// Probe PostgreSQL connectivity and exit 0 if healthy.
+    /// Probe `PostgreSQL` connectivity and exit 0 if healthy.
     PgPing,
-    /// Demonstrate all 8 event-sourcing properties against PostgreSQL.
+    /// Demonstrate all 8 event-sourcing properties against `PostgreSQL`.
     PgEventStoreDemo(PgEventStoreDemoArgs),
+    /// Write events to `KurrentDB` then replay the stream to verify rehydration.
+    KurrentdbRehydrateDemo(KurrentdbRehydrateDemoArgs),
+    /// Write events to `MongoDB` then rehydrate the aggregate to verify replay.
+    MongoRehydrateDemo(MongoRehydrateDemoArgs),
+    /// Write events to `PostgreSQL` then rehydrate the aggregate to verify replay.
+    PgRehydrateDemo(PgRehydrateDemoArgs),
 }
 
 #[derive(Parser)]
@@ -85,7 +91,7 @@ struct BenchArgs {
     duration_secs: u64,
 
     /// Number of concurrent Tokio tasks writing to separate streams.
-    /// Controls max in-flight gRPC writes — 64 keeps the KurrentDB queue warm.
+    /// Controls max in-flight gRPC writes — 64 keeps the `KurrentDB` queue warm.
     #[arg(long, default_value_t = 64)]
     concurrency: u64,
 
@@ -130,7 +136,7 @@ struct MongoBenchArgs {
     #[arg(long)]
     json: bool,
 
-    /// MongoDB database name to use for the benchmark.
+    /// `MongoDB` database name to use for the benchmark.
     #[arg(long, default_value = "eventbench")]
     database: String,
 
@@ -142,7 +148,7 @@ struct MongoBenchArgs {
 
     /// Enable event-store-mode: journaled writes, per-stream version counters,
     /// global position stamping, and JSON Schema validation on each collection.
-    /// Makes the benchmark structurally equivalent to KurrentDB for a fair
+    /// Makes the benchmark structurally equivalent to `KurrentDB` for a fair
     /// side-by-side latency comparison.
     #[arg(long)]
     event_store_mode: bool,
@@ -157,7 +163,7 @@ struct ProduceArgs {
 
 #[derive(Parser)]
 struct MongoEventStoreDemoArgs {
-    /// MongoDB database name for the demo.
+    /// `MongoDB` database name for the demo.
     #[arg(long, default_value = "eventstoredemo")]
     database: String,
 
@@ -202,6 +208,43 @@ struct PgEventStoreDemoArgs {
     /// Number of orders to append during the demo.
     #[arg(long, default_value_t = 5)]
     events: u32,
+}
+
+#[derive(Parser)]
+struct KurrentdbRehydrateDemoArgs {
+    /// Number of `OrderPlaced` events to write before replaying.
+    #[arg(long, default_value_t = 50_000)]
+    events: u32,
+
+    /// Emit results as a single JSON line (for CI parsing).
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Parser)]
+struct MongoRehydrateDemoArgs {
+    /// `MongoDB` database name for the rehydration demo.
+    #[arg(long, default_value = "rehydrate-demo")]
+    database: String,
+
+    /// Number of `OrderPlaced` events to write before replaying.
+    #[arg(long, default_value_t = 50_000)]
+    events: u32,
+
+    /// Emit results as a single JSON line (for CI parsing).
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Parser)]
+struct PgRehydrateDemoArgs {
+    /// Number of `OrderPlaced` events to write before replaying.
+    #[arg(long, default_value_t = 50_000)]
+    events: u32,
+
+    /// Emit results as a single JSON line (for CI parsing).
+    #[arg(long)]
+    json: bool,
 }
 
 // ─── Entry point ─────────────────────────────────────────────────────────────
@@ -317,6 +360,18 @@ async fn main() -> Result<()> {
         Commands::PgEventStoreDemo(args) => {
             pg_event_store_demo(&cli.postgres_url, args.events).await?;
         }
+
+        Commands::KurrentdbRehydrateDemo(args) => {
+            kurrentdb_rehydrate_demo(&cli.kurrentdb_url, args.events, args.json).await?;
+        }
+
+        Commands::MongoRehydrateDemo(args) => {
+            mongo_rehydrate_demo(&cli.mongodb_url, &args.database, args.events, args.json).await?;
+        }
+
+        Commands::PgRehydrateDemo(args) => {
+            pg_rehydrate_demo(&cli.postgres_url, args.events, args.json).await?;
+        }
     }
 
     Ok(())
@@ -324,8 +379,9 @@ async fn main() -> Result<()> {
 
 // ─── Produce loop ─────────────────────────────────────────────────────────────
 
+#[allow(clippy::cast_precision_loss)]
 async fn produce_loop(kurrent_url: &str, rmq_url: &str, rate: u64) -> Result<()> {
-    let kurrent = kurrentdb::client::KurrentClient::connect(kurrent_url).await?;
+    let kurrent = kurrentdb::client::KurrentClient::connect(kurrent_url)?;
     let rmq = rabbitmq_client::RmqClient::connect(rmq_url).await?;
 
     let interval_us = 1_000_000u64 / rate.max(1);
@@ -380,8 +436,7 @@ async fn mongo_ping(mongo_url: &str) -> Result<()> {
 
 async fn ping(kurrent_url: &str, rmq_url: &str) -> Result<()> {
     info!("pinging KurrentDB...");
-    kurrentdb::client::KurrentClient::connect(kurrent_url)
-        .await?
+    kurrentdb::client::KurrentClient::connect(kurrent_url)?
         .ping()
         .await?;
     info!("KurrentDB OK");
@@ -398,6 +453,7 @@ async fn ping(kurrent_url: &str, rmq_url: &str) -> Result<()> {
 // Exercises all 8 event-sourcing properties in sequence so each one is
 // observable in the structured log output.
 
+#[allow(clippy::too_many_lines, clippy::cast_precision_loss)]
 async fn mongo_event_store_demo(mongo_url: &str, database: &str, event_count: u32) -> Result<()> {
     use crate::mongodb::event_store::{
         Aggregate, EventStoreError, MongoEventStore, UpcastRegistry,
@@ -464,7 +520,7 @@ async fn mongo_event_store_demo(mongo_url: &str, database: &str, event_count: u3
             order_id: uuid::Uuid::new_v4(),
             product_id: format!("PROD-{i}"),
             quantity: i + 1,
-            price_usd: (i as f64 + 1.0) * 9.99,
+            price_usd: (f64::from(i) + 1.0) * 9.99,
             placed_at: chrono::Utc::now(),
             schema_version: events::SchemaVersion(2),
         };
@@ -574,7 +630,7 @@ async fn mongo_event_store_demo(mongo_url: &str, database: &str, event_count: u3
     let replayed;
     {
         let (agg2, _) = store.rehydrate::<OrderAggregate>(&stream_id).await?;
-        replayed = agg2.order_ids.len() as u32;
+        replayed = u32::try_from(agg2.order_ids.len()).unwrap_or(u32::MAX);
     }
     info!(replayed, "✓ catch-up replayed events from stream");
 
@@ -594,6 +650,11 @@ async fn pg_ping(pg_url: &str) -> Result<()> {
     Ok(())
 }
 
+#[allow(
+    clippy::too_many_lines,
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation
+)]
 async fn pg_event_store_demo(pg_url: &str, event_count: u32) -> Result<()> {
     use crate::postgres::event_store::{Aggregate, EventStoreError, PgEventStore, UpcastRegistry};
     use serde::{Deserialize, Serialize};
@@ -645,7 +706,7 @@ async fn pg_event_store_demo(pg_url: &str, event_count: u32) -> Result<()> {
             order_id: uuid::Uuid::new_v4(),
             product_id: format!("PROD-{i}"),
             quantity: i + 1,
-            price_usd: (i as f64 + 1.0) * 9.99,
+            price_usd: (f64::from(i) + 1.0) * 9.99,
             placed_at: chrono::Utc::now(),
             schema_version: events::SchemaVersion(2),
         };
@@ -744,5 +805,402 @@ async fn pg_event_store_demo(pg_url: &str, event_count: u32) -> Result<()> {
     );
 
     info!("=== PostgreSQL Event Store — all 8 features validated ✓ ===");
+    Ok(())
+}
+
+// ─── KurrentDB Rehydration / Replay Demo ─────────────────────────────────────
+//
+// Writes `event_count` OrderPlaced events to a fresh stream then replays the
+// stream from revision 0, rebuilding an in-memory aggregate and verifying that
+// every event is returned in the correct order.
+//
+// JSON output (--json flag):
+//   {"backend":"kurrentdb","stream_id":"...","events_written":N,
+//    "events_replayed":N,"order_count":N,"revisions_ok":true,
+//    "write_ms":W,"replay_ms":M,"write_rate_eps":Rw,"replay_rate_eps":Rr,"passed":true}
+
+#[allow(
+    clippy::too_many_lines,
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation
+)]
+async fn kurrentdb_rehydrate_demo(
+    kurrent_url: &str,
+    event_count: u32,
+    emit_json: bool,
+) -> Result<()> {
+    use std::time::Instant;
+
+    let client = kurrentdb::client::KurrentClient::connect(kurrent_url)?;
+
+    let stream_id = format!("rehydrate-demo-{}", uuid::Uuid::new_v4());
+    info!(stream_id, "=== KurrentDB Rehydration / Replay Demo ===");
+
+    // ── Phase 1: Write events ─────────────────────────────────────────────────
+    info!(event_count, "writing events to stream");
+    let write_start = Instant::now();
+
+    for i in 0..event_count {
+        let order = events::OrderPlaced {
+            order_id: uuid::Uuid::new_v4(),
+            product_id: format!("PROD-{i}"),
+            quantity: i + 1,
+            price_usd: (f64::from(i) + 1.0) * 9.99,
+            placed_at: chrono::Utc::now(),
+            schema_version: events::SchemaVersion::default(),
+        };
+        client
+            .append(&stream_id, "OrderPlaced", &order)
+            .await
+            .map_err(|e| anyhow::anyhow!("append #{i} failed: {e}"))?;
+    }
+    let write_elapsed = write_start.elapsed();
+    let write_ms = u64::try_from(write_elapsed.as_millis()).unwrap_or(u64::MAX);
+    let write_rate = if write_elapsed.as_secs_f64() > 0.0 {
+        f64::from(event_count) / write_elapsed.as_secs_f64()
+    } else {
+        f64::INFINITY
+    };
+    info!(event_count, write_ms, "✓ all events written");
+
+    // ── Phase 2: Replay stream from revision 0 ────────────────────────────────
+    info!("replaying stream from revision 0");
+    let replay_start = Instant::now();
+
+    let raw_events = client.read_stream_events(&stream_id).await?;
+
+    let replay_elapsed = replay_start.elapsed();
+    let events_replayed = raw_events.len() as u64;
+    let replay_ms = u64::try_from(replay_elapsed.as_millis()).unwrap_or(u64::MAX);
+    let replay_rate = if replay_elapsed.as_secs_f64() > 0.0 {
+        events_replayed as f64 / replay_elapsed.as_secs_f64()
+    } else {
+        f64::INFINITY
+    };
+
+    // ── Phase 3: Rebuild aggregate and validate ───────────────────────────────
+    let mut order_ids: Vec<uuid::Uuid> = Vec::new();
+    let mut revisions_ok = true;
+
+    for (idx, (event_type, revision, payload)) in raw_events.iter().enumerate() {
+        // Revisions must be strictly monotonically increasing (0, 1, 2, …).
+        if *revision != idx as u64 {
+            revisions_ok = false;
+            tracing::warn!(expected = idx, got = revision, "revision gap detected");
+        }
+
+        if event_type == "OrderPlaced" {
+            if let Ok(order) = serde_json::from_value::<events::OrderPlaced>(payload.clone()) {
+                order_ids.push(order.order_id);
+            }
+        }
+    }
+
+    let order_count = order_ids.len() as u64;
+    let passed = events_replayed == u64::from(event_count)
+        && revisions_ok
+        && order_count == u64::from(event_count);
+
+    info!(
+        events_written = event_count,
+        events_replayed,
+        order_count,
+        revisions_ok,
+        write_ms,
+        replay_ms,
+        replay_rate_eps = format!("{replay_rate:.1}"),
+        passed,
+        "✓ rehydration complete"
+    );
+
+    // ── Human-readable timing report (always printed to stdout) ───────────────
+    println!();
+    println!("══════════════════════════════════════════════");
+    println!("  KurrentDB Rehydration / Replay Result");
+    println!("══════════════════════════════════════════════");
+    println!("  Events written : {event_count}");
+    println!("  Write time     : {write_ms} ms  ({write_rate:.0} ev/s)");
+    println!("  Events replayed: {events_replayed}");
+    println!("  Replay time    : {replay_ms} ms  ({replay_rate:.0} ev/s)");
+    println!("  Revisions OK   : {revisions_ok}");
+    println!(
+        "  Result         : {}",
+        if passed { "PASS ✓" } else { "FAIL ✗" }
+    );
+    println!("══════════════════════════════════════════════");
+    println!();
+    let _ = std::io::stdout().flush();
+
+    if emit_json {
+        println!(
+            r#"{{"backend":"kurrentdb","stream_id":"{stream_id}","events_written":{event_count},"events_replayed":{events_replayed},"order_count":{order_count},"revisions_ok":{revisions_ok},"write_ms":{write_ms},"replay_ms":{replay_ms},"write_rate_eps":{write_rate:.1},"replay_rate_eps":{replay_rate:.1},"passed":{passed}}}"#,
+        );
+        let _ = std::io::stdout().flush();
+    }
+
+    if !passed {
+        anyhow::bail!(
+            "rehydration failed: written={event_count}, replayed={events_replayed}, revisions_ok={revisions_ok}"
+        );
+    }
+
+    info!("=== KurrentDB Rehydration / Replay Demo — PASSED ✓ ===");
+    Ok(())
+}
+
+// ─── MongoDB Rehydration / Replay Demo ────────────────────────────────────────
+
+#[allow(
+    clippy::too_many_lines,
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation
+)]
+async fn mongo_rehydrate_demo(
+    mongo_url: &str,
+    database: &str,
+    event_count: u32,
+    emit_json: bool,
+) -> Result<()> {
+    use crate::mongodb::event_store::{Aggregate, MongoEventStore, UpcastRegistry};
+    use serde::{Deserialize, Serialize};
+    use std::io::Write as _;
+    use std::time::Instant;
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    #[serde(tag = "event_type", rename_all = "PascalCase")]
+    enum OrderEvent {
+        OrderPlaced(events::OrderPlaced),
+        OrderCancelled(events::OrderCancelled),
+    }
+
+    #[derive(Debug, Default)]
+    struct OrderAggregate {
+        order_ids: Vec<uuid::Uuid>,
+        cancelled: u32,
+    }
+
+    #[async_trait::async_trait]
+    impl Aggregate for OrderAggregate {
+        type Event = OrderEvent;
+        fn apply(&mut self, event: OrderEvent) {
+            match event {
+                OrderEvent::OrderPlaced(e) => self.order_ids.push(e.order_id),
+                OrderEvent::OrderCancelled(_) => self.cancelled += 1,
+            }
+        }
+    }
+
+    let upcasters = UpcastRegistry::new();
+    let store = MongoEventStore::connect(mongo_url, database)
+        .await?
+        .with_upcasters(upcasters);
+    store.bootstrap().await?;
+
+    let stream_id = format!("rehydrate-{}", uuid::Uuid::new_v4());
+
+    // ── Phase 1: Write ────────────────────────────────────────────────────────
+    info!(event_count, "MongoDB rehydration demo: writing events");
+    let write_start = Instant::now();
+    for i in 0..event_count {
+        let order = events::OrderPlaced {
+            order_id: uuid::Uuid::new_v4(),
+            product_id: format!("product-{i}"),
+            quantity: 1,
+            price_usd: 9.99,
+            placed_at: chrono::Utc::now(),
+            schema_version: events::SchemaVersion::default(),
+        };
+        store
+            .append(&stream_id, "OrderPlaced", 2, &order)
+            .await
+            .map_err(|e| anyhow::anyhow!("append #{i} failed: {e}"))?;
+    }
+    let write_ms = write_start.elapsed().as_millis() as u64;
+    let write_rate = if write_ms > 0 {
+        f64::from(event_count) / (write_ms as f64 / 1_000.0)
+    } else {
+        f64::INFINITY
+    };
+    info!(write_ms, "MongoDB write phase complete");
+
+    // ── Phase 2: Replay / Rehydrate ───────────────────────────────────────────
+    info!("MongoDB rehydration demo: replaying aggregate");
+    let replay_start = Instant::now();
+    let (agg, _last_ver) = store
+        .rehydrate::<OrderAggregate>(&stream_id)
+        .await
+        .map_err(|e| anyhow::anyhow!("rehydrate failed: {e}"))?;
+    let replay_ms = replay_start.elapsed().as_millis() as u64;
+    let replay_rate = if replay_ms > 0 {
+        f64::from(event_count) / (replay_ms as f64 / 1_000.0)
+    } else {
+        f64::INFINITY
+    };
+
+    let events_replayed = agg.order_ids.len() as u64;
+    let passed = events_replayed == u64::from(event_count);
+
+    info!(
+        events_written = event_count,
+        events_replayed, write_ms, replay_ms, passed, "✓ MongoDB rehydration complete"
+    );
+
+    // ── Human-readable timing report ──────────────────────────────────────────
+    println!();
+    println!("══════════════════════════════════════════════");
+    println!("  MongoDB Rehydration / Replay Result");
+    println!("══════════════════════════════════════════════");
+    println!("  Events written : {event_count}");
+    println!("  Write time     : {write_ms} ms  ({write_rate:.0} ev/s)");
+    println!("  Events replayed: {events_replayed}");
+    println!("  Replay time    : {replay_ms} ms  ({replay_rate:.0} ev/s)");
+    println!(
+        "  Result         : {}",
+        if passed { "PASS ✓" } else { "FAIL ✗" }
+    );
+    println!("══════════════════════════════════════════════");
+    println!();
+    let _ = std::io::stdout().flush();
+
+    if emit_json {
+        println!(
+            r#"{{"backend":"mongodb","stream_id":"{stream_id}","events_written":{event_count},"events_replayed":{events_replayed},"write_ms":{write_ms},"replay_ms":{replay_ms},"write_rate_eps":{write_rate:.1},"replay_rate_eps":{replay_rate:.1},"passed":{passed}}}"#,
+        );
+        let _ = std::io::stdout().flush();
+    }
+
+    if !passed {
+        anyhow::bail!(
+            "MongoDB rehydration failed: written={event_count}, replayed={events_replayed}"
+        );
+    }
+
+    info!("=== MongoDB Rehydration / Replay Demo — PASSED ✓ ===");
+    Ok(())
+}
+
+// ─── PostgreSQL Rehydration / Replay Demo ─────────────────────────────────────
+
+#[allow(
+    clippy::too_many_lines,
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation
+)]
+async fn pg_rehydrate_demo(pg_url: &str, event_count: u32, emit_json: bool) -> Result<()> {
+    use crate::postgres::event_store::{Aggregate, PgEventStore, UpcastRegistry};
+    use serde::{Deserialize, Serialize};
+    use std::io::Write as _;
+    use std::time::Instant;
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    #[serde(tag = "event_type", rename_all = "PascalCase")]
+    enum OrderEvent {
+        OrderPlaced(events::OrderPlaced),
+        OrderCancelled(events::OrderCancelled),
+    }
+
+    #[derive(Debug, Default)]
+    struct OrderAggregate {
+        order_ids: Vec<uuid::Uuid>,
+        cancelled: u32,
+    }
+
+    #[async_trait::async_trait]
+    impl Aggregate for OrderAggregate {
+        type Event = OrderEvent;
+        fn apply(&mut self, event: OrderEvent) {
+            match event {
+                OrderEvent::OrderPlaced(e) => self.order_ids.push(e.order_id),
+                OrderEvent::OrderCancelled(_) => self.cancelled += 1,
+            }
+        }
+    }
+
+    let upcasters = UpcastRegistry::new();
+    let store = PgEventStore::connect(pg_url)
+        .await?
+        .with_upcasters(upcasters);
+    store.bootstrap().await?;
+
+    let stream_id = format!("rehydrate-{}", uuid::Uuid::new_v4());
+
+    // ── Phase 1: Write ────────────────────────────────────────────────────────
+    info!(event_count, "PostgreSQL rehydration demo: writing events");
+    let write_start = Instant::now();
+    for i in 0..event_count {
+        let order = events::OrderPlaced {
+            order_id: uuid::Uuid::new_v4(),
+            product_id: format!("product-{i}"),
+            quantity: 1,
+            price_usd: 9.99,
+            placed_at: chrono::Utc::now(),
+            schema_version: events::SchemaVersion::default(),
+        };
+        store
+            .append(&stream_id, "OrderPlaced", 1, &order)
+            .await
+            .map_err(|e| anyhow::anyhow!("append #{i} failed: {e}"))?;
+    }
+    let write_ms = write_start.elapsed().as_millis() as u64;
+    let write_rate = if write_ms > 0 {
+        f64::from(event_count) / (write_ms as f64 / 1_000.0)
+    } else {
+        f64::INFINITY
+    };
+    info!(write_ms, "PostgreSQL write phase complete");
+
+    // ── Phase 2: Replay / Rehydrate ───────────────────────────────────────────
+    info!("PostgreSQL rehydration demo: replaying aggregate");
+    let replay_start = Instant::now();
+    let (agg, _last_ver) = store
+        .rehydrate::<OrderAggregate>(&stream_id)
+        .await
+        .map_err(|e| anyhow::anyhow!("rehydrate failed: {e}"))?;
+    let replay_ms = replay_start.elapsed().as_millis() as u64;
+    let replay_rate = if replay_ms > 0 {
+        f64::from(event_count) / (replay_ms as f64 / 1_000.0)
+    } else {
+        f64::INFINITY
+    };
+
+    let events_replayed = agg.order_ids.len() as u64;
+    let passed = events_replayed == u64::from(event_count);
+
+    info!(
+        events_written = event_count,
+        events_replayed, write_ms, replay_ms, passed, "✓ PostgreSQL rehydration complete"
+    );
+
+    // ── Human-readable timing report ──────────────────────────────────────────
+    println!();
+    println!("══════════════════════════════════════════════");
+    println!("  PostgreSQL Rehydration / Replay Result");
+    println!("══════════════════════════════════════════════");
+    println!("  Events written : {event_count}");
+    println!("  Write time     : {write_ms} ms  ({write_rate:.0} ev/s)");
+    println!("  Events replayed: {events_replayed}");
+    println!("  Replay time    : {replay_ms} ms  ({replay_rate:.0} ev/s)");
+    println!(
+        "  Result         : {}",
+        if passed { "PASS ✓" } else { "FAIL ✗" }
+    );
+    println!("══════════════════════════════════════════════");
+    println!();
+    let _ = std::io::stdout().flush();
+
+    if emit_json {
+        println!(
+            r#"{{"backend":"postgresql","stream_id":"{stream_id}","events_written":{event_count},"events_replayed":{events_replayed},"write_ms":{write_ms},"replay_ms":{replay_ms},"write_rate_eps":{write_rate:.1},"replay_rate_eps":{replay_rate:.1},"passed":{passed}}}"#,
+        );
+        let _ = std::io::stdout().flush();
+    }
+
+    if !passed {
+        anyhow::bail!(
+            "PostgreSQL rehydration failed: written={event_count}, replayed={events_replayed}"
+        );
+    }
+
+    info!("=== PostgreSQL Rehydration / Replay Demo — PASSED ✓ ===");
     Ok(())
 }

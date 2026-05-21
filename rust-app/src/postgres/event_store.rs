@@ -1,25 +1,25 @@
-//! PostgreSQL as an Event Store — demonstrating the 8 essential event-sourcing
+//! `PostgreSQL` as an Event Store — demonstrating the 8 essential event-sourcing
 //! properties using idiomatic Rust + sqlx.
 //!
 //! ┌────┬────────────────────────┬───────────────────────────────────────────────┐
 //! │ #  │ Property               │ How it is covered here                        │
 //! ├────┼────────────────────────┼───────────────────────────────────────────────┤
-//! │ 1  │ Append-Only Guard      │ UNIQUE(stream_id, stream_version) constraint   │
+//! │ 1  │ Append-Only Guard      │ `UNIQUE(stream_id`, `stream_version`) constraint   │
 //! │    │                        │ + a BEFORE UPDATE OR DELETE trigger that       │
 //! │    │                        │ raises an exception prevents any mutation.     │
 //! │ 2  │ Aggregate Rehydrator   │ `rehydrate()` SELECTs the stream ORDER BY      │
-//! │    │                        │ stream_version, feeds events through Apply.    │
-//! │ 3  │ Checkpoint System      │ `checkpoints` table; UPSERT on consumer_id.   │
-//! │ 4  │ Event Polling → Push   │ PostgreSQL LISTEN/NOTIFY via sqlx PgListener; │
+//! │    │                        │ `stream_version`, feeds events through Apply.    │
+//! │ 3  │ Checkpoint System      │ `checkpoints` table; UPSERT on `consumer_id`.   │
+//! │ 4  │ Event Polling → Push   │ `PostgreSQL` LISTEN/NOTIFY via sqlx `PgListener`; │
 //! │    │                        │ the server pushes a notification on INSERT,    │
 //! │    │                        │ no polling loop in application code.           │
 //! │ 5  │ Event Upcasting        │ `UpcastRegistry` middleware transforms old     │
 //! │    │                        │ schema versions before handing to consumers.   │
 //! │ 6  │ No Dual Write          │ `append_with_outbox` wraps domain event +      │
-//! │    │                        │ integration_outbox entry in one transaction.   │
+//! │    │                        │ `integration_outbox` entry in one transaction.   │
 //! │ 7  │ Built-in Subscriptions │ `catch_up_subscribe` replays from checkpoint  │
 //! │    │                        │ then switches to LISTEN for live events.       │
-//! │    │                        │ `try_acquire_lease` uses pg_try_advisory_lock  │
+//! │    │                        │ `try_acquire_lease` uses `pg_try_advisory_lock`  │
 //! │    │                        │ for Single-Active-Consumer ordering.           │
 //! │ 8  │ Integration Events     │ Transactional outbox in `integration_outbox`; │
 //! │    │                        │ relay uses SELECT … FOR UPDATE SKIP LOCKED     │
@@ -43,7 +43,7 @@ use crate::events::{SchemaVersion, UpcastResult};
 #[derive(Debug, Error)]
 pub enum EventStoreError {
     /// Attempted to append at a `stream_version` that already exists.
-    /// Equivalent to KurrentDB's `WrongExpectedVersion`.
+    /// Equivalent to `KurrentDB`'s `WrongExpectedVersion`.
     #[error("optimistic concurrency conflict: stream '{stream}' version {expected} already used")]
     ConcurrencyConflict { stream: String, expected: i64 },
 
@@ -53,7 +53,7 @@ pub enum EventStoreError {
 
 // ─── Envelope ─────────────────────────────────────────────────────────────────
 
-/// Wire format as stored in PostgreSQL for every persisted event.
+/// Wire format as stored in `PostgreSQL` for every persisted event.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EventEnvelope {
     pub event_id: String,
@@ -171,6 +171,7 @@ impl PgEventStore {
     // ── Schema bootstrap ─────────────────────────────────────────────────────
 
     /// Idempotent: creates all tables, indexes, triggers, and sequences.
+    #[allow(clippy::too_many_lines)]
     pub async fn bootstrap(&self) -> Result<()> {
         // ── Property 1: Append-Only Guard ─────────────────────────────────────
         //
@@ -179,7 +180,7 @@ impl PgEventStore {
         //   • global_position GENERATED ALWAYS AS IDENTITY → auto-assigned, immutable
         //   • immutability_guard trigger blocks UPDATE and DELETE on committed rows
         sqlx::query(
-            r#"
+            r"
             CREATE TABLE IF NOT EXISTS events (
                 event_id        TEXT        NOT NULL PRIMARY KEY,
                 stream_id       TEXT        NOT NULL,
@@ -191,7 +192,7 @@ impl PgEventStore {
                 occurred_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 UNIQUE (stream_id, stream_version)
             )
-            "#,
+            ",
         )
         .execute(&self.pool)
         .await
@@ -213,7 +214,7 @@ impl PgEventStore {
 
         // ── Immutability trigger (Property 1) ────────────────────────────────
         sqlx::query(
-            r#"
+            r"
             CREATE OR REPLACE FUNCTION events_immutability_guard()
             RETURNS TRIGGER LANGUAGE plpgsql AS $$
             BEGIN
@@ -221,13 +222,13 @@ impl PgEventStore {
                     'event store is append-only: UPDATE/DELETE on events is forbidden';
             END;
             $$
-            "#,
+            ",
         )
         .execute(&self.pool)
         .await?;
 
         sqlx::query(
-            r#"
+            r"
             DO $$ BEGIN
                 IF NOT EXISTS (
                     SELECT 1 FROM pg_trigger
@@ -238,7 +239,7 @@ impl PgEventStore {
                     FOR EACH ROW EXECUTE FUNCTION events_immutability_guard();
                 END IF;
             END $$
-            "#,
+            ",
         )
         .execute(&self.pool)
         .await?;
@@ -249,7 +250,7 @@ impl PgEventStore {
         // global_position::TEXT).  Subscribers receive the new position
         // instantly — no polling.
         sqlx::query(
-            r#"
+            r"
             CREATE OR REPLACE FUNCTION events_notify_insert()
             RETURNS TRIGGER LANGUAGE plpgsql AS $$
             BEGIN
@@ -257,13 +258,13 @@ impl PgEventStore {
                 RETURN NEW;
             END;
             $$
-            "#,
+            ",
         )
         .execute(&self.pool)
         .await?;
 
         sqlx::query(
-            r#"
+            r"
             DO $$ BEGIN
                 IF NOT EXISTS (
                     SELECT 1 FROM pg_trigger
@@ -274,7 +275,7 @@ impl PgEventStore {
                     FOR EACH ROW EXECUTE FUNCTION events_notify_insert();
                 END IF;
             END $$
-            "#,
+            ",
         )
         .execute(&self.pool)
         .await?;
@@ -291,20 +292,20 @@ impl PgEventStore {
 
         // checkpoints: Property 3 — durable consumer cursors.
         sqlx::query(
-            r#"
+            r"
             CREATE TABLE IF NOT EXISTS checkpoints (
                 consumer_id     TEXT        NOT NULL PRIMARY KEY,
                 global_position BIGINT      NOT NULL,
                 updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
             )
-            "#,
+            ",
         )
         .execute(&self.pool)
         .await?;
 
         // integration_outbox: Property 8 — transactional outbox.
         sqlx::query(
-            r#"
+            r"
             CREATE TABLE IF NOT EXISTS integration_outbox (
                 event_id        TEXT        NOT NULL PRIMARY KEY,
                 stream_id       TEXT        NOT NULL,
@@ -314,7 +315,7 @@ impl PgEventStore {
                 dispatched      BOOLEAN     NOT NULL DEFAULT FALSE,
                 dispatched_at   TIMESTAMPTZ
             )
-            "#,
+            ",
         )
         .execute(&self.pool)
         .await?;
@@ -334,13 +335,14 @@ impl PgEventStore {
 
     /// ── Property 6: No Dual Write ──────────────────────────────────────────
     ///
-    /// Writes the domain event **and** an outbox entry in a single PostgreSQL
+    /// Writes the domain event **and** an outbox entry in a single `PostgreSQL`
     /// transaction.  Either both records exist after commit or neither does.
     ///
     /// ── Property 1: Append-Only Guard ──────────────────────────────────────
     ///
     /// A `UNIQUE(stream_id, stream_version)` violation surfaces as
     /// [`EventStoreError::ConcurrencyConflict`].
+    #[allow(clippy::future_not_send)]
     pub async fn append_with_outbox<T: Serialize>(
         &self,
         stream_id: &str,
@@ -360,11 +362,11 @@ impl PgEventStore {
 
         // Write outbox entry inside the same transaction (Property 6).
         sqlx::query(
-            r#"
+            r"
             INSERT INTO integration_outbox
                 (event_id, stream_id, global_position, event_type, payload)
             VALUES ($1, $2, $3, $4, $5)
-            "#,
+            ",
         )
         .bind(&envelope.event_id)
         .bind(&envelope.stream_id)
@@ -392,6 +394,7 @@ impl PgEventStore {
 
     /// Append without an outbox entry.
     #[allow(dead_code)]
+    #[allow(clippy::future_not_send)]
     pub async fn append<T: Serialize>(
         &self,
         stream_id: &str,
@@ -414,6 +417,7 @@ impl PgEventStore {
         Ok(env)
     }
 
+    #[allow(clippy::future_not_send)]
     async fn append_in_tx<T: Serialize>(
         &self,
         stream_id: &str,
@@ -424,13 +428,13 @@ impl PgEventStore {
     ) -> Result<EventEnvelope, EventStoreError> {
         // ── Advance per-stream version counter ───────────────────────────────
         let row = sqlx::query(
-            r#"
+            r"
             INSERT INTO stream_versions (stream_id, version)
             VALUES ($1, 1)
             ON CONFLICT (stream_id) DO UPDATE
                 SET version = stream_versions.version + 1
             RETURNING version - 1  -- version before this insert
-            "#,
+            ",
         )
         .bind(stream_id)
         .fetch_one(&mut **tx)
@@ -449,13 +453,13 @@ impl PgEventStore {
 
         // ── Insert event — duplicate key = ConcurrencyConflict ───────────────
         let row = match sqlx::query(
-            r#"
+            r"
             INSERT INTO events
                 (event_id, stream_id, stream_version, event_type,
                  schema_version, payload, occurred_at)
             VALUES ($1, $2, $3, $4, $5, $6, $7)
             RETURNING global_position
-            "#,
+            ",
         )
         .bind(&event_id)
         .bind(stream_id)
@@ -524,9 +528,9 @@ impl PgEventStore {
             let payload: serde_json::Value = row.get("payload");
             last_version = row.get("stream_version");
 
-            let upcasted = self
-                .upcasters
-                .upcast(&event_type, schema_version as u32, payload);
+            let upcasted =
+                self.upcasters
+                    .upcast(&event_type, schema_version.cast_unsigned(), payload);
 
             let mut event_json = match upcasted {
                 UpcastResult::Current(v) | UpcastResult::Migrated { event: v, .. } => v,
@@ -561,13 +565,13 @@ impl PgEventStore {
     /// Persist the last processed `global_position` for `consumer_id`.
     pub async fn save_checkpoint(&self, consumer_id: &str, global_position: i64) -> Result<()> {
         sqlx::query(
-            r#"
+            r"
             INSERT INTO checkpoints (consumer_id, global_position, updated_at)
             VALUES ($1, $2, NOW())
             ON CONFLICT (consumer_id) DO UPDATE
                 SET global_position = EXCLUDED.global_position,
                     updated_at      = NOW()
-            "#,
+            ",
         )
         .bind(consumer_id)
         .bind(global_position)
@@ -592,7 +596,7 @@ impl PgEventStore {
     /// ── Properties 4 & 7: Push-based Catch-Up Subscription ────────────────
     ///
     /// Phase 1 — replays all events after the stored checkpoint (historical).
-    /// Phase 2 — subscribes to `events_channel` via PostgreSQL LISTEN/NOTIFY.
+    /// Phase 2 — subscribes to `events_channel` via `PostgreSQL` LISTEN/NOTIFY.
     ///           The server *pushes* notifications to us; there is no polling loop.
     ///
     /// Each notification carries `global_position` so we can fetch the new event
@@ -624,7 +628,7 @@ impl PgEventStore {
 
         let mut last_pos = from;
         for row in rows {
-            let envelope = row_to_envelope(&row)?;
+            let envelope = row_to_envelope(&row);
             last_pos = envelope.global_position;
             handler(envelope).await?;
             self.save_checkpoint(consumer_id, last_pos).await?;
@@ -667,7 +671,7 @@ impl PgEventStore {
             .context("failed to fetch notified event")?;
 
             if let Some(r) = row {
-                let envelope = row_to_envelope(&r)?;
+                let envelope = row_to_envelope(&r);
                 handler(envelope).await?;
                 self.save_checkpoint(consumer_id, pos).await?;
             }
@@ -678,7 +682,7 @@ impl PgEventStore {
 
     /// ── Property 7 (Competing Consumer): acquire exclusive lease ───────────
     ///
-    /// Uses PostgreSQL advisory locks (`pg_try_advisory_lock`) for a
+    /// Uses `PostgreSQL` advisory locks (`pg_try_advisory_lock`) for a
     /// Single-Active-Consumer guarantee.  Advisory locks are session-scoped:
     /// if the holder's connection drops the lock is released automatically,
     /// preventing indefinite blocking.
@@ -711,7 +715,7 @@ impl PgEventStore {
     /// ── Property 8: Integration Events ─────────────────────────────────────
     ///
     /// Reads the oldest un-dispatched outbox entry using
-    /// `SELECT … FOR UPDATE SKIP LOCKED` — PostgreSQL's native concurrent-relay
+    /// `SELECT … FOR UPDATE SKIP LOCKED` — `PostgreSQL`'s native concurrent-relay
     /// mechanism.  Multiple relay workers can run simultaneously; each worker
     /// locks a different row so there is no double-delivery.
     ///
@@ -728,25 +732,22 @@ impl PgEventStore {
             .context("failed to begin relay transaction")?;
 
         let row = sqlx::query(
-            r#"
+            r"
             SELECT event_id, payload, event_type
             FROM   integration_outbox
             WHERE  dispatched = FALSE
             ORDER  BY global_position
             LIMIT  1
             FOR UPDATE SKIP LOCKED
-            "#,
+            ",
         )
         .fetch_optional(&mut *tx)
         .await
         .context("failed to query integration outbox")?;
 
-        let row = match row {
-            Some(r) => r,
-            None => {
-                tx.rollback().await.ok();
-                return Ok(false);
-            }
+        let Some(row) = row else {
+            tx.rollback().await.ok();
+            return Ok(false);
         };
 
         let event_id: String = row.get("event_id");
@@ -788,7 +789,7 @@ impl PgEventStore {
         loop {
             tokio::select! {
                 biased;
-                _ = &mut shutdown => {
+                () = &mut shutdown => {
                     info!("relay loop shutting down");
                     return Ok(());
                 }
@@ -809,9 +810,9 @@ impl PgEventStore {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-fn row_to_envelope(row: &sqlx::postgres::PgRow) -> Result<EventEnvelope> {
+fn row_to_envelope(row: &sqlx::postgres::PgRow) -> EventEnvelope {
     let payload: serde_json::Value = row.get("payload");
-    Ok(EventEnvelope {
+    EventEnvelope {
         event_id: row.get("event_id"),
         stream_id: row.get("stream_id"),
         stream_version: row.get("stream_version"),
@@ -822,13 +823,13 @@ fn row_to_envelope(row: &sqlx::postgres::PgRow) -> Result<EventEnvelope> {
         occurred_at: row
             .get::<chrono::DateTime<chrono::Utc>, _>("occurred_at")
             .to_rfc3339(),
-    })
+    }
 }
 
-/// Stable 64-bit hash of a string for use as a PostgreSQL advisory-lock key.
+/// Stable 64-bit hash of a string for use as a `PostgreSQL` advisory-lock key.
 fn stable_hash(s: &str) -> i64 {
     use std::hash::Hash;
     let mut h = std::collections::hash_map::DefaultHasher::new();
     s.hash(&mut h);
-    std::hash::Hasher::finish(&h) as i64
+    std::hash::Hasher::finish(&h).cast_signed()
 }

@@ -1,4 +1,4 @@
-//! Thin async wrapper around the official MongoDB Rust driver.
+//! Thin async wrapper around the official `MongoDB` Rust driver.
 //!
 //! Mirrors the interface of [`crate::kurrentdb::client::KurrentClient`] so the
 //! benchmark harness can swap backends without structural changes.
@@ -24,11 +24,11 @@ pub struct MongoClient {
 }
 
 impl MongoClient {
-    /// Connect to MongoDB and select a database.
+    /// Connect to `MongoDB` and select a database.
     ///
     /// `url` examples:
-    ///   "mongodb://localhost:27017"
-    ///   "mongodb://user:pass@mongo:27017/eventbench?authSource=admin"
+    ///   "<mongodb://localhost:27017>"
+    ///   "<mongodb://user:pass@mongo:27017/eventbench?authSource=admin>"
     pub async fn connect(url: &str, db_name: &str) -> Result<Self> {
         let opts = ClientOptions::parse(url)
             .await
@@ -39,7 +39,7 @@ impl MongoClient {
     }
 
     /// Insert a single JSON-serialisable event into `collection_name`.
-    #[allow(dead_code)]
+    #[allow(dead_code, clippy::future_not_send)]
     pub async fn append<T: Serialize>(
         &self,
         collection_name: &str,
@@ -59,6 +59,7 @@ impl MongoClient {
 
     /// Insert a pre-built batch of events in a single round-trip.
     /// More efficient at high throughput than one-by-one inserts.
+    #[allow(clippy::future_not_send)]
     pub async fn append_batch<T: Serialize>(
         &self,
         collection_name: &str,
@@ -88,7 +89,7 @@ impl MongoClient {
     ///  1. A JSON Schema validator requiring `stream_id`, `stream_version`, and
     ///     `global_position` on every inserted document (structural immutability).
     ///  2. A unique compound index `{ stream_id, stream_version }` — a duplicate
-    ///     key error on insert mirrors KurrentDB's `WrongExpectedVersion`.
+    ///     key error on insert mirrors `KurrentDB`'s `WrongExpectedVersion`.
     ///  3. An index on `global_position` to support `$all`-stream queries.
     pub async fn ensure_collection_event_store(&self, collection_name: &str) -> Result<()> {
         let validator = doc! {
@@ -112,7 +113,7 @@ impl MongoClient {
             .validation_action(ValidationAction::Error)
             .await
         {
-            Ok(_) => {}
+            Ok(()) => {}
             Err(e) => {
                 if let mongodb::error::ErrorKind::Command(ref cmd) = *e.kind {
                     if cmd.code == 48 {
@@ -191,12 +192,13 @@ impl MongoClient {
     }
 
     /// Insert a batch of events stamped with a monotonic `stream_version` and a
-    /// globally-ordered `global_position` — mirroring KurrentDB's per-stream
+    /// globally-ordered `global_position` — mirroring `KurrentDB`'s per-stream
     /// version and global `$all`-stream position.
     ///
     /// Two sequential atomic `findOneAndUpdate` increments advance the
     /// `_stream_versions` and `_global_seq` control collections, then the
     /// actual `insertMany` writes all events in one round-trip.
+    #[allow(clippy::future_not_send, clippy::cast_possible_wrap)]
     pub async fn append_batch_versioned<T: Serialize>(
         &self,
         collection_name: &str,
@@ -288,11 +290,11 @@ impl MongoClient {
     }
 
     /// Create a collection if it does not already exist.
-    /// Ignores NamespaceExists (code 48) so it is safe to call on a collection
+    /// Ignores `NamespaceExists` (code 48) so it is safe to call on a collection
     /// that was already created by a concurrent task or a `--no-drop` run.
     pub async fn ensure_collection(&self, collection_name: &str) -> Result<()> {
         match self.db.create_collection(collection_name).await {
-            Ok(_) => Ok(()),
+            Ok(()) => Ok(()),
             Err(e) => {
                 if let mongodb::error::ErrorKind::Command(ref cmd) = *e.kind {
                     if cmd.code == 48 {
