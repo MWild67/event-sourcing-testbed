@@ -256,12 +256,27 @@ jobs:
           kubectl rollout status statefulset/kurrentdb \
             -n event-store \
             --timeout=120s
-          kubectl port-forward -n event-store pod/kurrentdb-0 2113:2113 &
-          PF_PID=$!
-          sleep 2
+
+          # Start port-forward and restart it automatically if it dies.
+          # kubectl port-forward can exit silently in CI (network blip, etc.)
+          # causing every curl attempt to hit "connection refused" for the full
+          # 5-minute timeout.  We check aliveness on each iteration and respawn.
+          start_pf() {
+            kill "$PF_PID" 2>/dev/null || true
+            kubectl port-forward -n event-store pod/kurrentdb-0 2113:2113 &
+            PF_PID=$!
+            sleep 3
+          }
+          PF_PID=""
+          start_pf
           echo "Polling KurrentDB /health/live ..."
           for i in $(seq 1 60); do
-            if curl -sf http://localhost:2113/health/live; then
+            # Respawn port-forward if the background process has exited.
+            if ! kill -0 "$PF_PID" 2>/dev/null; then
+              echo "  port-forward exited, restarting (attempt $i)..."
+              start_pf
+            fi
+            if curl -sf --connect-timeout 5 http://localhost:2113/health/live 2>/dev/null; then
               echo "KurrentDB ready after $i probe(s)"
               kill $PF_PID 2>/dev/null
               exit 0
@@ -767,6 +782,131 @@ jobs:
             kubectl logs "$pod" -n event-store --tail=50 2>&1 || true
           done
 
+  # ── Job 8: Rehydration / Replay — all three backends (Docker) ─────────────
+  #
+  # Validates that each backend can write N domain events, replay the full
+  # stream from the beginning, and reconstruct aggregate state correctly.
+  # Uses 1 000 events (fast enough for CI) and asserts "passed": true in the
+  # JSON output of each rehydrate-demo subcommand.
+  rehydrate:
+    name: Rehydration / Replay (KurrentDB + MongoDB + PostgreSQL)
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install KurrentDB (in-memory)
+        run: |
+          curl -1sLf 'https://dl.cloudsmith.io/public/eventstore/kurrent-latest/setup.deb.sh' | sudo -E bash
+          sudo apt-get install -y kurrentdb
+          sudo systemctl stop kurrentdb || true
+          getent passwd kurrentdb > /dev/null || sudo useradd --system --no-create-home --shell /usr/sbin/nologin kurrentdb
+          sudo mkdir -p /tmp/esdb /tmp/esdb-log
+          sudo chown kurrentdb:kurrentdb /tmp/esdb /tmp/esdb-log
+          sudo mkdir -p /etc/systemd/system/kurrentdb.service.d
+          printf '[Service]\nEnvironment="KURRENTDB_DB=/tmp/esdb"\nEnvironment="KURRENTDB_LOG=/tmp/esdb-log"\nEnvironment="KURRENTDB_INSECURE=true"\nEnvironment="KURRENTDB_RUN_PROJECTIONS=None"\nEnvironment="KURRENTDB_UNSAFE_DISABLE_FLUSH_TO_DISK=true"\nEnvironment="KURRENTDB_CLUSTER_SIZE=1"\nEnvironment="KURRENTDB_MEM_DB=true"\n' \
+            | sudo tee /etc/systemd/system/kurrentdb.service.d/bench.conf
+          sudo systemctl daemon-reload
+          sudo systemctl start kurrentdb
+          echo "Waiting for KurrentDB to be ready..."
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:2113/health/live && break || sleep 2
+          done
+
+      - name: Start MongoDB (Docker, replica set)
+        run: |
+          docker run -d \
+            --name mongodb \
+            -p 27017:27017 \
+            --tmpfs /data/db \
+            mongo:7 \
+            mongod --quiet --bind_ip_all --replSet rs0 --wiredTigerCacheSizeGB 0.25
+          echo "Waiting for MongoDB..."
+          for i in $(seq 1 30); do
+            docker exec mongodb mongosh --quiet --eval "db.adminCommand('ping').ok" \
+              mongodb://localhost:27017/admin 2>/dev/null && break || sleep 2
+          done
+          docker exec mongodb mongosh --quiet --eval \
+            "rs.initiate({_id:'rs0',members:[{_id:0,host:'127.0.0.1:27017'}]})"
+          echo "Waiting for RS primary..."
+          for i in $(seq 1 20); do
+            docker exec mongodb mongosh --quiet --eval \
+              "if (rs.isMaster().ismaster !== true) { throw 'no primary'; }" \
+              2>/dev/null && echo "RS primary ready" && break
+            sleep 3
+          done
+
+      - name: Start PostgreSQL (Docker)
+        run: |
+          docker run -d --name pg \
+            -e POSTGRES_DB=eventbench \
+            -e POSTGRES_USER=postgres \
+            -e POSTGRES_PASSWORD=postgres \
+            -p 5432:5432 \
+            --tmpfs /var/lib/postgresql/data \
+            postgres:16 \
+            -c fsync=off -c full_page_writes=off -c max_connections=200
+          for i in $(seq 1 30); do
+            docker exec pg pg_isready -U postgres -d eventbench && break
+            sleep 2
+          done
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            rust-app/target
+          key: event-sourcing-testbed-${{ runner.os }}-cargo-${{ hashFiles('rust-app/Cargo.lock') }}
+
+      - name: Build release binary
+        run: cargo build --release --manifest-path rust-app/Cargo.toml
+
+      - name: KurrentDB — rehydration / replay demo
+        run: |
+          RESULT=$(rust-app/target/release/testbed \
+            --kurrentdb-url "kurrentdb://localhost:2113?tls=false" \
+            kurrentdb-rehydrate-demo \
+            --events 1000 \
+            --json)
+          echo "$RESULT"
+          PASSED=$(echo "$RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['passed'])")
+          [ "$PASSED" = "True" ] || { echo "KurrentDB rehydration FAILED"; exit 1; }
+
+      - name: MongoDB — rehydration / replay demo
+        run: |
+          RESULT=$(rust-app/target/release/testbed \
+            --mongodb-url "mongodb://localhost:27017/?replicaSet=rs0" \
+            mongo-rehydrate-demo \
+            --database rehydrate-ci \
+            --events 1000 \
+            --json)
+          echo "$RESULT"
+          PASSED=$(echo "$RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['passed'])")
+          [ "$PASSED" = "True" ] || { echo "MongoDB rehydration FAILED"; exit 1; }
+
+      - name: PostgreSQL — rehydration / replay demo
+        run: |
+          RESULT=$(rust-app/target/release/testbed \
+            --postgres-url "postgres://postgres:postgres@localhost:5432/eventbench" \
+            pg-rehydrate-demo \
+            --events 1000 \
+            --json)
+          echo "$RESULT"
+          PASSED=$(echo "$RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['passed'])")
+          [ "$PASSED" = "True" ] || { echo "PostgreSQL rehydration FAILED"; exit 1; }
+
+      - name: Dump Docker logs on failure
+        if: failure()
+        run: |
+          docker logs mongodb --tail 30 2>/dev/null || true
+          docker logs pg --tail 30 2>/dev/null || true
+
   # ── Report: side-by-side comparison of all six backends ──────────────────
   report:
     name: Benchmark Comparison Summary
@@ -779,6 +919,7 @@ jobs:
       - bench-kurrentdb-k8s
       - bench-mongodb-k8s
       - bench-postgres-k8s
+      - rehydrate
 
     steps:
       - name: Write comparison table to job summary
