@@ -1,0 +1,375 @@
+name: PostgreSQL Benchmark
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  # ── Docker: tmpfs, fsync off ─────────────────────────────────────────────
+  bench-docker:
+    name: PostgreSQL — Docker (tmpfs)
+    runs-on: ubuntu-22.04
+    outputs:
+      rate:    ${{ steps.bench.outputs.rate }}
+      p50_us:  ${{ steps.bench.outputs.p50_us }}
+      p95_us:  ${{ steps.bench.outputs.p95_us }}
+      p99_us:  ${{ steps.bench.outputs.p99_us }}
+      p999_us: ${{ steps.bench.outputs.p999_us }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            rust-app/target
+          key: event-sourcing-testbed-${{ runner.os }}-cargo-${{ hashFiles('rust-app/Cargo.lock') }}
+
+      - name: Build
+        run: cargo build --release --manifest-path rust-app/Cargo.toml
+
+      - name: Start PostgreSQL container
+        run: |
+          docker run -d --name pg \
+            -e POSTGRES_DB=eventbench \
+            -e POSTGRES_USER=postgres \
+            -e POSTGRES_PASSWORD=postgres \
+            -p 5432:5432 \
+            --tmpfs /var/lib/postgresql/data \
+            postgres:16 \
+            -c fsync=off \
+            -c full_page_writes=off \
+            -c max_connections=200
+
+      - name: Wait for PostgreSQL to be ready
+        run: |
+          for i in $(seq 1 30); do
+            docker exec pg pg_isready -U postgres -d eventbench && break
+            echo "Attempt $i/30: waiting for PostgreSQL..."
+            sleep 2
+          done
+          docker exec pg pg_isready -U postgres -d eventbench
+
+      - name: Benchmark
+        id: bench
+        run: |
+          RESULT=$(rust-app/target/release/testbed \
+            --postgres-url "postgres://postgres:postgres@localhost:5432/eventbench" \
+            pg-bench \
+            --target-rate 10000 \
+            --concurrency 64 \
+            --batch-size 1 \
+            --duration-secs 30 \
+            --event-store-mode \
+            --json)
+          echo "$RESULT"
+          echo "rate=$(echo "$RESULT"    | python3 -c "import sys,json; d=json.load(sys.stdin); print(round(d['actual_rate_eps'],1))")" >> "$GITHUB_OUTPUT"
+          echo "p50_us=$(echo "$RESULT"  | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['p50_us'])")"  >> "$GITHUB_OUTPUT"
+          echo "p95_us=$(echo "$RESULT"  | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['p95_us'])")"  >> "$GITHUB_OUTPUT"
+          echo "p99_us=$(echo "$RESULT"  | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['p99_us'])")"  >> "$GITHUB_OUTPUT"
+          echo "p999_us=$(echo "$RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['p999_us'])")" >> "$GITHUB_OUTPUT"
+
+      - name: Validate PostgreSQL event-store features
+        run: |
+          rust-app/target/release/testbed \
+            --postgres-url "postgres://postgres:postgres@localhost:5432/eventbench" \
+            pg-event-store-demo \
+            --events 5
+
+      - name: Stop PostgreSQL container
+        if: always()
+        run: docker stop pg && docker rm pg || true
+
+  # ── Kubernetes: single-node ──────────────────────────────────────────────
+  bench-k8s:
+    name: PostgreSQL — Kubernetes (single-node)
+    runs-on: ubuntu-22.04
+    outputs:
+      rate:    ${{ steps.bench.outputs.rate }}
+      p50_us:  ${{ steps.bench.outputs.p50_us }}
+      p95_us:  ${{ steps.bench.outputs.p95_us }}
+      p99_us:  ${{ steps.bench.outputs.p99_us }}
+      p999_us: ${{ steps.bench.outputs.p999_us }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            rust-app/target
+          key: event-sourcing-testbed-${{ runner.os }}-cargo-${{ hashFiles('rust-app/Cargo.lock') }}
+
+      - name: Build
+        run: cargo build --release --manifest-path rust-app/Cargo.toml
+
+      - name: Install k3d + kubectl
+        run: |
+          curl -s https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | TAG=v5.8.3 bash
+          curl -LO "https://dl.k8s.io/release/$(curl -sSL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+          chmod +x kubectl && sudo mv kubectl /usr/local/bin/
+
+      - name: Create k3d cluster
+        run: |
+          k3d cluster create bench \
+            --servers 1 \
+            --agents 1 \
+            --no-lb \
+            --wait
+
+      - name: Pre-pull postgres:16 image into k3d
+        run: |
+          docker pull postgres:16
+          k3d image import postgres:16 -c bench
+
+      - name: Deploy PostgreSQL into Kubernetes
+        run: |
+          kubectl apply -f k8s/00-namespace.yaml
+          kubectl apply -f k8s/06-postgres/
+
+      - name: Wait for PostgreSQL StatefulSet rollout
+        run: kubectl rollout status statefulset/postgres -n event-store --timeout=300s
+
+      - name: Wait for PostgreSQL to accept connections
+        run: |
+          for i in $(seq 1 40); do
+            kubectl exec -n event-store postgres-0 -- \
+              pg_isready -U postgres -d eventbench 2>/dev/null && break
+            echo "Attempt $i/40: waiting for pg_isready..."
+            sleep 5
+          done
+          kubectl exec -n event-store postgres-0 -- \
+            pg_isready -U postgres -d eventbench
+
+      - name: Port-forward PostgreSQL
+        run: |
+          kubectl port-forward -n event-store pod/postgres-0 5432:5432 &
+          echo "PF_PID=$!" >> "$GITHUB_ENV"
+          sleep 3
+
+      - name: Benchmark
+        id: bench
+        run: |
+          RESULT=$(rust-app/target/release/testbed \
+            --postgres-url "postgres://postgres:postgres@localhost:5432/eventbench" \
+            pg-bench \
+            --target-rate 10000 \
+            --concurrency 64 \
+            --batch-size 1 \
+            --duration-secs 30 \
+            --event-store-mode \
+            --json)
+          echo "$RESULT"
+          echo "rate=$(echo "$RESULT"    | python3 -c "import sys,json; d=json.load(sys.stdin); print(round(d['actual_rate_eps'],1))")" >> "$GITHUB_OUTPUT"
+          echo "p50_us=$(echo "$RESULT"  | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['p50_us'])")"  >> "$GITHUB_OUTPUT"
+          echo "p95_us=$(echo "$RESULT"  | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['p95_us'])")"  >> "$GITHUB_OUTPUT"
+          echo "p99_us=$(echo "$RESULT"  | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['p99_us'])")"  >> "$GITHUB_OUTPUT"
+          echo "p999_us=$(echo "$RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['p999_us'])")" >> "$GITHUB_OUTPUT"
+
+      - name: Validate PostgreSQL event-store features
+        run: |
+          rust-app/target/release/testbed \
+            --postgres-url "postgres://postgres:postgres@localhost:5432/eventbench" \
+            pg-event-store-demo \
+            --events 5
+
+      - name: Stop port-forward
+        if: always()
+        run: kill "$PF_PID" 2>/dev/null || true
+
+      - name: Dump pod diagnostics on failure
+        if: failure()
+        run: |
+          kubectl cluster-info 2>/dev/null || { echo "No k8s cluster reachable — skipping pod diagnostics"; exit 0; }
+          echo "=== Pod status ==="
+          kubectl get pods -n event-store -o wide || true
+          echo "=== Events ==="
+          kubectl get events -n event-store --sort-by='.lastTimestamp' 2>/dev/null | tail -40 || true
+          echo "=== Pod descriptions ==="
+          kubectl describe pods -n event-store || true
+          echo "=== Logs (last 50 lines per pod) ==="
+          for pod in $(kubectl get pods -n event-store -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs "$pod" -n event-store --tail=50 2>&1 || true
+          done
+
+  # ── Rehydration / Replay ─────────────────────────────────────────────────
+  rehydrate:
+    name: PostgreSQL — Rehydration / Replay
+    runs-on: ubuntu-22.04
+    outputs:
+      write_ms:    ${{ steps.demo.outputs.write_ms }}
+      replay_ms:   ${{ steps.demo.outputs.replay_ms }}
+      write_rate:  ${{ steps.demo.outputs.write_rate }}
+      replay_rate: ${{ steps.demo.outputs.replay_rate }}
+      passed:      ${{ steps.demo.outputs.passed }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Start PostgreSQL (Docker)
+        run: |
+          docker run -d --name pg \
+            -e POSTGRES_DB=eventbench \
+            -e POSTGRES_USER=postgres \
+            -e POSTGRES_PASSWORD=postgres \
+            -p 5432:5432 \
+            --tmpfs /var/lib/postgresql/data \
+            postgres:16 \
+            -c fsync=off -c full_page_writes=off -c max_connections=200
+          for i in $(seq 1 30); do
+            docker exec pg pg_isready -U postgres -d eventbench && break
+            sleep 2
+          done
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            rust-app/target
+          key: event-sourcing-testbed-${{ runner.os }}-cargo-${{ hashFiles('rust-app/Cargo.lock') }}
+
+      - name: Build
+        run: cargo build --release --manifest-path rust-app/Cargo.toml
+
+      - name: Rehydration demo
+        id: demo
+        run: |
+          RESULT=$(rust-app/target/release/testbed \
+            --postgres-url "postgres://postgres:postgres@localhost:5432/eventbench" \
+            pg-rehydrate-demo \
+            --json)
+          echo "$RESULT"
+          JSON=$(echo "$RESULT" | tail -n 1)
+          echo "write_ms=$(echo "$JSON"    | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['write_ms'])")"          >> "$GITHUB_OUTPUT"
+          echo "replay_ms=$(echo "$JSON"   | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['replay_ms'])")"         >> "$GITHUB_OUTPUT"
+          echo "write_rate=$(echo "$JSON"  | python3 -c "import sys,json; d=json.load(sys.stdin); print(round(d['write_rate_eps'],1))")"  >> "$GITHUB_OUTPUT"
+          echo "replay_rate=$(echo "$JSON" | python3 -c "import sys,json; d=json.load(sys.stdin); print(round(d['replay_rate_eps'],1))")" >> "$GITHUB_OUTPUT"
+          PASSED=$(echo "$JSON" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['passed'])")
+          echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
+          [ "$PASSED" = "True" ] || { echo "PostgreSQL rehydration FAILED"; exit 1; }
+
+      - name: Dump Docker logs on failure
+        if: failure()
+        run: docker logs pg --tail 30 2>/dev/null || true
+
+  # ── Summary + artifact ───────────────────────────────────────────────────
+  save-results:
+    name: Save Results & Write Summary
+    runs-on: ubuntu-22.04
+    if: always()
+    needs: [bench-docker, bench-k8s, rehydrate]
+    steps:
+      - name: Write step summary
+        env:
+          DOCKER_RATE:    ${{ needs.bench-docker.outputs.rate }}
+          DOCKER_P50:     ${{ needs.bench-docker.outputs.p50_us }}
+          DOCKER_P95:     ${{ needs.bench-docker.outputs.p95_us }}
+          DOCKER_P99:     ${{ needs.bench-docker.outputs.p99_us }}
+          DOCKER_P999:    ${{ needs.bench-docker.outputs.p999_us }}
+          K8S_RATE:       ${{ needs.bench-k8s.outputs.rate }}
+          K8S_P50:        ${{ needs.bench-k8s.outputs.p50_us }}
+          K8S_P95:        ${{ needs.bench-k8s.outputs.p95_us }}
+          K8S_P99:        ${{ needs.bench-k8s.outputs.p99_us }}
+          K8S_P999:       ${{ needs.bench-k8s.outputs.p999_us }}
+          RH_WRITE_MS:    ${{ needs.rehydrate.outputs.write_ms }}
+          RH_REPLAY_MS:   ${{ needs.rehydrate.outputs.replay_ms }}
+          RH_WRITE_RATE:  ${{ needs.rehydrate.outputs.write_rate }}
+          RH_REPLAY_RATE: ${{ needs.rehydrate.outputs.replay_rate }}
+          RH_PASSED:      ${{ needs.rehydrate.outputs.passed }}
+        run: |
+          fmt_ms()     { [ -n "$1" ] && awk "BEGIN{printf \"%.2f\", $1/1000}" || echo "n/a"; }
+          fmt_rate()   { [ -n "$1" ] && echo "$1"                             || echo "n/a"; }
+          fmt_result() { case "$1" in True) echo "✓ PASS";; False) echo "✗ FAIL";; *) echo "n/a";; esac; }
+          {
+            echo "## PostgreSQL Benchmark Results"
+            echo ""
+            echo "> **Benchmark:** event-store mode · 10 k ev/s target · 30 s · 64 concurrent tasks"
+            echo "> **Rehydration:** 50 000 events · sequential write then full replay from revision 0"
+            echo ""
+            echo "### Sustained Write Benchmark"
+            echo ""
+            echo "| Environment | Rate (ev/s) | p50 (ms) | p95 (ms) | p99 (ms) | p99.9 (ms) |"
+            echo "|-------------|------------:|:--------:|:--------:|:--------:|:----------:|"
+            printf "| Docker (tmpfs · fsync=off · synchronous_commit=on) | %s | %s | %s | %s | %s |\n" \
+              "$(fmt_rate "$DOCKER_RATE")" "$(fmt_ms "$DOCKER_P50")" "$(fmt_ms "$DOCKER_P95")" "$(fmt_ms "$DOCKER_P99")" "$(fmt_ms "$DOCKER_P999")"
+            printf "| Kubernetes k3d (emptyDir Memory · fsync=off) | %s | %s | %s | %s | %s |\n" \
+              "$(fmt_rate "$K8S_RATE")" "$(fmt_ms "$K8S_P50")" "$(fmt_ms "$K8S_P95")" "$(fmt_ms "$K8S_P99")" "$(fmt_ms "$K8S_P999")"
+            echo ""
+            echo "### Rehydration / Replay (50 k events)"
+            echo ""
+            echo "| Phase | Duration (ms) | Throughput (ev/s) | Result |"
+            echo "|-------|-------------:|------------------:|:------:|"
+            printf "| Write — one INSERT per event | %s | %s | |\n" \
+              "$(fmt_rate "$RH_WRITE_MS")" "$(fmt_rate "$RH_WRITE_RATE")"
+            printf "| Replay — single SELECT … ORDER BY stream_version | %s | %s | %s |\n" \
+              "$(fmt_rate "$RH_REPLAY_MS")" "$(fmt_rate "$RH_REPLAY_RATE")" \
+              "$(fmt_result "${RH_PASSED:-}")"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Write results JSON
+        env:
+          DOCKER_RATE:    ${{ needs.bench-docker.outputs.rate }}
+          DOCKER_P50:     ${{ needs.bench-docker.outputs.p50_us }}
+          DOCKER_P95:     ${{ needs.bench-docker.outputs.p95_us }}
+          DOCKER_P99:     ${{ needs.bench-docker.outputs.p99_us }}
+          DOCKER_P999:    ${{ needs.bench-docker.outputs.p999_us }}
+          K8S_RATE:       ${{ needs.bench-k8s.outputs.rate }}
+          K8S_P50:        ${{ needs.bench-k8s.outputs.p50_us }}
+          K8S_P95:        ${{ needs.bench-k8s.outputs.p95_us }}
+          K8S_P99:        ${{ needs.bench-k8s.outputs.p99_us }}
+          K8S_P999:       ${{ needs.bench-k8s.outputs.p999_us }}
+          RH_WRITE_MS:    ${{ needs.rehydrate.outputs.write_ms }}
+          RH_REPLAY_MS:   ${{ needs.rehydrate.outputs.replay_ms }}
+          RH_WRITE_RATE:  ${{ needs.rehydrate.outputs.write_rate }}
+          RH_REPLAY_RATE: ${{ needs.rehydrate.outputs.replay_rate }}
+          RH_PASSED:      ${{ needs.rehydrate.outputs.passed }}
+        run: |
+          python3 << 'PYEOF'
+          import os, json
+          d = {
+              'db': 'postgresql',
+              'bench_docker': {
+                  'rate':    os.getenv('DOCKER_RATE', ''),
+                  'p50_us':  os.getenv('DOCKER_P50', ''),
+                  'p95_us':  os.getenv('DOCKER_P95', ''),
+                  'p99_us':  os.getenv('DOCKER_P99', ''),
+                  'p999_us': os.getenv('DOCKER_P999', ''),
+              },
+              'bench_k8s': {
+                  'rate':    os.getenv('K8S_RATE', ''),
+                  'p50_us':  os.getenv('K8S_P50', ''),
+                  'p95_us':  os.getenv('K8S_P95', ''),
+                  'p99_us':  os.getenv('K8S_P99', ''),
+                  'p999_us': os.getenv('K8S_P999', ''),
+              },
+              'rehydrate': {
+                  'write_ms':    os.getenv('RH_WRITE_MS', ''),
+                  'replay_ms':   os.getenv('RH_REPLAY_MS', ''),
+                  'write_rate':  os.getenv('RH_WRITE_RATE', ''),
+                  'replay_rate': os.getenv('RH_REPLAY_RATE', ''),
+                  'passed':      os.getenv('RH_PASSED', ''),
+              },
+          }
+          with open('results.json', 'w') as f:
+              json.dump(d, f, indent=2)
+          print('Results written to results.json')
+          PYEOF
+
+      - name: Upload results artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pg-results
+          path: results.json
+          retention-days: 30

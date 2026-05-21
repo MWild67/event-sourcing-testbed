@@ -1,0 +1,634 @@
+name: KurrentDB Benchmark
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  # ── Warm-up: in-memory MEM_DB ────────────────────────────────────────────
+  bench-memdb:
+    name: KurrentDB — In-memory (MEM_DB)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install KurrentDB (MEM_DB)
+        run: |
+          curl -1sLf 'https://dl.cloudsmith.io/public/eventstore/kurrent-latest/setup.deb.sh' | sudo -E bash
+          sudo apt-get install -y kurrentdb
+          sudo systemctl stop kurrentdb || true
+          getent passwd kurrentdb > /dev/null || sudo useradd --system --no-create-home --shell /usr/sbin/nologin kurrentdb
+          sudo mkdir -p /tmp/esdb /tmp/esdb-log
+          sudo chown kurrentdb:kurrentdb /tmp/esdb /tmp/esdb-log
+          sudo mkdir -p /etc/systemd/system/kurrentdb.service.d
+          printf '[Service]\nEnvironment="KURRENTDB_DB=/tmp/esdb"\nEnvironment="KURRENTDB_LOG=/tmp/esdb-log"\nEnvironment="KURRENTDB_INSECURE=true"\nEnvironment="KURRENTDB_RUN_PROJECTIONS=None"\nEnvironment="KURRENTDB_UNSAFE_DISABLE_FLUSH_TO_DISK=true"\nEnvironment="KURRENTDB_CLUSTER_SIZE=1"\nEnvironment="KURRENTDB_MEM_DB=true"\n' \
+            | sudo tee /etc/systemd/system/kurrentdb.service.d/bench.conf
+          sudo systemctl daemon-reload
+          sudo systemctl start kurrentdb
+          echo "Waiting for KurrentDB to be ready..."
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:2113/health/live && break || sleep 2
+          done
+          ES_PID=$(systemctl show -p MainPID kurrentdb | cut -d= -f2)
+          sudo renice -n -15 -p "$ES_PID"
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            rust-app/target
+          key: event-sourcing-testbed-${{ runner.os }}-cargo-${{ hashFiles('rust-app/Cargo.lock') }}
+
+      - name: Build
+        run: cargo build --release --manifest-path rust-app/Cargo.toml
+
+      - name: Benchmark (in-memory)
+        run: |
+          rust-app/target/release/testbed \
+            --kurrentdb-url "kurrentdb://localhost:2113?tls=false" \
+            kurrentdb-bench \
+            --target-rate 10000 \
+            --concurrency 64 \
+            --batch-size 1 \
+            --duration-secs 30
+
+  # ── Docker: tmpfs, fsync off ─────────────────────────────────────────────
+  bench-docker:
+    name: KurrentDB — Docker (tmpfs, fsync off)
+    runs-on: ubuntu-22.04
+    outputs:
+      rate:    ${{ steps.bench.outputs.rate }}
+      p50_us:  ${{ steps.bench.outputs.p50_us }}
+      p95_us:  ${{ steps.bench.outputs.p95_us }}
+      p99_us:  ${{ steps.bench.outputs.p99_us }}
+      p999_us: ${{ steps.bench.outputs.p999_us }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install KurrentDB (tmpfs)
+        run: |
+          curl -1sLf 'https://dl.cloudsmith.io/public/eventstore/kurrent-latest/setup.deb.sh' | sudo -E bash
+          sudo apt-get install -y kurrentdb
+          sudo systemctl stop kurrentdb || true
+          getent passwd kurrentdb > /dev/null || sudo useradd --system --no-create-home --shell /usr/sbin/nologin kurrentdb
+          sudo mkdir -p /tmp/esdb /tmp/esdb-log
+          sudo mount -t tmpfs -o size=512m tmpfs /tmp/esdb
+          sudo chown kurrentdb:kurrentdb /tmp/esdb /tmp/esdb-log
+          sudo mkdir -p /etc/systemd/system/kurrentdb.service.d
+          printf '[Service]\nEnvironment="KURRENTDB_DB=/tmp/esdb"\nEnvironment="KURRENTDB_LOG=/tmp/esdb-log"\nEnvironment="KURRENTDB_INSECURE=true"\nEnvironment="KURRENTDB_RUN_PROJECTIONS=None"\nEnvironment="KURRENTDB_UNSAFE_DISABLE_FLUSH_TO_DISK=true"\nEnvironment="KURRENTDB_CLUSTER_SIZE=1"\n' \
+            | sudo tee /etc/systemd/system/kurrentdb.service.d/bench.conf
+          sudo systemctl daemon-reload
+          sudo systemctl start kurrentdb
+          echo "Waiting for KurrentDB to be ready..."
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:2113/health/live && break || sleep 2
+          done
+          ES_PID=$(systemctl show -p MainPID kurrentdb | cut -d= -f2)
+          sudo renice -n -15 -p "$ES_PID"
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            rust-app/target
+          key: event-sourcing-testbed-${{ runner.os }}-cargo-${{ hashFiles('rust-app/Cargo.lock') }}
+
+      - name: Build
+        run: cargo build --release --manifest-path rust-app/Cargo.toml
+
+      - name: Benchmark
+        id: bench
+        run: |
+          RESULT=$(rust-app/target/release/testbed \
+            --kurrentdb-url "kurrentdb://localhost:2113?tls=false" \
+            kurrentdb-bench \
+            --target-rate 10000 \
+            --concurrency 64 \
+            --batch-size 1 \
+            --duration-secs 30 \
+            --json)
+          echo "$RESULT"
+          echo "rate=$(echo "$RESULT"    | python3 -c "import sys,json; d=json.load(sys.stdin); print(round(d['actual_rate_eps'],1))")" >> "$GITHUB_OUTPUT"
+          echo "p50_us=$(echo "$RESULT"  | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['p50_us'])")"  >> "$GITHUB_OUTPUT"
+          echo "p95_us=$(echo "$RESULT"  | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['p95_us'])")"  >> "$GITHUB_OUTPUT"
+          echo "p99_us=$(echo "$RESULT"  | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['p99_us'])")"  >> "$GITHUB_OUTPUT"
+          echo "p999_us=$(echo "$RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['p999_us'])")" >> "$GITHUB_OUTPUT"
+
+  # ── Kubernetes: single-node, emptyDir Memory, no fsync ───────────────────
+  bench-k8s:
+    name: KurrentDB — Kubernetes (single-node, tmpfs)
+    runs-on: ubuntu-22.04
+    outputs:
+      rate:    ${{ steps.bench.outputs.rate }}
+      p50_us:  ${{ steps.bench.outputs.p50_us }}
+      p95_us:  ${{ steps.bench.outputs.p95_us }}
+      p99_us:  ${{ steps.bench.outputs.p99_us }}
+      p999_us: ${{ steps.bench.outputs.p999_us }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install k3d
+        run: curl -s https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | TAG=v5.8.3 bash
+
+      - name: Create k3d cluster
+        run: |
+          k3d cluster create testbed \
+            --servers 1 \
+            --no-lb \
+            --wait \
+            --timeout 120s
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            rust-app/target
+          key: event-sourcing-testbed-${{ runner.os }}-cargo-${{ hashFiles('rust-app/Cargo.lock') }}
+
+      - name: Build
+        run: cargo build --release --manifest-path rust-app/Cargo.toml
+
+      - name: Pre-pull KurrentDB image into k3d
+        run: |
+          docker pull kurrentplatform/kurrentdb:latest
+          k3d image import kurrentplatform/kurrentdb:latest -c testbed
+
+      - name: Deploy KurrentDB (single-node, emptyDir Memory, no fsync)
+        run: |
+          kubectl apply -f k8s/00-namespace.yaml
+          kubectl apply -f k8s/02-kurrentdb/01-services.yaml
+          kubectl apply -f - << 'YAML_EOF'
+          apiVersion: apps/v1
+          kind: StatefulSet
+          metadata:
+            name: kurrentdb
+            namespace: event-store
+          spec:
+            serviceName: kurrentdb-headless
+            replicas: 1
+            selector:
+              matchLabels:
+                app: kurrentdb
+            template:
+              metadata:
+                labels:
+                  app: kurrentdb
+              spec:
+                enableServiceLinks: false
+                containers:
+                  - name: kurrentdb
+                    image: kurrentplatform/kurrentdb:latest
+                    imagePullPolicy: IfNotPresent
+                    ports:
+                      - containerPort: 2113
+                    env:
+                      - name: KURRENTDB_CLUSTER_SIZE
+                        value: "1"
+                      - name: KURRENTDB_INSECURE
+                        value: "true"
+                      - name: KURRENTDB_RUN_PROJECTIONS
+                        value: "None"
+                      - name: KURRENTDB_START_STANDARD_PROJECTIONS
+                        value: "false"
+                      - name: KURRENTDB_UNSAFE_DISABLE_FLUSH_TO_DISK
+                        value: "true"
+                      - name: KURRENTDB_DB
+                        value: /data/db
+                      - name: KURRENTDB_LOG
+                        value: /data/log
+                      - name: KURRENTDB_ENABLE_ATOM_PUB_OVER_HTTP
+                        value: "true"
+                    volumeMounts:
+                      - name: data
+                        mountPath: /data
+                volumes:
+                  - name: data
+                    emptyDir:
+                      medium: Memory
+                      sizeLimit: 512Mi
+          YAML_EOF
+
+      - name: Wait for KurrentDB to be ready
+        run: |
+          kubectl rollout status statefulset/kurrentdb -n event-store --timeout=120s
+          start_pf() {
+            kill "$PF_PID" 2>/dev/null || true
+            kubectl port-forward -n event-store pod/kurrentdb-0 2113:2113 &
+            PF_PID=$!
+            sleep 3
+          }
+          PF_PID=""
+          start_pf
+          echo "Polling KurrentDB /health/live ..."
+          for i in $(seq 1 60); do
+            if ! kill -0 "$PF_PID" 2>/dev/null; then
+              echo "  port-forward exited, restarting (attempt $i)..."
+              start_pf
+            fi
+            if curl -sf --connect-timeout 5 http://localhost:2113/health/live 2>/dev/null; then
+              echo "KurrentDB ready after $i probe(s)"
+              kill $PF_PID 2>/dev/null
+              exit 0
+            fi
+            if [ $((i % 5)) -eq 0 ]; then
+              echo "--- pod logs (last 30 lines, attempt $i) ---"
+              kubectl logs -n event-store pod/kurrentdb-0 --tail=30 2>&1 || true
+              echo "--- end pod logs ---"
+            fi
+            echo "  attempt $i/60 — not ready, waiting 5 s..."
+            sleep 5
+          done
+          kill $PF_PID 2>/dev/null || true
+          echo "=== FINAL pod logs ==="
+          kubectl logs -n event-store pod/kurrentdb-0 --tail=50 2>&1 || true
+          echo "KurrentDB did not become ready within 5 minutes"
+          exit 1
+
+      - name: Dump pod diagnostics on failure
+        if: failure()
+        run: |
+          kubectl cluster-info 2>/dev/null || { echo "No k8s cluster reachable — skipping pod diagnostics"; exit 0; }
+          echo "=== Pod status ==="
+          kubectl get pods -n event-store -o wide || true
+          echo "=== Events ==="
+          kubectl get events -n event-store --sort-by='.lastTimestamp' 2>/dev/null | tail -40 || true
+          echo "=== Pod descriptions ==="
+          kubectl describe pods -n event-store || true
+          echo "=== Logs (last 50 lines per pod) ==="
+          for pod in $(kubectl get pods -n event-store -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs "$pod" -n event-store --tail=50 2>&1 || true
+          done
+
+      - name: Benchmark
+        id: bench
+        run: |
+          kubectl port-forward -n event-store pod/kurrentdb-0 2113:2113 &
+          PF_PID=$!
+          sleep 3
+          RESULT=$(rust-app/target/release/testbed \
+            --kurrentdb-url "kurrentdb://localhost:2113?tls=false" \
+            kurrentdb-bench \
+            --target-rate 10000 \
+            --duration-secs 30 \
+            --concurrency 64 \
+            --batch-size 1 \
+            --json)
+          kill $PF_PID 2>/dev/null || true
+          echo "$RESULT"
+          echo "rate=$(echo "$RESULT"    | python3 -c "import sys,json; d=json.load(sys.stdin); print(round(d['actual_rate_eps'],1))")" >> "$GITHUB_OUTPUT"
+          echo "p50_us=$(echo "$RESULT"  | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['p50_us'])")"  >> "$GITHUB_OUTPUT"
+          echo "p95_us=$(echo "$RESULT"  | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['p95_us'])")"  >> "$GITHUB_OUTPUT"
+          echo "p99_us=$(echo "$RESULT"  | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['p99_us'])")"  >> "$GITHUB_OUTPUT"
+          echo "p999_us=$(echo "$RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['p999_us'])")" >> "$GITHUB_OUTPUT"
+
+  # ── Rehydration / Replay ─────────────────────────────────────────────────
+  rehydrate:
+    name: KurrentDB — Rehydration / Replay
+    runs-on: ubuntu-22.04
+    outputs:
+      write_ms:    ${{ steps.demo.outputs.write_ms }}
+      replay_ms:   ${{ steps.demo.outputs.replay_ms }}
+      write_rate:  ${{ steps.demo.outputs.write_rate }}
+      replay_rate: ${{ steps.demo.outputs.replay_rate }}
+      passed:      ${{ steps.demo.outputs.passed }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install KurrentDB (in-memory)
+        run: |
+          curl -1sLf 'https://dl.cloudsmith.io/public/eventstore/kurrent-latest/setup.deb.sh' | sudo -E bash
+          sudo apt-get install -y kurrentdb
+          sudo systemctl stop kurrentdb || true
+          getent passwd kurrentdb > /dev/null || sudo useradd --system --no-create-home --shell /usr/sbin/nologin kurrentdb
+          sudo mkdir -p /tmp/esdb /tmp/esdb-log
+          sudo chown kurrentdb:kurrentdb /tmp/esdb /tmp/esdb-log
+          sudo mkdir -p /etc/systemd/system/kurrentdb.service.d
+          printf '[Service]\nEnvironment="KURRENTDB_DB=/tmp/esdb"\nEnvironment="KURRENTDB_LOG=/tmp/esdb-log"\nEnvironment="KURRENTDB_INSECURE=true"\nEnvironment="KURRENTDB_RUN_PROJECTIONS=None"\nEnvironment="KURRENTDB_UNSAFE_DISABLE_FLUSH_TO_DISK=true"\nEnvironment="KURRENTDB_CLUSTER_SIZE=1"\nEnvironment="KURRENTDB_MEM_DB=true"\n' \
+            | sudo tee /etc/systemd/system/kurrentdb.service.d/bench.conf
+          sudo systemctl daemon-reload
+          sudo systemctl start kurrentdb
+          echo "Waiting for KurrentDB to be ready..."
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:2113/health/live && break || sleep 2
+          done
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            rust-app/target
+          key: event-sourcing-testbed-${{ runner.os }}-cargo-${{ hashFiles('rust-app/Cargo.lock') }}
+
+      - name: Build
+        run: cargo build --release --manifest-path rust-app/Cargo.toml
+
+      - name: Rehydration demo
+        id: demo
+        run: |
+          RESULT=$(rust-app/target/release/testbed \
+            --kurrentdb-url "kurrentdb://localhost:2113?tls=false" \
+            kurrentdb-rehydrate-demo \
+            --json)
+          echo "$RESULT"
+          JSON=$(echo "$RESULT" | tail -n 1)
+          echo "write_ms=$(echo "$JSON"    | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['write_ms'])")"          >> "$GITHUB_OUTPUT"
+          echo "replay_ms=$(echo "$JSON"   | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['replay_ms'])")"         >> "$GITHUB_OUTPUT"
+          echo "write_rate=$(echo "$JSON"  | python3 -c "import sys,json; d=json.load(sys.stdin); print(round(d['write_rate_eps'],1))")"  >> "$GITHUB_OUTPUT"
+          echo "replay_rate=$(echo "$JSON" | python3 -c "import sys,json; d=json.load(sys.stdin); print(round(d['replay_rate_eps'],1))")" >> "$GITHUB_OUTPUT"
+          PASSED=$(echo "$JSON" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['passed'])")
+          echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
+          [ "$PASSED" = "True" ] || { echo "KurrentDB rehydration FAILED"; exit 1; }
+
+  # ── Node failover: 3-node cluster, worker power-off ≤ 60 s ─────────────
+  failover:
+    name: KurrentDB — Node Failover (≤ 60 s)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install k3d
+        run: curl -s https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | TAG=v5.8.3 bash
+
+      - name: Create k3d cluster (1 server + 3 agents = 4 nodes)
+        run: |
+          k3d cluster create failover \
+            --servers 1 \
+            --agents 3 \
+            --wait \
+            --timeout 120s
+          echo "Nodes:"
+          kubectl get nodes -o wide
+
+      - name: Pre-pull KurrentDB image into k3d
+        run: |
+          docker pull kurrentplatform/kurrentdb:latest
+          k3d image import kurrentplatform/kurrentdb:latest -c failover
+
+      - name: Deploy namespace and services
+        run: |
+          kubectl apply -f k8s/00-namespace.yaml
+          kubectl apply -f k8s/02-kurrentdb/01-services.yaml
+
+      - name: Deploy KurrentDB 3-node StatefulSet (emptyDir Memory, no PVCs)
+        run: |
+          kubectl apply -f - <<'YAML_EOF'
+          apiVersion: apps/v1
+          kind: StatefulSet
+          metadata:
+            name: kurrentdb
+            namespace: event-store
+          spec:
+            serviceName: kurrentdb-headless
+            replicas: 3
+            podManagementPolicy: Parallel
+            selector:
+              matchLabels:
+                app: kurrentdb
+            template:
+              metadata:
+                labels:
+                  app: kurrentdb
+              spec:
+                topologySpreadConstraints:
+                  - maxSkew: 1
+                    topologyKey: kubernetes.io/hostname
+                    whenUnsatisfiable: DoNotSchedule
+                    labelSelector:
+                      matchLabels:
+                        app: kurrentdb
+                enableServiceLinks: false
+                terminationGracePeriodSeconds: 10
+                containers:
+                  - name: kurrentdb
+                    image: kurrentplatform/kurrentdb:latest
+                    imagePullPolicy: IfNotPresent
+                    ports:
+                      - name: http
+                        containerPort: 2113
+                      - name: grpc
+                        containerPort: 2114
+                    env:
+                      - name: KURRENTDB_CLUSTER_SIZE
+                        value: "3"
+                      - name: KURRENTDB_DISCOVER_VIA_DNS
+                        value: "true"
+                      - name: KURRENTDB_CLUSTER_DNS
+                        value: "kurrentdb-headless.event-store.svc.cluster.local"
+                      - name: KURRENTDB_CLUSTER_GOSSIP_PORT
+                        value: "2113"
+                      - name: KURRENTDB_NODE_PORT
+                        value: "2113"
+                      - name: KURRENTDB_INSECURE
+                        value: "true"
+                      - name: KURRENTDB_RUN_PROJECTIONS
+                        value: "None"
+                      - name: KURRENTDB_START_STANDARD_PROJECTIONS
+                        value: "false"
+                      - name: KURRENTDB_ENABLE_ATOM_PUB_OVER_HTTP
+                        value: "true"
+                      - name: KURRENTDB_UNSAFE_DISABLE_FLUSH_TO_DISK
+                        value: "true"
+                      - name: KURRENTDB_DB
+                        value: /data/db
+                      - name: KURRENTDB_LOG
+                        value: /data/log
+                    readinessProbe:
+                      httpGet:
+                        path: /health/live
+                        port: 2113
+                      initialDelaySeconds: 20
+                      periodSeconds: 5
+                      failureThreshold: 6
+                    resources:
+                      requests:
+                        cpu: "200m"
+                        memory: "256Mi"
+                      limits:
+                        cpu: "1"
+                        memory: "1Gi"
+                    volumeMounts:
+                      - name: data
+                        mountPath: /data
+                volumes:
+                  - name: data
+                    emptyDir:
+                      medium: Memory
+                      sizeLimit: 512Mi
+          YAML_EOF
+
+      - name: Wait for 3/3 KurrentDB replicas ready
+        run: |
+          kubectl rollout status statefulset/kurrentdb \
+            -n event-store \
+            --timeout=300s
+          echo "Pod placement:"
+          kubectl get pods -n event-store -o wide
+
+      - name: Wait for leader election
+        run: |
+          echo "Polling for a leader pod (up to 150 s)..."
+          for i in $(seq 1 30); do
+            for pod in kurrentdb-0 kurrentdb-1 kurrentdb-2; do
+              STATE=$(kubectl exec "$pod" -n event-store -- \
+                wget -qO- http://127.0.0.1:2113/info 2>/dev/null \
+                | grep -oP '"state"\s*:\s*"\K[^"]+' || echo "unknown")
+              echo "  [$pod] state=${STATE}"
+              if [[ "$STATE" == "Leader" ]]; then
+                echo "Leader elected: $pod after $i probe(s)"
+                exit 0
+              fi
+            done
+            echo "  attempt $i/30 — no leader yet, waiting 5 s..."
+            sleep 5
+          done
+          echo "WARNING: no explicit leader detected after 150 s — proceeding anyway"
+
+      - name: Run node failover test — power-off worker, recover ≤ 60 s
+        run: |
+          chmod +x tests/03-failover-test.sh
+          ./tests/03-failover-test.sh
+
+      - name: Dump diagnostics on failure
+        if: failure()
+        run: |
+          kubectl cluster-info 2>/dev/null || { echo "No k8s cluster reachable"; exit 0; }
+          echo "=== Nodes ==="
+          kubectl get nodes -o wide || true
+          echo "=== Pods ==="
+          kubectl get pods -n event-store -o wide || true
+          echo "=== Events ==="
+          kubectl get events -n event-store --sort-by='.lastTimestamp' 2>/dev/null | tail -40 || true
+          echo "=== Pod descriptions ==="
+          kubectl describe pods -n event-store || true
+          echo "=== Logs (last 50 lines per pod) ==="
+          for pod in $(kubectl get pods -n event-store -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs "$pod" -n event-store --tail=50 2>&1 || true
+          done
+
+  # ── Summary + artifact ───────────────────────────────────────────────────
+  save-results:
+    name: Save Results & Write Summary
+    runs-on: ubuntu-22.04
+    if: always()
+    needs: [bench-docker, bench-k8s, rehydrate]
+    steps:
+      - name: Write step summary
+        env:
+          DOCKER_RATE:    ${{ needs.bench-docker.outputs.rate }}
+          DOCKER_P50:     ${{ needs.bench-docker.outputs.p50_us }}
+          DOCKER_P95:     ${{ needs.bench-docker.outputs.p95_us }}
+          DOCKER_P99:     ${{ needs.bench-docker.outputs.p99_us }}
+          DOCKER_P999:    ${{ needs.bench-docker.outputs.p999_us }}
+          K8S_RATE:       ${{ needs.bench-k8s.outputs.rate }}
+          K8S_P50:        ${{ needs.bench-k8s.outputs.p50_us }}
+          K8S_P95:        ${{ needs.bench-k8s.outputs.p95_us }}
+          K8S_P99:        ${{ needs.bench-k8s.outputs.p99_us }}
+          K8S_P999:       ${{ needs.bench-k8s.outputs.p999_us }}
+          RH_WRITE_MS:    ${{ needs.rehydrate.outputs.write_ms }}
+          RH_REPLAY_MS:   ${{ needs.rehydrate.outputs.replay_ms }}
+          RH_WRITE_RATE:  ${{ needs.rehydrate.outputs.write_rate }}
+          RH_REPLAY_RATE: ${{ needs.rehydrate.outputs.replay_rate }}
+          RH_PASSED:      ${{ needs.rehydrate.outputs.passed }}
+        run: |
+          fmt_ms()     { [ -n "$1" ] && awk "BEGIN{printf \"%.2f\", $1/1000}" || echo "n/a"; }
+          fmt_rate()   { [ -n "$1" ] && echo "$1"                             || echo "n/a"; }
+          fmt_result() { case "$1" in True) echo "✓ PASS";; False) echo "✗ FAIL";; *) echo "n/a";; esac; }
+          {
+            echo "## KurrentDB Benchmark Results"
+            echo ""
+            echo "> **Benchmark:** event-store mode · 10 k ev/s target · 30 s · 64 concurrent tasks"
+            echo "> **Rehydration:** 50 000 events · sequential write then full replay from revision 0"
+            echo ""
+            echo "### Sustained Write Benchmark"
+            echo ""
+            echo "| Environment | Rate (ev/s) | p50 (ms) | p95 (ms) | p99 (ms) | p99.9 (ms) |"
+            echo "|-------------|------------:|:--------:|:--------:|:--------:|:----------:|"
+            printf "| Docker (tmpfs · UNSAFE_DISABLE_FLUSH_TO_DISK) | %s | %s | %s | %s | %s |\n" \
+              "$(fmt_rate "$DOCKER_RATE")" "$(fmt_ms "$DOCKER_P50")" "$(fmt_ms "$DOCKER_P95")" "$(fmt_ms "$DOCKER_P99")" "$(fmt_ms "$DOCKER_P999")"
+            printf "| Kubernetes k3d (emptyDir Memory · no flush) | %s | %s | %s | %s | %s |\n" \
+              "$(fmt_rate "$K8S_RATE")" "$(fmt_ms "$K8S_P50")" "$(fmt_ms "$K8S_P95")" "$(fmt_ms "$K8S_P99")" "$(fmt_ms "$K8S_P999")"
+            echo ""
+            echo "### Rehydration / Replay (50 k events)"
+            echo ""
+            echo "| Phase | Duration (ms) | Throughput (ev/s) | Result |"
+            echo "|-------|-------------:|------------------:|:------:|"
+            printf "| Write — batched 500 ev/gRPC call | %s | %s | |\n" \
+              "$(fmt_rate "$RH_WRITE_MS")" "$(fmt_rate "$RH_WRITE_RATE")"
+            printf "| Replay — gRPC server-stream (1 protobuf msg/event) | %s | %s | %s |\n" \
+              "$(fmt_rate "$RH_REPLAY_MS")" "$(fmt_rate "$RH_REPLAY_RATE")" \
+              "$(fmt_result "${RH_PASSED:-}")"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Write results JSON
+        env:
+          DOCKER_RATE:    ${{ needs.bench-docker.outputs.rate }}
+          DOCKER_P50:     ${{ needs.bench-docker.outputs.p50_us }}
+          DOCKER_P95:     ${{ needs.bench-docker.outputs.p95_us }}
+          DOCKER_P99:     ${{ needs.bench-docker.outputs.p99_us }}
+          DOCKER_P999:    ${{ needs.bench-docker.outputs.p999_us }}
+          K8S_RATE:       ${{ needs.bench-k8s.outputs.rate }}
+          K8S_P50:        ${{ needs.bench-k8s.outputs.p50_us }}
+          K8S_P95:        ${{ needs.bench-k8s.outputs.p95_us }}
+          K8S_P99:        ${{ needs.bench-k8s.outputs.p99_us }}
+          K8S_P999:       ${{ needs.bench-k8s.outputs.p999_us }}
+          RH_WRITE_MS:    ${{ needs.rehydrate.outputs.write_ms }}
+          RH_REPLAY_MS:   ${{ needs.rehydrate.outputs.replay_ms }}
+          RH_WRITE_RATE:  ${{ needs.rehydrate.outputs.write_rate }}
+          RH_REPLAY_RATE: ${{ needs.rehydrate.outputs.replay_rate }}
+          RH_PASSED:      ${{ needs.rehydrate.outputs.passed }}
+        run: |
+          python3 << 'PYEOF'
+          import os, json
+          d = {
+              'db': 'kurrentdb',
+              'bench_docker': {
+                  'rate':    os.getenv('DOCKER_RATE', ''),
+                  'p50_us':  os.getenv('DOCKER_P50', ''),
+                  'p95_us':  os.getenv('DOCKER_P95', ''),
+                  'p99_us':  os.getenv('DOCKER_P99', ''),
+                  'p999_us': os.getenv('DOCKER_P999', ''),
+              },
+              'bench_k8s': {
+                  'rate':    os.getenv('K8S_RATE', ''),
+                  'p50_us':  os.getenv('K8S_P50', ''),
+                  'p95_us':  os.getenv('K8S_P95', ''),
+                  'p99_us':  os.getenv('K8S_P99', ''),
+                  'p999_us': os.getenv('K8S_P999', ''),
+              },
+              'rehydrate': {
+                  'write_ms':    os.getenv('RH_WRITE_MS', ''),
+                  'replay_ms':   os.getenv('RH_REPLAY_MS', ''),
+                  'write_rate':  os.getenv('RH_WRITE_RATE', ''),
+                  'replay_rate': os.getenv('RH_REPLAY_RATE', ''),
+                  'passed':      os.getenv('RH_PASSED', ''),
+              },
+          }
+          with open('results.json', 'w') as f:
+              json.dump(d, f, indent=2)
+          print('Results written to results.json')
+          PYEOF
+
+      - name: Upload results artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: kdb-results
+          path: results.json
+          retention-days: 30
