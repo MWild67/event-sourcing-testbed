@@ -258,18 +258,10 @@ this reason.  The production HA manifests remain unchanged for real deployments.
 
 ---
 
-| Tool              | Version          | Platform        |
-|-------------------|------------------|-----------------|
-| Podman            | ≥ 4.2            | Linux           |
-| Podman            | ≥ 4.0            | Windows (with docker-compose.exe provider) |
-| Docker + Compose  | Docker ≥ 24, Compose plugin ≥ 2 | Linux alternative |
-| kubectl           | ≥ 1.26           | K8s deploy only |
-| make              | any              | all             |
-
-> **Linux Podman < 4.2**: the built-in `podman compose` passes `--policy=missing` to
-> `podman pull`, which is not supported in older versions.  Either upgrade Podman
-> (`sudo apt install podman` on Ubuntu 24.04+ gives 4.x) or use Docker Engine with
-> the Compose plugin: `make up COMPOSE="docker compose" RUNTIME=docker`
+| Tool    | Version | Platform        |
+|---------|---------|-----------------|
+| kubectl | ≥ 1.26  | K8s deploy only |
+| make    | any     | all             |
 
 The cluster needs **≥ 3 worker nodes** (for KurrentDB HA and the failover test).
 
@@ -290,80 +282,69 @@ Swap the `provisioner:` line in [k8s/01-storageclass.yaml](k8s/01-storageclass.y
 
 ## Quick Start
 
-### Option A — Local (docker compose)
+### Option A — Devcontainer (local dev)
 
-**Windows (Podman):**
+All backend services (KurrentDB, MongoDB, PostgreSQL, RabbitMQ) start automatically
+when you open the repo in the devcontainer.  No manual container management needed.
 
-```powershell
-# Build the benchmark image
-make build
-
-# Start all services (includes MongoDB on port 27017)
-make up
-
-# Run the KurrentDB benchmark
-make bench-local
-
-# Run the MongoDB benchmark
-make mongo-bench-local
-
-# Run the PostgreSQL benchmark
-make pg-bench-local
-
-# Explore the UIs
-start http://localhost:2113/web   # KurrentDB
-start http://localhost:15672       # RabbitMQ  (guest / guest)
-start http://localhost:3000        # Grafana   (admin / admin)
-
-# Stop and remove all containers
-make down
-```
-
-**Linux (Podman ≥ 4.2 or Docker + Compose plugin):**
+1. Open the repo in VS Code and choose **Reopen in Container**.
+2. Wait for the `postStartCommand` to finish building the `testbed` binary (~1–2 min on first open).
+3. Run all tests with a single command:
 
 ```bash
-# Build the benchmark image
-make build
-
-# Start all services (includes MongoDB on port 27017)
-make up
-
-# Run the KurrentDB benchmark
-make bench-local
-
-# Run the MongoDB benchmark
-make mongo-bench-local
-
-# Run the PostgreSQL benchmark
-make pg-bench-local
-
-# Explore the UIs
-xdg-open http://localhost:2113/web   # KurrentDB
-xdg-open http://localhost:15672       # RabbitMQ  (guest / guest)
-xdg-open http://localhost:3000        # Grafana   (admin / admin)
-
-# Stop and remove all containers
-make down
+make test-all
 ```
 
-> **Why the benchmark only passes on Linux:** On Windows, containers run inside a
-> HyperV guest VM.  The .NET KurrentDB process inherits Windows host CPU scheduling,
-> which delays async thread wake-ups by ~15 ms per scheduler tick.  A single event write
-> requires several async continuations inside KurrentDB, making the hard floor ~45 ms
-> — well above the 2 ms p99 SLA.  On Linux, Podman runs containers directly on the host
-> kernel (no VM), so the same async continuations complete in ~200 µs.
+The env vars `KURRENTDB_URL`, `MONGODB_URL`, `PG_URL`, `RABBITMQ_URL`, and `DIRECT=1`
+are pre-set in the devcontainer so test scripts pick up the running services automatically.
+Thresholds are automatically scaled to devcontainer-appropriate levels.
+
+You can also invoke the `testbed` binary directly:
+
+```bash
+# KurrentDB benchmark
+testbed kurrentdb-bench --target-rate 10000 --concurrency 20 --duration-secs 30
+
+# MongoDB benchmark
+testbed mongo-bench --target-rate 10000 --concurrency 64 --duration-secs 30
+
+# PostgreSQL benchmark
+testbed pg-bench --target-rate 10000 --concurrency 64 --duration-secs 30
+
+# Snapshot demo
+testbed kurrentdb-snapshot-demo
+
+# Rehydration test (all backends)
+bash tests/06-rehydration-replay-test.sh
+```
+
+> **Note:** Tests 01, 03, and 04 require a Kubernetes cluster and are automatically
+> skipped in the devcontainer with a clear `SKIPPED` message.
 
 ### Option B — Kubernetes
 
 ```bash
 # 1. Build and push the benchmark image
-REGISTRY=myregistry.io/ make push
+docker build -t myregistry.io/event-sourcing-testbed:latest rust-app/
+docker push myregistry.io/event-sourcing-testbed:latest
 
-# 2. Deploy all manifests
-make deploy
+# 2. Deploy all manifests in order
+kubectl apply -f k8s/00-namespace.yaml
+kubectl apply -f k8s/01-storageclass.yaml
+kubectl apply -f k8s/02-kurrentdb/
+kubectl apply -f k8s/03-rabbitmq/
+kubectl apply -f k8s/04-monitoring/
+kubectl rollout status statefulset/kurrentdb -n event-store --timeout=180s
+kubectl rollout status statefulset/rabbitmq   -n event-store --timeout=180s
 
-# 3. Run all four test suites
-make test-all
+# 3. Run the K8s test suites
+bash tests/01-validate-storage.sh
+TESTBED_IMAGE=myregistry.io/event-sourcing-testbed:latest bash tests/02-stress-test.sh
+bash tests/03-failover-test.sh
+bash tests/04-monitoring-check.sh
+
+# Tear down
+kubectl delete namespace event-store --ignore-not-found
 ```
 
 ---
@@ -372,8 +353,10 @@ make test-all
 
 ``` fs
 event-sourcing-testbed/
-├── Makefile                         # Orchestration helpers
-├── docker-compose.yml               # Local dev stack
+├── docker-compose.yml               # Full local stack (3-node cluster + monitoring)
+├── .devcontainer/
+│   ├── devcontainer.json            # VS Code devcontainer config
+│   └── docker-compose.yml          # All backend services for local dev
 ├── docker/
 │   ├── prometheus.yml               # Prometheus scrape config (compose)
 │   └── grafana/provisioning/        # Grafana datasource + dashboard provider
@@ -410,7 +393,8 @@ event-sourcing-testbed/
 │       ├── events.rs                # Domain events + benchmark payload
 │       ├── kurrentdb/
 │       │   ├── client.rs            # KurrentDB gRPC wrapper
-│       │   └── benchmark.rs         # HDR-histogram stress test
+│       │   ├── benchmark.rs         # HDR-histogram stress test
+│       │   └── snapshot_demo.rs     # Snapshot + rehydration demo
 │       ├── mongodb/
 │       │   ├── client.rs            # MongoDB driver wrapper + write concern
 │       │   ├── benchmark.rs         # HDR-histogram stress test
@@ -422,15 +406,40 @@ event-sourcing-testbed/
 │       └── rabbitmq_client.rs       # AMQP producer (lapin)
 │
 └── tests/
-    ├── 01-validate-storage.sh       # StorageClass + WaitForFirstConsumer
-    ├── 02-stress-test.sh            # 10k ev/s, p99 < 2 ms
-    ├── 03-failover-test.sh          # Node failure, recovery < 60 s
-    └── 04-monitoring-check.sh       # Prometheus targets + Grafana dashboard
+    ├── 01-validate-storage.sh       # StorageClass + WaitForFirstConsumer (K8s only)
+    ├── 02-stress-test.sh            # KurrentDB throughput benchmark
+    ├── 03-failover-test.sh          # Node failure, recovery < 60 s (K8s only)
+    ├── 04-monitoring-check.sh       # Prometheus targets + Grafana dashboard (K8s only)
+    ├── 05-mongodb-stress-test.sh    # MongoDB throughput benchmark
+    ├── 06-rehydration-replay-test.sh# Event rehydration/replay (KurrentDB, MongoDB, PG)
+    └── 07-postgres-stress-test.sh   # PostgreSQL throughput benchmark
 ```
 
 ---
 
 ## Tests
+
+Run all tests with:
+
+```bash
+make test-all
+```
+
+In the devcontainer (`DIRECT=1`), thresholds are automatically scaled to what a shared
+dev VM can sustain. Tests requiring Kubernetes (01, 03, 04) are skipped with a clear
+`SKIPPED` message. In K8s CI mode (`DIRECT=0`), full production SLAs apply.
+
+| # | Test | Devcontainer | K8s CI |
+|---|------|-------------|--------|
+| 01 | Storage Class validation | SKIPPED (no K8s) | runs |
+| 02 | KurrentDB throughput benchmark | PASS | PASS |
+| 03 | Automated failover | SKIPPED (no K8s) | runs |
+| 04 | Monitoring (Prometheus + Grafana) | SKIPPED (no K8s) | runs |
+| 05 | MongoDB throughput benchmark | PASS | PASS |
+| 06 | Event rehydration/replay | PASS (MongoDB needs rebuild) | PASS |
+| 07 | PostgreSQL throughput benchmark | PASS | PASS |
+
+---
 
 ### Test 01 — Storage Class Validation
 
@@ -438,10 +447,10 @@ Proves that `volumeBindingMode: WaitForFirstConsumer` is active and that volumes
 are created on the node where the Pod lands (data locality).
 
 ```bash
-make test-storage
-# or directly:
 bash tests/01-validate-storage.sh
 ```
+
+> **Devcontainer:** skipped automatically when `kubectl` is not found.
 
 **Pass criteria:**
 
@@ -453,44 +462,29 @@ bash tests/01-validate-storage.sh
 
 ### Test 05 — MongoDB Write-Latency Stress Test
 
-Inserts events into a single MongoDB 7 node at **10 000 events/second** for 30 seconds
-using 64 concurrent Tokio tasks across separate collections.
-The database is **dropped before each run** so leftover data from a prior run
-cannot inflate B-tree index lookup times.
+Inserts events into MongoDB at a target rate for 30 seconds using 64 concurrent Tokio tasks.
+The database is **dropped before each run** so leftover data cannot inflate index lookup times.
 
 ```bash
-# Start MongoDB locally first:
-docker compose up -d mongodb
-# or with Podman:
-podman compose up -d mongodb
+# Devcontainer (DIRECT=1 already set, thresholds auto-scaled):
+make test-mongodb
 
-# Run the benchmark directly:
-MONGO_URL=mongodb://localhost:27017 \
-  DIRECT=1 bash tests/05-mongodb-stress-test.sh
-
-# Or via the testbed binary:
-rust-app/target/release/testbed \
-  --mongodb-url mongodb://localhost:27017 \
+# Binary directly:
+testbed \
+  --mongodb-url "$MONGODB_URL" \
   mongo-bench \
   --target-rate 10000 \
   --concurrency 64 \
-  --duration-secs 30 \
-  --p99-limit-ms 5
+  --duration-secs 30
 
 # Relax the p99 threshold on slower machines:
-P99_LIMIT_MS=20 DIRECT=1 MONGO_URL=mongodb://localhost:27017 \
-  bash tests/05-mongodb-stress-test.sh
-
-# Keep data from a prior run (warm-database test):
-rust-app/target/release/testbed \
-  --mongodb-url mongodb://localhost:27017 \
-  mongo-bench --no-drop --p99-limit-ms 5
+P99_LIMIT_MS=20 DIRECT=1 bash tests/05-mongodb-stress-test.sh
 ```
 
-**Pass criteria:**
+**Pass criteria (K8s):**
 
 - Actual rate ≥ 9 000 ev/s
-- **p99 insert latency < p99-limit-ms** (default 2 ms; 5 ms recommended on GitHub-hosted runners)
+- **p99 insert latency < p99-limit-ms** (default 2 ms)
 
 **CLI flags:**
 
@@ -505,89 +499,57 @@ rust-app/target/release/testbed \
 | `--no-drop` | off | Skip pre-run database drop |
 | `--json` | off | Emit results as a single JSON line |
 
-> **Isolation:** The MongoDB benchmark is completely independent of the KurrentDB
-> and RabbitMQ tests — separate server, separate port, separate collections.
-> Do **not** run `mongo-bench` concurrently with `bench` on the same machine;
-> both saturate host I/O and will inflate each other's latency numbers.
+> **Isolation:** Do **not** run `mongo-bench` concurrently with `kurrentdb-bench` on the
+> same machine; both saturate host I/O and will inflate each other's latency numbers.
 
 ---
 
-### Test 06 — PostgreSQL Write-Latency Stress Test
+### Test 06 — Event Rehydration / Replay
 
-Inserts events into a PostgreSQL 16 instance at **10 000 events/second** for 30 seconds
-using 64 concurrent Tokio tasks (`sqlx` + `PgPool`, `max_connections=128`,
-`test_before_acquire=false`).
-
-> **`test_before_acquire=false`** is critical.  The sqlx 0.8 default is `true`, which
-> pings every idle connection before checkout.  At 64 concurrent tasks this doubles
-> the effective query rate (10k pings + 10k inserts = 20k QPS), saturating PostgreSQL's
-> `max_connections` limit and causing `PoolTimedOut` errors.  With the flag disabled the
-> warm-up pre-heats connections once and they are reused without re-validation.
+Writes 50 000 events to each backend (KurrentDB, MongoDB, PostgreSQL) and then
+replays them in full, verifying event count, ordering, and stream revision consistency.
 
 ```bash
-# Start PostgreSQL locally first:
-docker compose up -d postgres
-# or with Podman:
-podman compose up -d postgres
+# Devcontainer — runs all three backends:
+bash tests/06-rehydration-replay-test.sh
 
-# Run via the testbed binary:
-rust-app/target/release/testbed \
-  --postgres-url "postgres://postgres:postgres@localhost:5432/eventbench" \
-  pg-bench \
-  --target-rate 10000 \
-  --concurrency 64 \
-  --duration-secs 30 \
-  --p99-limit-ms 5
-
-# Emit JSON (for scripting):
-rust-app/target/release/testbed \
-  --postgres-url "postgres://postgres:postgres@localhost:5432/eventbench" \
-  pg-bench --json
+# Skip individual backends:
+SKIP_MONGO=1 bash tests/06-rehydration-replay-test.sh
+SKIP_PG=1    bash tests/06-rehydration-replay-test.sh
 ```
 
-**Pass criteria:**
+**Pass criteria (per backend):**
 
-- Actual rate ≥ 9 000 ev/s
-- **p99 insert latency < p99-limit-ms** (default 2 ms in CI; 5 ms recommended locally)
+- `events_written` == `events_replayed` == 50 000
+- `revisions_ok` == `true` (stream version sequence is gapless)
+- `passed` == `true`
 
-**Schema used by the benchmark:**
-
-```sql
-CREATE TABLE IF NOT EXISTS events (
-    stream_id   TEXT        NOT NULL,
-    version     BIGINT      NOT NULL,
-    event_type  TEXT        NOT NULL,
-    payload     JSONB       NOT NULL,
-    inserted_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    PRIMARY KEY (stream_id, version)
-);
-```
-
-Each task owns one `stream_id` and increments `version` monotonically.  The
-`PRIMARY KEY (stream_id, version)` constraint enforces optimistic-concurrency
-guarantees identical to KurrentDB's stream version check.  In `--event-store-mode`
-the insert is wrapped in a versioned CTE that rejects out-of-order writes atomically.
+> **MongoDB note:** Requires a MongoDB replica set (for multi-document transactions).
+> In the devcontainer this is configured in `.devcontainer/docker-compose.yml` but
+> takes effect only after a **Rebuild Container** (`Ctrl+Shift+P → Rebuild Container`).
+> Until then, the MongoDB section is skipped with a warning.
 
 ---
 
-### Test 02 — Performance Benchmark (I/O Stress Test)
+### Test 02 — KurrentDB Performance Benchmark
 
-Appends events to KurrentDB at **10 000 events/second** for 30 seconds
-using 64 concurrent Tokio tasks across separate streams.
+Appends events to KurrentDB at a target rate for 30 seconds using concurrent Tokio tasks.
 Latency is measured with a 3-significant-digit HDR histogram.
 
 ```bash
+# Devcontainer (DIRECT=1 already set, thresholds auto-scaled):
 make test-bench
 
-# Kubernetes Job output example:
-#   Total events appended : 298 741
-#   Actual throughput     : 9 958.0 ev/s
-#   p99 write latency     : 1 412 µs  (1.41 ms)  ✓
+# K8s Job mode:
+TESTBED_IMAGE=myregistry.io/event-sourcing-testbed:latest bash tests/02-stress-test.sh
+
+# Binary directly:
+testbed kurrentdb-bench --target-rate 10000 --concurrency 50 --duration-secs 30 --json
 ```
 
-**Pass criteria:**
+**Pass criteria (K8s):**
 
-- Actual rate ≥ 9 000 ev/s (within 10 % of 10 000)
+- Actual rate ≥ 9 000 ev/s (within 10% of 10 000)
 - **p99 write latency < 2 000 µs (2 ms)**
 
 Tuning tips if you fail this test:
@@ -605,8 +567,10 @@ how long it takes for KurrentDB to re-elect a leader and reach ≥ 2 ready
 replicas on healthy nodes.
 
 ```bash
-make test-failover
+bash tests/03-failover-test.sh
 ```
+
+> **Devcontainer:** skipped automatically when `kubectl` is not found.
 
 **Pass criteria:**
 
@@ -625,8 +589,10 @@ Verifies that the Grafana dashboard and Prometheus scrape targets are wired up
 correctly.
 
 ```bash
-make test-monitoring
+bash tests/04-monitoring-check.sh
 ```
+
+> **Devcontainer:** skipped automatically when `kubectl` is not found.
 
 **Checked metrics:**
 
@@ -646,7 +612,39 @@ make test-monitoring
 
 ---
 
-## Grafana Dashboard
+### Test 07 — PostgreSQL Write-Latency Stress Test
+
+Inserts events into PostgreSQL at a target rate for 30 seconds using 64 concurrent Tokio
+tasks (`sqlx` + `PgPool`, `max_connections=128`, `test_before_acquire=false`).
+
+```bash
+# Devcontainer (DIRECT=1 already set, thresholds auto-scaled):
+make test-postgres
+
+# Binary directly:
+testbed \
+  --postgres-url "$POSTGRES_URL" \
+  pg-bench \
+  --target-rate 10000 \
+  --concurrency 64 \
+  --duration-secs 30 \
+  --json
+
+# Relax the p99 threshold on slower machines:
+P99_LIMIT_MS=20 DIRECT=1 bash tests/07-postgres-stress-test.sh
+```
+
+**Pass criteria (K8s):**
+
+- Actual rate ≥ 9 000 ev/s
+- **p99 insert latency < p99-limit-ms** (default 2 ms)
+
+> **`test_before_acquire=false`:** The sqlx 0.8 default is `true`, which pings every idle
+> connection before checkout. At 64 concurrent tasks this doubles the effective query rate
+> (10k pings + 10k inserts = 20k QPS), saturating PostgreSQL's `max_connections` and causing
+> `PoolTimedOut` errors. With the flag disabled, connections are reused without re-validation.
+
+---
 
 The provisioned dashboard ([k8s/04-monitoring/06-grafana-dashboard.yaml](k8s/04-monitoring/06-grafana-dashboard.yaml))
 contains three row groups:
@@ -677,7 +675,7 @@ contains three row groups:
 Access the dashboard:
 
 ```bash
-make pf-grafana   # port-forwards localhost:3000
+kubectl port-forward svc/grafana -n event-store 3000:3000
 open http://localhost:3000   # admin / admin
 ```
 
@@ -703,8 +701,34 @@ Commands:
   mongo-ping              Probe MongoDB connectivity and exit
   pg-ping                 Probe PostgreSQL connectivity and exit
   mongo-event-store-demo  Demonstrate 8 event-sourcing properties (MongoDB)
-  pg-event-store-demo     Demonstrate 8 event-sourcing properties (PostgreSQL)
+  pg-event-store-demo          Demonstrate 8 event-sourcing properties (PostgreSQL)
+  kurrentdb-snapshot-demo      Write 1000 events with snapshots, then rehydrate
 ```
+
+### `kurrentdb-snapshot-demo` flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--events` | 1000 | Total domain events to append (3 types round-robin: `ItemAdded`, `ItemPriceUpdated`, `ItemRemoved`) |
+| `--snapshot-every` | 55 | Append an `InventorySnapshot` to the snapshot stream after every N events |
+
+The demo:
+1. **Writes** `--events` domain events to stream `snapshot-demo-{uuid}`, taking a snapshot to `snapshot-demo-{uuid}-snapshots` after every `--snapshot-every` events.
+2. **Drops** the in-memory state to simulate a process restart.
+3. **Rehydrates** by loading the latest snapshot then replaying only the trailing events that followed it.
+4. **Verifies** the restored state matches a full cold replay from the beginning of the stream.
+
+With the defaults (1000 events, snapshot every 55) this produces **18 snapshots**, leaving **10 trailing events** to replay after the last snapshot.
+
+```bash
+# Inside the devcontainer — KurrentDB is already running:
+testbed kurrentdb-snapshot-demo
+
+# Custom options:
+testbed kurrentdb-snapshot-demo --events 2000 --snapshot-every 100
+```
+
+---
 
 Common bench flags (all three bench commands):
 
@@ -730,14 +754,6 @@ Common bench flags (all three bench commands):
 → Check Disk I/O Wait panel in Grafana — high iowait means the disk is saturated.
 → Try NVMe-backed nodes or reduce competing workloads.
 → Increase `--concurrency` to amortise individual request latency.
-→ On Windows/Podman the benchmark will never pass — see the platform note in Quick Start.
-
-**`kurrentdb-bench` container exits immediately / benchmark reports 0 events**
-→ The container crashed (OOM or internal fault). Because it uses tmpfs, all state is lost on exit.
-→ A simple `podman start kurrentdb-bench` is not enough — tmpfs mounts are not recreated.
-→ Recreate it from scratch: `podman rm kurrentdb-bench && podman compose up -d kurrentdb-bench`
-→ Wait ~15 s for the `IS LEADER... SPARTA!` log line before running the benchmark:
-  `podman logs -f kurrentdb-bench`
 
 **Failover test fails — recovery > 60 s**
 → Check `kubelet` pod eviction timer: `kubectl describe node <node>` — default `node.kubernetes.io/not-ready:NoExecute` tolerance is **5 minutes** for system components.
@@ -755,8 +771,8 @@ Common bench flags (all three bench commands):
   exhausts `max_connections`.
 → Fix already applied: `PgPoolOptions::new().test_before_acquire(false)`.
 → If you see it again after a sqlx upgrade, check the changelog for default changes.
-→ PostgreSQL Docker container is started with `-c max_connections=200` — if you
-  change `--concurrency` above 96, also raise `max_connections` accordingly.
+→ PostgreSQL is started with `-c max_connections=200` — if you change `--concurrency`
+  above 96, also raise `max_connections` in `.devcontainer/docker-compose.yml`.
 
 **k3d install fails with HTTP 502**
 → The `k3d-install.sh` script calls the GitHub API to resolve the "latest" tag.
@@ -771,8 +787,6 @@ Common bench flags (all three bench commands):
   `sleep` before the bench command.
 → For KurrentDB: wait for `IS LEADER... SPARTA!` in container logs before benchmarking.
 
-**`cargo build` fails with `aws-lc-sys` / `cmake` errors on Windows**
-→ The Rust app links against `aws-lc-rs` (via `rustls`).  On Windows this requires
-  cmake and NASM.  Install via `winget install Kitware.CMake NASM.NASM`.
-→ Alternatively, build inside the Dockerfile (Linux) where the build environment is
-  already set up: `make build` uses `docker buildx` / `podman build`.
+**`cargo build` fails with `aws-lc-sys` / `cmake` errors**
+→ Build inside the devcontainer — the toolchain is pre-installed.
+→ Open the repo with **Reopen in Container** in VS Code.

@@ -5,7 +5,8 @@
 
 use anyhow::{Context, Result};
 use kurrentdb::{
-    AppendToStreamOptions, Client, ClientSettings, EventData, ReadStreamOptions, StreamState,
+    AppendToStreamOptions, Client, ClientSettings, EventData, ReadStreamOptions, StreamPosition,
+    StreamState,
 };
 use serde::Serialize;
 use uuid::Uuid;
@@ -15,6 +16,12 @@ pub struct KurrentClient {
 }
 
 impl KurrentClient {
+    /// Expose the raw `kurrentdb::Client` for callers that need to build
+    /// custom `EventData` batches (e.g. the snapshot demo batch writer).
+    pub fn inner(&self) -> &Client {
+        &self.inner
+    }
+
     /// Connect to `KurrentDB`.
     ///
     /// `url` examples:
@@ -124,6 +131,95 @@ impl KurrentClient {
             }
         }
         Ok(events)
+    }
+
+    /// Read events from `stream_name` starting at `from_revision` (inclusive).
+    ///
+    /// Useful for rehydrating an aggregate from just after a snapshot position.
+    /// Returns an empty `Vec` if the stream does not exist or has no events
+    /// at or after the requested revision.
+    pub async fn read_stream_from_revision(
+        &self,
+        stream_name: &str,
+        from_revision: u64,
+    ) -> Result<Vec<(String, u64, serde_json::Value)>> {
+        let opts = ReadStreamOptions::default().position(StreamPosition::Position(from_revision));
+        let mut read_stream = match self.inner.read_stream(stream_name, &opts).await {
+            Ok(s) => s,
+            Err(e) => {
+                let msg = e.to_string();
+                if msg.contains("StreamNotFound")
+                    || msg.contains("stream not found")
+                    || msg.contains("not found")
+                {
+                    return Ok(Vec::new());
+                }
+                return Err(anyhow::anyhow!(
+                    "read_stream_from_revision '{stream_name}'@{from_revision} failed: {msg}"
+                ));
+            }
+        };
+
+        let mut events = Vec::new();
+        loop {
+            match read_stream.next().await {
+                Ok(Some(resolved)) => {
+                    let recorded = resolved.get_original_event();
+                    let event_type = recorded.event_type.clone();
+                    let revision = recorded.revision;
+                    let payload: serde_json::Value =
+                        serde_json::from_slice(&recorded.data).unwrap_or(serde_json::Value::Null);
+                    events.push((event_type, revision, payload));
+                }
+                Ok(None) => break,
+                Err(e) => {
+                    return Err(anyhow::anyhow!(
+                        "error reading '{stream_name}'@{from_revision}: {e}"
+                    ))
+                }
+            }
+        }
+        Ok(events)
+    }
+
+    /// Read the last (most recent) event from `stream_name`.
+    ///
+    /// Returns `None` if the stream does not exist or is empty.
+    pub async fn read_last_event(
+        &self,
+        stream_name: &str,
+    ) -> Result<Option<(String, u64, serde_json::Value)>> {
+        let opts = ReadStreamOptions::default().backwards().max_count(1);
+        let mut read_stream = match self.inner.read_stream(stream_name, &opts).await {
+            Ok(s) => s,
+            Err(e) => {
+                let msg = e.to_string();
+                if msg.contains("StreamNotFound")
+                    || msg.contains("stream not found")
+                    || msg.contains("not found")
+                {
+                    return Ok(None);
+                }
+                return Err(anyhow::anyhow!(
+                    "read_last_event '{stream_name}' failed: {msg}"
+                ));
+            }
+        };
+
+        match read_stream.next().await {
+            Ok(Some(resolved)) => {
+                let recorded = resolved.get_original_event();
+                let event_type = recorded.event_type.clone();
+                let revision = recorded.revision;
+                let payload: serde_json::Value =
+                    serde_json::from_slice(&recorded.data).unwrap_or(serde_json::Value::Null);
+                Ok(Some((event_type, revision, payload)))
+            }
+            Ok(None) => Ok(None),
+            Err(e) => Err(anyhow::anyhow!(
+                "error reading last event '{stream_name}': {e}"
+            )),
+        }
     }
 
     /// Cheap health probe — checks whether the gRPC endpoint responds.

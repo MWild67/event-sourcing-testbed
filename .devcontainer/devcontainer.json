@@ -1,0 +1,25 @@
+{
+  "name": "event-sourcing-testbed",
+  "dockerComposeFile": "docker-compose.yml",
+  "service": "devcontainer",
+  "workspaceFolder": "/workspace",
+  "shutdownAction": "stopCompose",
+  "features": {},
+  "remoteEnv": {
+    "PATH": "${containerEnv:PATH}:/tmp/cargo-target/release"
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "rust-lang.rust-analyzer",
+        "vadimcn.vscode-lldb",
+        "tamasfe.even-better-toml"
+      ],
+      "settings": {
+        "terminal.integrated.defaultProfile.linux": "bash",
+        "rust-analyzer.cargo.buildScripts.enable": true
+      }
+    }
+  },
+  "postStartCommand": "echo 'Building testbed binary...' && cd /workspace/rust-app && cargo build --bin testbed 2>&1 | tail -5 && mkdir -p /tmp/cargo-target/release && ln -sf /tmp/cargo-target/debug/testbed /tmp/cargo-target/release/testbed && echo 'Ready — all services up, testbed binary built. Run: testbed kurrentdb-bench, bash tests/06-rehydration-replay-test.sh, etc.'"
+}

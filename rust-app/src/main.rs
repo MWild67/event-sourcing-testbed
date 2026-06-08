@@ -74,6 +74,9 @@ enum Commands {
     PgEventStoreDemo(PgEventStoreDemoArgs),
     /// Write events to `KurrentDB` then replay the stream to verify rehydration.
     KurrentdbRehydrateDemo(KurrentdbRehydrateDemoArgs),
+    /// Write 1000 events (3 types) with periodic snapshots, then restore via
+    /// snapshot + trailing-event rehydration.
+    KurrentdbSnapshotDemo(KurrentdbSnapshotDemoArgs),
     /// Write events to `MongoDB` then rehydrate the aggregate to verify replay.
     MongoRehydrateDemo(MongoRehydrateDemoArgs),
     /// Write events to `PostgreSQL` then rehydrate the aggregate to verify replay.
@@ -222,6 +225,17 @@ struct KurrentdbRehydrateDemoArgs {
 }
 
 #[derive(Parser)]
+struct KurrentdbSnapshotDemoArgs {
+    /// Total number of domain events to append (3 types round-robin).
+    #[arg(long, default_value_t = 1_000)]
+    events: u32,
+
+    /// Append an ES snapshot to the snapshot stream after every N events.
+    #[arg(long, default_value_t = 55)]
+    snapshot_every: u32,
+}
+
+#[derive(Parser)]
 struct MongoRehydrateDemoArgs {
     /// `MongoDB` database name for the rehydration demo.
     #[arg(long, default_value = "rehydrate-demo")]
@@ -363,6 +377,11 @@ async fn main() -> Result<()> {
 
         Commands::KurrentdbRehydrateDemo(args) => {
             kurrentdb_rehydrate_demo(&cli.kurrentdb_url, args.events, args.json).await?;
+        }
+
+        Commands::KurrentdbSnapshotDemo(args) => {
+            kurrentdb::snapshot_demo::run(&cli.kurrentdb_url, args.events, args.snapshot_every)
+                .await?;
         }
 
         Commands::MongoRehydrateDemo(args) => {

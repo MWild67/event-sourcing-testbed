@@ -53,6 +53,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 
 anyhow = "1"
 thiserror = "1"
+rand = "0.8"
 
 # ── Async trait support ───────────────────────────────────────────────────────
 async-trait = "0.1"

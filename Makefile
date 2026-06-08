@@ -2,46 +2,61 @@
 # Makefile — Event Sourcing Testbed
 # ─────────────────────────────────────────────────────────────────────────────
 .PHONY: help up down build push deploy undeploy test-all \
-        test-storage test-bench test-failover test-monitoring test-mongodb \
-	bench-local mongo-bench-local \
-        logs-es logs-rmq pf-grafana pf-prom
+        test-storage test-bench test-failover test-monitoring \
+        test-mongodb test-postgres test-rehydration \
+        logs-es logs-rmq pf-grafana pf-prom pf-es
 
-NAMESPACE   := event-store
-IMAGE       := localhost/event-sourcing-testbed
-IMAGE_TAG   := latest
-REGISTRY    ?=                   # e.g. "myregistry.io/" (with trailing slash)
-FULL_IMAGE  := $(REGISTRY)$(IMAGE):$(IMAGE_TAG)
+NAMESPACE     := event-store
+IMAGE         := localhost/event-sourcing-testbed
+IMAGE_TAG     := latest
+REGISTRY      ?=                   # e.g. "myregistry.io/" (with trailing slash)
+FULL_IMAGE    := $(REGISTRY)$(IMAGE):$(IMAGE_TAG)
+TESTBED_IMAGE ?= $(FULL_IMAGE)
 
 # ── Compose command and container runtime ────────────────────────────────────
-# Defaults to podman (works on Windows and Linux).
-# Override for Docker: make up COMPOSE="docker compose" RUNTIME=docker
-COMPOSE     ?= podman compose
-RUNTIME     ?= podman
+# Defaults to docker (devcontainer uses Docker).
+# Override for Podman: make up COMPOSE="podman compose" RUNTIME=podman
+COMPOSE   ?= docker compose
+RUNTIME   ?= docker
 
-# ── Help ──────────────────────────────────────────────────────────────────────
+# ── Environment detection ────────────────────────────────────────────────────
+# In the devcontainer, DIRECT=1 is already set via devcontainer.json remoteEnv.
+# In K8s CI mode, leave DIRECT unset (or 0) to run tests as Kubernetes Jobs.
+DIRECT ?= 0
+
+# ── Thresholds ────────────────────────────────────────────────────────────────
+# Production targets (K8s mode)    : 10 000 ev/s, p99 < 2 ms
+# Devcontainer/direct targets      : achievable on a shared VM / laptop
+ifeq ($(DIRECT),1)
+  KURRENT_RATE   ?= 500
+  KURRENT_P99_US ?= 200000
+  MONGO_RATE     ?= 500
+  MONGO_P99_MS   ?= 200
+  PG_RATE        ?= 500
+  PG_P99_MS      ?= 200
+else
+  KURRENT_RATE   ?= 10000
+  KURRENT_P99_US ?= 2000
+  MONGO_RATE     ?= 10000
+  MONGO_P99_MS   ?= 2
+  PG_RATE        ?= 10000
+  PG_P99_MS      ?= 2
+endif
+
+# ── Help ─────────────────────────────────────────────────────────────────────
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
-	  | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-22s\033[0m %s\n",$$1,$$2}'
+	  | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-24s\033[0m %s\n",$$1,$$2}'
 
-# ── Local dev ─────────────────────────────────────────────────────────────────
-up: ## Start all services locally
-	$(COMPOSE) up -d
+# ── Local dev (devcontainer services) ────────────────────────────────────────
+up: ## Start all services locally via docker compose
+	$(COMPOSE) -f docker-compose.yml up -d
 	@echo "KurrentDB UI : http://localhost:2113/web"
-	@echo "RabbitMQ UI     : http://localhost:15672  (guest/guest)"
-	@echo "Grafana         : http://localhost:3000   (admin/admin)"
+	@echo "RabbitMQ UI  : http://localhost:15672  (guest/guest)"
+	@echo "Grafana      : http://localhost:3000   (admin/admin)"
 
 down: ## Stop and remove local containers
-	$(COMPOSE) down -v
-
-bench-local: build ## Run the KurrentDB performance benchmark (requires 'make up' first)
-	@$(RUNTIME) run --rm --network event-sourcing-testbed_event-net $(FULL_IMAGE) \
-	  --kurrentdb-url kurrentdb://kurrentdb-bench:2113?tls=false \
-	  bench --target-rate 10000 --concurrency 20 --batch-size 1 --duration-secs 30
-
-mongo-bench-local: build ## Run the MongoDB performance benchmark (requires 'make up' first)
-	@$(RUNTIME) run --rm --network event-sourcing-testbed_event-net $(FULL_IMAGE) \
-	  --mongodb-url mongodb://mongodb:27017 \
-	  mongo-bench --target-rate 10000 --concurrency 64 --batch-size 1 --duration-secs 30
+	$(COMPOSE) -f docker-compose.yml down -v
 
 # ── Build & publish Rust image ────────────────────────────────────────────────
 build: ## Build the Rust benchmark image
@@ -57,11 +72,13 @@ deploy: ## Apply all Kubernetes manifests in order
 	kubectl apply -f k8s/02-kurrentdb/
 	kubectl apply -f k8s/03-rabbitmq/
 	kubectl apply -f k8s/04-monitoring/
+	kubectl apply -f k8s/05-mongodb/
+	kubectl apply -f k8s/06-postgres/
 	@echo ""
 	@echo "Waiting for KurrentDB to be ready (this may take ~60s)..."
 	kubectl rollout status statefulset/kurrentdb -n $(NAMESPACE) --timeout=180s
 	@echo "Waiting for RabbitMQ to be ready..."
-	kubectl rollout status statefulset/rabbitmq    -n $(NAMESPACE) --timeout=180s
+	kubectl rollout status statefulset/rabbitmq -n $(NAMESPACE) --timeout=180s
 	@echo ""
 	@echo "All components deployed."
 
@@ -69,30 +86,49 @@ undeploy: ## Remove all Kubernetes resources in the event-store namespace
 	kubectl delete namespace $(NAMESPACE) --ignore-not-found
 
 # ── Tests ─────────────────────────────────────────────────────────────────────
-test-all: test-storage test-bench test-monitoring test-mongodb ## Run all test suites
-	@echo ""
-	@echo "All tests passed."
+# When DIRECT=1 (devcontainer default): tests run against the local services
+# and use relaxed thresholds appropriate for a shared dev VM.
+# When DIRECT=0 (K8s mode): tests run as Kubernetes Jobs against the cluster
+# and enforce the production SLAs (10 000 ev/s, p99 < 2 ms).
+#
+# Usage in devcontainer:  make test-all          (DIRECT=1 already in env)
+# Usage against K8s:      make test-all DIRECT=0
 
-test-storage: ## Test 01: StorageClass WaitForFirstConsumer validation
+test-all: test-storage test-bench test-failover test-monitoring test-mongodb test-postgres test-rehydration ## Run all 7 test suites
+	@echo ""
+	@echo "════════════════════════════════════════"
+	@echo "  All tests completed."
+	@echo "════════════════════════════════════════"
+
+test-storage: ## Test 01: StorageClass validation (skips without kubectl)
 	bash tests/01-validate-storage.sh
 
-test-bench: ## Test 02: Performance benchmark (10k ev/s, p99 < 2ms)
-	TESTBED_IMAGE=$(FULL_IMAGE) bash tests/02-stress-test.sh
+test-bench: ## Test 02: KurrentDB performance benchmark
+	DIRECT=$(DIRECT) \
+	TARGET_RATE=$(KURRENT_RATE) MAX_P99_US=$(KURRENT_P99_US) \
+	TESTBED_IMAGE=$(TESTBED_IMAGE) \
+	  bash tests/02-stress-test.sh
 
-test-bench-direct: ## Test 02: Run benchmark binary directly (requires local ES)
-	DIRECT=1 bash tests/02-stress-test.sh
-
-test-failover: ## Test 03: Automated failover (recovery < 60s)
+test-failover: ## Test 03: Automated failover (skips without kubectl)
 	bash tests/03-failover-test.sh
 
-test-monitoring: ## Test 04: Monitoring integration (Prometheus + Grafana)
+test-monitoring: ## Test 04: Prometheus + Grafana check (skips without kubectl)
 	bash tests/04-monitoring-check.sh
 
-test-mongodb: ## Test 05: MongoDB write-latency stress test (p99 < 5ms)
-	TESTBED_IMAGE=$(FULL_IMAGE) bash tests/05-mongodb-stress-test.sh
+test-mongodb: ## Test 05: MongoDB write-latency stress test
+	DIRECT=$(DIRECT) \
+	TARGET_RATE=$(MONGO_RATE) P99_LIMIT_MS=$(MONGO_P99_MS) \
+	TESTBED_IMAGE=$(TESTBED_IMAGE) \
+	  bash tests/05-mongodb-stress-test.sh
 
-test-mongodb-direct: ## Test 05: Run MongoDB benchmark directly (requires local MongoDB)
-	DIRECT=1 bash tests/05-mongodb-stress-test.sh
+test-postgres: ## Test 07: PostgreSQL write-latency stress test
+	DIRECT=$(DIRECT) \
+	TARGET_RATE=$(PG_RATE) P99_LIMIT_MS=$(PG_P99_MS) \
+	TESTBED_IMAGE=$(TESTBED_IMAGE) \
+	  bash tests/07-postgres-stress-test.sh
+
+test-rehydration: ## Test 06: Event rehydration/replay (KurrentDB, MongoDB, PostgreSQL)
+	bash tests/06-rehydration-replay-test.sh
 
 # ── Utility ───────────────────────────────────────────────────────────────────
 logs-es: ## Tail KurrentDB logs

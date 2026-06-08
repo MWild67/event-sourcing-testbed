@@ -21,6 +21,15 @@
 # ─────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
+if ! command -v kubectl &>/dev/null; then
+    echo
+    echo "▶ Checking prerequisites"
+    echo "  ⚠  kubectl not found — this test requires a Kubernetes cluster"
+    echo "  SKIPPED"
+    echo
+    exit 0
+fi
+
 NS="event-store"
 STS="kurrentdb"
 RECOVERY_TIMEOUT=60     # seconds — the hard SLA

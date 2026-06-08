@@ -11,6 +11,15 @@
 # ─────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
+if ! command -v kubectl &>/dev/null; then
+    echo
+    echo "▶ Checking prerequisites"
+    echo "  ⚠  kubectl not found — this test requires a Kubernetes cluster"
+    echo "  SKIPPED"
+    echo
+    exit 0
+fi
+
 SC="${1:-event-store-local}"
 NS="event-store"
 PVC="storage-validation-pvc"

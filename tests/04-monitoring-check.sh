@@ -15,6 +15,15 @@
 # ─────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
+if ! command -v kubectl &>/dev/null; then
+    echo
+    echo "▶ Checking prerequisites"
+    echo "  ⚠  kubectl not found — this test requires a Kubernetes cluster"
+    echo "  SKIPPED"
+    echo
+    exit 0
+fi
+
 NS="event-store"
 PROM_PORT=9090
 GRAFANA_PORT=3000

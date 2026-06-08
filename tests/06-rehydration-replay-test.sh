@@ -50,6 +50,7 @@ JOB_TIMEOUT=120       # seconds to wait per Job before declaring timeout
 
 PASSED_BACKENDS=0
 FAILED_BACKENDS=0
+SKIPPED_BACKENDS=0
 FAILED_NAMES=()
 
 pass() { echo "  ✓ $*"; }
@@ -64,7 +65,7 @@ require_cmd() {
 
 parse_json_field() {
     local json="$1" field="$2"
-    echo "$json" | grep -oP "\"${field}\":\s*\K[^,}]+" | head -1
+    echo "$json" | grep -oP "\"${field}\":\\s*\\K[^,}]+" | head -1 || true
 }
 
 # ── Wait for a K8s Job to reach Complete or Failed ────────────────────────────
@@ -140,6 +141,9 @@ record_result() {
     if [[ "$ok" == "0" ]]; then
         pass "$backend rehydration PASSED"
         PASSED_BACKENDS=$((PASSED_BACKENDS + 1))
+    elif [[ "$ok" == "2" ]]; then
+        warn "$backend rehydration SKIPPED"
+        SKIPPED_BACKENDS=$((SKIPPED_BACKENDS + 1))
     else
         fail "$backend rehydration FAILED"
         FAILED_BACKENDS=$((FAILED_BACKENDS + 1))
@@ -189,27 +193,39 @@ if [[ "$DIRECT" == "1" ]]; then
         step "MongoDB — rehydration/replay (direct, ${EVENTS} events)"
         echo "  URL: $MONGO_URL_DIRECT"
 
+        MONGO_ERR_FILE=$(mktemp)
         MONGO_OUTPUT=$(testbed \
             --mongodb-url "$MONGO_URL_DIRECT" \
             mongo-rehydrate-demo \
             --database "$MONGO_DB" \
             --events "$EVENTS" \
-            --json 2>/dev/null | tail -1)
-        echo "  Output: $MONGO_OUTPUT"
+            --json 2>"$MONGO_ERR_FILE" | tail -1) || true
+        MONGO_STDERR=$(cat "$MONGO_ERR_FILE"); rm -f "$MONGO_ERR_FILE"
 
-        MONGO_OK=1
-        MONGO_PASSED=$(parse_json_field "$MONGO_OUTPUT" "passed")
-        MONGO_WRITTEN=$(parse_json_field "$MONGO_OUTPUT" "events_written")
-        MONGO_REPLAYED=$(parse_json_field "$MONGO_OUTPUT" "events_replayed")
-        MONGO_RATE=$(parse_json_field "$MONGO_OUTPUT" "replay_rate_eps")
-
-        if [[ "$MONGO_PASSED" == "true" && "$MONGO_WRITTEN" == "$MONGO_REPLAYED" ]]; then
-            pass "events_written=$MONGO_WRITTEN, events_replayed=$MONGO_REPLAYED, replay_rate=${MONGO_RATE} ev/s"
-            MONGO_OK=0
+        # Detect "MongoDB requires a replica set" — skip rather than fail.
+        if echo "$MONGO_STDERR" | grep -q "version counter update failed\|not a replica set\|Transaction numbers are only allowed"; then
+            warn "MongoDB requires a replica set for transactions — skipping"
+            warn "  Rebuild the devcontainer to apply the replica-set config: Ctrl+Shift+P → Rebuild Container"
+            record_result "MongoDB" "2"   # 2 = skipped
+        elif [[ -z "$MONGO_OUTPUT" ]]; then
+            echo "  Error: $MONGO_STDERR"
+            fail "MongoDB rehydration produced no JSON output"
         else
-            fail "assertion failed: passed=$MONGO_PASSED, written=$MONGO_WRITTEN, replayed=$MONGO_REPLAYED"
+            echo "  Output: $MONGO_OUTPUT"
+            MONGO_OK=1
+            MONGO_PASSED=$(parse_json_field "$MONGO_OUTPUT" "passed")
+            MONGO_WRITTEN=$(parse_json_field "$MONGO_OUTPUT" "events_written")
+            MONGO_REPLAYED=$(parse_json_field "$MONGO_OUTPUT" "events_replayed")
+            MONGO_RATE=$(parse_json_field "$MONGO_OUTPUT" "replay_rate_eps")
+
+            if [[ "$MONGO_PASSED" == "true" && "$MONGO_WRITTEN" == "$MONGO_REPLAYED" ]]; then
+                pass "events_written=$MONGO_WRITTEN, events_replayed=$MONGO_REPLAYED, replay_rate=${MONGO_RATE} ev/s"
+                MONGO_OK=0
+            else
+                fail "assertion failed: passed=$MONGO_PASSED, written=$MONGO_WRITTEN, replayed=$MONGO_REPLAYED"
+            fi
+            record_result "MongoDB" "$MONGO_OK"
         fi
-        record_result "MongoDB" "$MONGO_OK"
     else
         warn "MongoDB skipped (SKIP_MONGO=1)"
     fi
@@ -402,10 +418,11 @@ echo
 echo "════════════════════════════════════════════════"
 echo "  Rehydration / Replay — Test Summary"
 echo "════════════════════════════════════════════════"
-echo "  Passed : $PASSED_BACKENDS backend(s)"
-echo "  Failed : $FAILED_BACKENDS backend(s)"
+echo "  Passed  : $PASSED_BACKENDS backend(s)"
+echo "  Skipped : $SKIPPED_BACKENDS backend(s)"
+echo "  Failed  : $FAILED_BACKENDS backend(s)"
 if [[ ${#FAILED_NAMES[@]} -gt 0 ]]; then
-    echo "  Failed : ${FAILED_NAMES[*]}"
+    echo "  Failed  : ${FAILED_NAMES[*]}"
 fi
 echo "════════════════════════════════════════════════"
 

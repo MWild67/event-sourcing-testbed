@@ -26,11 +26,11 @@ KURRENT_URL="${KURRENT_URL:-kurrentdb://kurrentdb.event-store.svc.cluster.local:
 KURRENT_URL_DIRECT="${KURRENT_URL_DIRECT:-kurrentdb://localhost:2116?tls=false}"
 DIRECT="${DIRECT:-0}"
 
-TARGET_RATE=10000
+TARGET_RATE="${TARGET_RATE:-10000}"
 CONCURRENCY=50
 BATCH_SIZE=1
 DURATION_SECS=30
-MAX_P99_US=2000   # 2 ms
+MAX_P99_US="${MAX_P99_US:-2000}"   # 2 ms
 
 pass() { echo "  ✓ $*"; }
 fail() { echo "  ✗ $*" >&2; exit 1; }
@@ -44,7 +44,7 @@ require_cmd() {
 parse_json_field() {
     local json="$1" field="$2"
     # Portable extraction without jq dependency.
-    echo "$json" | grep -oP "\"${field}\":\s*\K[^,}]+"
+    echo "$json" | grep -oP "\"${field}\":\\s*\\K[^,}]+" || true
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -57,7 +57,7 @@ if [[ "$DIRECT" == "1" ]]; then
 
     OUTPUT=$(testbed \
         --kurrentdb-url "$KURRENT_URL_DIRECT" \
-        bench \
+        kurrentdb-bench \
         --target-rate    "$TARGET_RATE" \
         --duration-secs  "$DURATION_SECS" \
         --concurrency    "$CONCURRENCY" \
@@ -101,7 +101,7 @@ spec:
           imagePullPolicy: IfNotPresent
           command: ["/usr/local/bin/testbed"]
           args:
-            - bench
+            - kurrentdb-bench
             - --target-rate
             - "$TARGET_RATE"
             - --duration-secs

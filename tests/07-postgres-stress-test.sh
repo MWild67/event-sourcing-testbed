@@ -1,38 +1,37 @@
 #!/usr/bin/env bash
 # ─────────────────────────────────────────────────────────────────────────────
-# Test 05 — MongoDB Write-Latency Stress Test
+# Test 07 — PostgreSQL Write-Latency Stress Test
 #
 # Passes when:
 #   • Actual throughput reaches ≥ 9 000 events/second
 #   • p99 insert latency < p99_limit_ms (default 2 ms / 2 000 µs)
 #
-# Runs the Rust 'testbed mongo-bench' subcommand either inside a Kubernetes
-# Job or, when DIRECT=1, directly against a local MongoDB instance.
+# Runs the Rust 'testbed pg-bench' subcommand either inside a Kubernetes
+# Job or, when DIRECT=1, directly against a local PostgreSQL instance.
 #
 # Usage:
-#   ./tests/05-mongodb-stress-test.sh                     # K8s Job mode (default)
-#   DIRECT=1 ./tests/05-mongodb-stress-test.sh            # run testbed binary directly
-#   MONGO_URL=mongodb://myhost:27017 \
-#     DIRECT=1 ./tests/05-mongodb-stress-test.sh
-#   P99_LIMIT_MS=5 DIRECT=1 ./tests/05-mongodb-stress-test.sh  # relax p99 threshold
+#   ./tests/07-postgres-stress-test.sh                         # K8s Job mode (default)
+#   DIRECT=1 ./tests/07-postgres-stress-test.sh                # run testbed binary directly
+#   POSTGRES_URL=postgres://... DIRECT=1 ./tests/07-postgres-stress-test.sh
+#   P99_LIMIT_MS=5 DIRECT=1 ./tests/07-postgres-stress-test.sh  # relax p99 threshold
 #
 # Isolation notes:
-#   • The testbed binary drops the 'eventbench' database before every run so
-#     leftover data from a prior run cannot inflate latency.  Pass --no-drop to
-#     keep existing data (e.g. when intentionally testing a warm database).
-#   • This test targets MongoDB only.  It does NOT touch KurrentDB or
-#     RabbitMQ streams — those backends are completely separate.
-#   • Do NOT run this test concurrently with 02-stress-test.sh on the same
-#     host.  Both benchmarks saturate the host's CPU/memory/disk I/O, which
-#     inflates each other's latency numbers.  Run them sequentially.
+#   • The testbed binary recreates the 'events' table before every run so
+#     leftover data from a prior run cannot inflate index lookup times.
+#   • This test targets PostgreSQL only.  It does NOT touch KurrentDB or
+#     MongoDB — those backends are completely separate.
+#   • Do NOT run this test concurrently with 02-stress-test.sh or
+#     05-mongodb-stress-test.sh on the same host.  All three benchmarks
+#     saturate the host's CPU/memory/disk I/O and will inflate each other's
+#     latency numbers.  Run them sequentially.
 # ─────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
 NS="event-store"
-JOB="mongo-stress-test-$(date +%s)"
+JOB="pg-stress-test-$(date +%s)"
 IMAGE="${TESTBED_IMAGE:-event-sourcing-testbed:latest}"
-MONGO_URL="${MONGO_URL:-mongodb://mongodb.event-store.svc.cluster.local:27017}"
-MONGO_URL_DIRECT="${MONGO_URL_DIRECT:-mongodb://localhost:27017}"
+PG_URL="${PG_URL:-postgres://postgres:postgres@postgres.event-store.svc.cluster.local:5432/eventbench}"
+POSTGRES_URL="${POSTGRES_URL:-${PG_URL_DIRECT:-postgres://postgres:postgres@localhost:5432/eventbench}}"
 DIRECT="${DIRECT:-0}"
 
 TARGET_RATE="${TARGET_RATE:-10000}"
@@ -60,12 +59,12 @@ if [[ "$DIRECT" == "1" ]]; then
     # ── Direct mode: run testbed binary on this machine ────────────────────
     require_cmd testbed
 
-    step "Running MongoDB stress test directly (target ${TARGET_RATE} ev/s for ${DURATION_SECS}s)"
-    echo "  MongoDB: $MONGO_URL_DIRECT"
+    step "Running PostgreSQL stress test directly (target ${TARGET_RATE} ev/s for ${DURATION_SECS}s)"
+    echo "  PostgreSQL: $POSTGRES_URL"
 
     OUTPUT=$(testbed \
-        --mongodb-url "$MONGO_URL_DIRECT" \
-        mongo-bench \
+        --postgres-url  "$POSTGRES_URL" \
+        pg-bench \
         --target-rate   "$TARGET_RATE" \
         --concurrency   "$CONCURRENCY" \
         --batch-size    "$BATCH_SIZE" \
@@ -79,16 +78,16 @@ if [[ "$DIRECT" == "1" ]]; then
     P99_LIMIT_US=$((P99_LIMIT_MS * 1000))
 
     [[ "${RATE%.*}" -ge "$((TARGET_RATE * 90 / 100))" ]] \
-      || fail "MongoDB benchmark FAILED: throughput ${RATE} ev/s below 90% of target (${TARGET_RATE})"
+      || fail "PostgreSQL benchmark FAILED: throughput ${RATE} ev/s below 90% of target (${TARGET_RATE})"
     [[ "${P99}" -le "${P99_LIMIT_US}" ]] \
-      || fail "MongoDB benchmark FAILED: p99=${P99} µs > limit=${P99_LIMIT_US} µs (${P99_LIMIT_MS} ms)"
-    pass "MongoDB benchmark passed  (rate=${RATE} ev/s, p99=${P99} µs < ${P99_LIMIT_US} µs)"
+      || fail "PostgreSQL benchmark FAILED: p99=${P99} µs > limit=${P99_LIMIT_US} µs (${P99_LIMIT_MS} ms)"
+    pass "PostgreSQL benchmark passed  (rate=${RATE} ev/s, p99=${P99} µs < ${P99_LIMIT_US} µs)"
 
 else
     # ── Kubernetes Job mode ────────────────────────────────────────────────
     require_cmd kubectl
 
-    step "Submitting MongoDB stress-test Job '$JOB' to namespace '$NS'"
+    step "Submitting PostgreSQL stress-test Job '$JOB' to namespace '$NS'"
 
     kubectl apply -f - <<EOF
 apiVersion: batch/v1
@@ -97,7 +96,7 @@ metadata:
   name: $JOB
   namespace: $NS
   labels:
-    test: mongo-stress
+    test: pg-stress
 spec:
   backoffLimit: 0
   ttlSecondsAfterFinished: 300
@@ -108,9 +107,9 @@ spec:
         - name: testbed
           image: $IMAGE
           args:
-            - --mongodb-url
-            - "$MONGO_URL"
-            - mongo-bench
+            - --postgres-url
+            - "$PG_URL"
+            - pg-bench
             - --target-rate
             - "$TARGET_RATE"
             - --concurrency
@@ -120,6 +119,10 @@ spec:
             - --duration-secs
             - "$DURATION_SECS"
             - --json
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "256Mi"
 EOF
 
     step "Waiting for Job to complete (timeout: $((DURATION_SECS + 120))s)"
@@ -140,14 +143,14 @@ EOF
     P99_LIMIT_US=$((P99_LIMIT_MS * 1000))
 
     [[ "${RATE%.*}" -ge "$((TARGET_RATE * 90 / 100))" ]] \
-      || fail "MongoDB benchmark FAILED: throughput ${RATE} ev/s below 90% of target (${TARGET_RATE})"
+      || fail "PostgreSQL benchmark FAILED: throughput ${RATE} ev/s below 90% of target (${TARGET_RATE})"
     [[ "${P99}" -le "${P99_LIMIT_US}" ]] \
-      || fail "MongoDB benchmark FAILED: p99=${P99} µs > limit=${P99_LIMIT_US} µs (${P99_LIMIT_MS} ms)"
-    pass "MongoDB benchmark passed  (rate=${RATE} ev/s, p99=${P99} µs < ${P99_LIMIT_US} µs)"
+      || fail "PostgreSQL benchmark FAILED: p99=${P99} µs > limit=${P99_LIMIT_US} µs (${P99_LIMIT_MS} ms)"
+    pass "PostgreSQL benchmark passed  (rate=${RATE} ev/s, p99=${P99} µs < ${P99_LIMIT_US} µs)"
 
     # Clean up the completed job.
     kubectl delete job "$JOB" -n "$NS" --ignore-not-found=true &>/dev/null || true
 fi
 
 echo
-pass "Test 05 — MongoDB stress test COMPLETE"
+pass "Test 07 — PostgreSQL stress test COMPLETE"

@@ -1,0 +1,153 @@
+services:
+
+  # ── Single-node KurrentDB (in-memory, no TLS) ────────────────────────────
+  # Shared by benchmarks, the snapshot demo, and rehydration tests.
+  kurrentdb-bench:
+    image: kurrentplatform/kurrentdb:latest
+    container_name: kurrentdb-bench
+    environment:
+      KURRENTDB_CLUSTER_SIZE: 1
+      KURRENTDB_INSECURE: "true"
+      KURRENTDB_NODE_PORT: 2113
+      KURRENTDB_RUN_PROJECTIONS: "None"
+      KURRENTDB_START_STANDARD_PROJECTIONS: "false"
+      KURRENTDB_ENABLE_ATOM_PUB_OVER_HTTP: "true"
+      KURRENTDB_MEM_DB: "true"
+      KURRENTDB_DB: /data/db
+      KURRENTDB_LOG: /data/log
+      KURRENTDB_INDEX: /data/index
+    tmpfs:
+      - /data/db
+      - /data/log
+      - /data/index
+    ports:
+      - "2116:2113"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:2113/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+
+  # ── MongoDB ───────────────────────────────────────────────────────────────
+  mongodb:
+    image: docker.io/library/mongo:7
+    container_name: mongodb
+    environment:
+      MONGO_INITDB_DATABASE: eventbench
+    # Start mongod with --replSet so multi-document transactions work.
+    # The entrypoint script waits for mongod to accept connections and then
+    # calls rs.initiate() exactly once (no-op if already done).
+    command:
+      - bash
+      - -c
+      - |
+        mongod --quiet --bind_ip_all --wiredTigerCacheSizeGB 0.5 --replSet rs0 &
+        MONGOPID=$!
+        until mongosh --quiet --eval "print('up')" &>/dev/null; do sleep 0.5; done
+        mongosh --quiet --eval \
+          'try{rs.status()}catch(e){rs.initiate({_id:"rs0",members:[{_id:0,host:"127.0.0.1:27017"}]})}' \
+          &>/dev/null || true
+        wait $MONGOPID
+    tmpfs:
+      - /data/db
+    ports:
+      - "27017:27017"
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval",
+             "db.hello().isWritablePrimary||quit(1)",
+             "mongodb://127.0.0.1:27017/?directConnection=true"]
+      interval: 5s
+      timeout: 10s
+      retries: 20
+      start_period: 10s
+
+  # ── PostgreSQL ────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: eventbench
+    command:
+      - postgres
+      - -c
+      - fsync=off
+      - -c
+      - full_page_writes=off
+      - -c
+      - max_connections=200
+    tmpfs:
+      - /var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # ── RabbitMQ ───────────────────────────────────────────────────────────────
+  rabbitmq:
+    image: docker.io/library/rabbitmq:3.13-management
+    container_name: rabbitmq
+    # Podman rootless workaround: tmpfs mounts are root-owned inside a rootless
+    # container, but RabbitMQ starts directly as the rabbitmq user (UID 999)
+    # and cannot write to a root-owned /var/lib/rabbitmq.  Unlike PostgreSQL or
+    # MongoDB, the RabbitMQ image does NOT chown the data dir in its entrypoint.
+    # Using a named volume ensures the directory is initialised from the image
+    # layers with the correct rabbitmq:rabbitmq ownership.
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+      RABBITMQ_ERLANG_COOKIE: "testbed_cookie"
+    ports:
+      - "5673:5672"
+      - "15672:15672"
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 10s
+      retries: 15
+      start_period: 60s
+
+  # ── Dev container ────────────────────────────────────────────────────────
+  devcontainer:
+    image: mcr.microsoft.com/devcontainers/rust:1-bullseye
+    volumes:
+      - ..:/workspace:cached
+      - cargo-cache:/usr/local/cargo/registry
+      - cargo-target:/tmp/cargo-target
+    environment:
+      # Service URLs — consumed by make targets and test scripts (DIRECT mode).
+      KURRENTDB_URL: "kurrentdb://kurrentdb-bench:2113?tls=false"
+      KURRENT_URL_DIRECT: "kurrentdb://kurrentdb-bench:2113?tls=false"
+      MONGODB_URL: "mongodb://mongodb:27017/?directConnection=true"
+      MONGO_URL_DIRECT: "mongodb://mongodb:27017/?directConnection=true"
+      PG_URL: "postgres://postgres:postgres@postgres:5432/eventbench"
+      PG_URL_DIRECT: "postgres://postgres:postgres@postgres:5432/eventbench"
+      POSTGRES_URL: "postgres://postgres:postgres@postgres:5432/eventbench"
+      RABBITMQ_URL: "amqp://guest:guest@rabbitmq:5672"
+      # Keep build artefacts inside the container — avoids slow Windows bind-mount I/O.
+      CARGO_TARGET_DIR: "/tmp/cargo-target"
+      # Services are already running — test scripts default to direct mode.
+      DIRECT: "1"
+      RUST_LOG: "info"
+    depends_on:
+      kurrentdb-bench:
+        condition: service_healthy
+      mongodb:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    command: sleep infinity
+    working_dir: /workspace/rust-app
+
+volumes:
+  cargo-cache:
+  cargo-target:
+  rabbitmq-data:

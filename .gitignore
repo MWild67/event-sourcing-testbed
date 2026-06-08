@@ -1,9 +1,14 @@
 # Rust build output
 rust-app/target/
 
+# Cargo home (may land here if CARGO_HOME is overridden)
+.cargo/
+
 # RabbitMQ persistent data (created by docker-compose)
 docker/rabbitmq-data/
 
 # OS
 .DS_Store
 Thumbs.db
+.devcontainer/.env
+.devcontainer/.cache/
