@@ -31,7 +31,7 @@ jobs:
       p99_us:  ${{ steps.bench.outputs.p99_us }}
       p999_us: ${{ steps.bench.outputs.p999_us }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install KurrentDB (MEM_DB)
         run: |
@@ -51,7 +51,7 @@ jobs:
           sudo renice -n -15 -p "$ES_PID"
 
       - uses: dtolnay/rust-toolchain@stable
-      - uses: actions/cache@v4
+      - uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
@@ -86,7 +86,7 @@ jobs:
       p99_us:  ${{ steps.bench.outputs.p99_us }}
       p999_us: ${{ steps.bench.outputs.p999_us }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install k3d
         run: curl -s https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | TAG=v5.8.3 bash
@@ -95,7 +95,7 @@ jobs:
         run: k3d cluster create testbed --servers 1 --no-lb --wait --timeout 120s
 
       - uses: dtolnay/rust-toolchain@stable
-      - uses: actions/cache@v4
+      - uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
@@ -158,7 +158,7 @@ jobs:
       - name: Wait for KurrentDB
         run: |
           kubectl rollout status statefulset/kurrentdb -n event-store --timeout=120s
-          start_pf() { kill "$PF_PID" 2>/dev/null || true; kubectl port-forward -n event-store pod/kurrentdb-0 2113:2113 &; PF_PID=$!; sleep 3; }
+          start_pf() { kill "$PF_PID" 2>/dev/null || true; kubectl port-forward -n event-store pod/kurrentdb-0 2113:2113 & PF_PID=$!; sleep 3; }
           PF_PID=""; start_pf
           for i in $(seq 1 60); do
             kill -0 "$PF_PID" 2>/dev/null || { start_pf; }
@@ -181,7 +181,7 @@ jobs:
       - name: Benchmark
         id: bench
         run: |
-          kubectl port-forward -n event-store pod/kurrentdb-0 2113:2113 &; PF_PID=$!; sleep 3
+          kubectl port-forward -n event-store pod/kurrentdb-0 2113:2113 & PF_PID=$!; sleep 3
           RESULT=$(rust-app/target/release/testbed \
             --kurrentdb-url "kurrentdb://localhost:2113?tls=false" \
             kurrentdb-bench --target-rate 10000 --duration-secs 30 --concurrency 64 --batch-size 1 --json)
@@ -208,7 +208,7 @@ jobs:
       sc_rehydrate_eps: ${{ steps.scale.outputs.rehydrate_eps }}
       sc_rehydrate_ms:  ${{ steps.scale.outputs.rehydrate_ms }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install KurrentDB (in-memory)
         run: |
@@ -226,7 +226,7 @@ jobs:
           for i in $(seq 1 30); do curl -sf http://localhost:2113/health/live && break || sleep 2; done
 
       - uses: dtolnay/rust-toolchain@stable
-      - uses: actions/cache@v4
+      - uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
@@ -273,7 +273,7 @@ jobs:
     outputs:
       passed: ${{ steps.test.outputs.passed }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install k3d
         run: curl -s https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | TAG=v5.8.3 bash
@@ -411,7 +411,7 @@ jobs:
       p99_us:  ${{ steps.bench.outputs.p99_us }}
       p999_us: ${{ steps.bench.outputs.p999_us }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Start MongoDB on tmpfs
         run: |
@@ -433,7 +433,7 @@ jobs:
           done
 
       - uses: dtolnay/rust-toolchain@stable
-      - uses: actions/cache@v4
+      - uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
@@ -478,7 +478,7 @@ jobs:
       p99_us:  ${{ steps.bench.outputs.p99_us }}
       p999_us: ${{ steps.bench.outputs.p999_us }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install k3d
         run: curl -s https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | TAG=v5.8.3 bash
@@ -487,7 +487,7 @@ jobs:
         run: k3d cluster create testbed --agents 1 --wait --timeout 120s
 
       - uses: dtolnay/rust-toolchain@stable
-      - uses: actions/cache@v4
+      - uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
@@ -568,7 +568,7 @@ jobs:
       replay_rate: ${{ steps.demo.outputs.replay_rate }}
       passed:      ${{ steps.demo.outputs.passed }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Start MongoDB (Docker, replica set)
         run: |
@@ -587,7 +587,7 @@ jobs:
           done
 
       - uses: dtolnay/rust-toolchain@stable
-      - uses: actions/cache@v4
+      - uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
@@ -632,10 +632,10 @@ jobs:
       p99_us:  ${{ steps.bench.outputs.p99_us }}
       p999_us: ${{ steps.bench.outputs.p999_us }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - uses: dtolnay/rust-toolchain@stable
-      - uses: actions/cache@v4
+      - uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
@@ -690,10 +690,10 @@ jobs:
       p99_us:  ${{ steps.bench.outputs.p99_us }}
       p999_us: ${{ steps.bench.outputs.p999_us }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - uses: dtolnay/rust-toolchain@stable
-      - uses: actions/cache@v4
+      - uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
@@ -780,7 +780,7 @@ jobs:
       replay_rate: ${{ steps.demo.outputs.replay_rate }}
       passed:      ${{ steps.demo.outputs.passed }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Start PostgreSQL
         run: |
@@ -793,7 +793,7 @@ jobs:
           done
 
       - uses: dtolnay/rust-toolchain@stable
-      - uses: actions/cache@v4
+      - uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
