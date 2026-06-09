@@ -258,6 +258,95 @@ impl PostgresClient {
         Ok(batch_len)
     }
 
+    /// Read the last `n` [`crate::events::BenchmarkEvent`]s from `bench_events`
+    /// for the given `stream_id`, ordered by `stream_version` descending, then
+    /// reversed to **oldest-first**.  Mirrors KurrentDB stream-backwards semantics.
+    #[allow(clippy::cast_sign_loss)]
+    pub async fn read_last_n_stream_bench_events(
+        &self,
+        stream_id: &str,
+        n: i64,
+    ) -> Result<Vec<crate::events::BenchmarkEvent>> {
+        let rows = sqlx::query(
+            "SELECT seq, task_id, payload, created_at \
+             FROM bench_events \
+             WHERE stream_id = $1 \
+             ORDER BY stream_version DESC LIMIT $2",
+        )
+        .bind(stream_id)
+        .bind(n)
+        .fetch_all(&self.pool)
+        .await
+        .context("read_last_n_stream_bench_events failed")?;
+
+        let mut events: Vec<crate::events::BenchmarkEvent> = rows
+            .into_iter()
+            .map(|row| {
+                let seq: i64 = row.get("seq");
+                let task_id: i64 = row.get("task_id");
+                let payload: Vec<u8> = row.get("payload");
+                let created_at: chrono::DateTime<chrono::Utc> = row.get("created_at");
+                crate::events::BenchmarkEvent {
+                    seq: seq as u64,
+                    task_id: task_id as u64,
+                    payload,
+                    created_at,
+                }
+            })
+            .collect();
+        // Query returns newest-first; reverse to oldest-first.
+        events.reverse();
+        Ok(events)
+    }
+
+    /// Poll for new events in `stream_id` with `global_position > after`.
+    /// Returns `(seq, global_position)` pairs ordered by `global_position`.
+    /// Used by the projection-bench polling projector.
+    #[allow(clippy::cast_sign_loss)]
+    pub async fn poll_new_events(
+        &self,
+        stream_id: &str,
+        after: i64,
+        limit: i64,
+    ) -> Result<Vec<(i64, i64)>> {
+        let rows = sqlx::query(
+            "SELECT seq, global_position \
+             FROM bench_events \
+             WHERE stream_id = $1 AND global_position > $2 \
+             ORDER BY global_position LIMIT $3",
+        )
+        .bind(stream_id)
+        .bind(after)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .context("poll_new_events failed")?;
+        Ok(rows
+            .into_iter()
+            .map(|r| (r.get::<i64, _>("seq"), r.get::<i64, _>("global_position")))
+            .collect())
+    }
+
+    /// Stream all events for `stream_id` in `stream_version` order.
+    /// Returns the count of events read.  Used by the scale benchmark to
+    /// measure full-stream rehydration throughput at high event counts.
+    #[allow(clippy::cast_sign_loss)]
+    pub async fn rehydrate_stream(&self, stream_id: &str) -> Result<usize> {
+        use futures::TryStreamExt as _;
+        let mut stream = sqlx::query(
+            "SELECT event_id FROM bench_events \
+             WHERE stream_id = $1 \
+             ORDER BY stream_version",
+        )
+        .bind(stream_id)
+        .fetch(&self.pool);
+        let mut count = 0usize;
+        while stream.try_next().await?.is_some() {
+            count += 1;
+        }
+        Ok(count)
+    }
+
     /// Create the `stream_versions` counter table used in event-store mode.
     pub async fn ensure_stream_versions_table(&self) -> Result<()> {
         sqlx::query(
@@ -268,6 +357,124 @@ impl PostgresClient {
         .await
         .context("failed to create stream_versions table")?;
         Ok(())
+    }
+
+    // ── Hot-cache helpers ─────────────────────────────────────────────────────
+
+    /// Create the `hot_cache_events` table for the hot-tail-cache benchmark.
+    pub async fn ensure_hot_cache_table(&self) -> Result<()> {
+        sqlx::query(
+            r"
+            CREATE TABLE IF NOT EXISTS hot_cache_events (
+                event_id   TEXT        NOT NULL PRIMARY KEY,
+                seq        BIGINT      NOT NULL,
+                task_id    BIGINT      NOT NULL,
+                payload    BYTEA       NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            ",
+        )
+        .execute(&self.pool)
+        .await
+        .context("failed to create hot_cache_events table")?;
+
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_hce_seq ON hot_cache_events (seq)")
+            .execute(&self.pool)
+            .await
+            .context("failed to create hot_cache_events seq index")?;
+
+        Ok(())
+    }
+
+    /// Truncate `hot_cache_events` so each run starts from a clean slate.
+    pub async fn truncate_hot_cache_table(&self) -> Result<()> {
+        sqlx::query("TRUNCATE TABLE hot_cache_events")
+            .execute(&self.pool)
+            .await
+            .context("failed to truncate hot_cache_events")?;
+        Ok(())
+    }
+
+    /// Batch-insert `events` into `hot_cache_events`.
+    #[allow(clippy::cast_possible_wrap)]
+    pub async fn insert_hot_cache_batch(
+        &self,
+        events: &[crate::events::BenchmarkEvent],
+    ) -> Result<()> {
+        if events.is_empty() {
+            return Ok(());
+        }
+        let mut qb: sqlx::QueryBuilder<sqlx::Postgres> = sqlx::QueryBuilder::new(
+            "INSERT INTO hot_cache_events (event_id, seq, task_id, payload, created_at) ",
+        );
+        qb.push_values(events, |mut b, ev| {
+            b.push_bind(uuid::Uuid::new_v4().to_string())
+                .push_bind(ev.seq as i64)
+                .push_bind(ev.task_id as i64)
+                .push_bind(ev.payload.clone())
+                .push_bind(ev.created_at);
+        });
+        qb.build()
+            .execute(&self.pool)
+            .await
+            .context("hot_cache_events batch insert failed")?;
+        Ok(())
+    }
+
+    /// Insert a single [`crate::events::BenchmarkEvent`] into `hot_cache_events`.
+    /// Returns the time the INSERT was acknowledged by the server.
+    #[allow(clippy::cast_possible_wrap)]
+    pub async fn insert_hot_cache_event(
+        &self,
+        event: &crate::events::BenchmarkEvent,
+    ) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO hot_cache_events (event_id, seq, task_id, payload, created_at) \
+             VALUES ($1, $2, $3, $4, $5)",
+        )
+        .bind(uuid::Uuid::new_v4().to_string())
+        .bind(event.seq as i64)
+        .bind(event.task_id as i64)
+        .bind(&event.payload)
+        .bind(event.created_at)
+        .execute(&self.pool)
+        .await
+        .context("hot_cache_events single insert failed")?;
+        Ok(())
+    }
+
+    /// Read the last `n` events from `hot_cache_events` ordered by `seq`
+    /// descending, then reversed to **oldest-first**.
+    #[allow(clippy::cast_sign_loss)]
+    pub async fn read_last_n_hot_cache_events(
+        &self,
+        n: i64,
+    ) -> Result<Vec<crate::events::BenchmarkEvent>> {
+        let rows =
+            sqlx::query("SELECT seq, task_id, payload, created_at FROM hot_cache_events ORDER BY seq DESC LIMIT $1")
+                .bind(n)
+                .fetch_all(&self.pool)
+                .await
+                .context("read_last_n_hot_cache_events failed")?;
+
+        let mut events: Vec<crate::events::BenchmarkEvent> = rows
+            .into_iter()
+            .map(|row| {
+                let seq: i64 = row.get("seq");
+                let task_id: i64 = row.get("task_id");
+                let payload: Vec<u8> = row.get("payload");
+                let created_at: chrono::DateTime<chrono::Utc> = row.get("created_at");
+                crate::events::BenchmarkEvent {
+                    seq: seq as u64,
+                    task_id: task_id as u64,
+                    payload,
+                    created_at,
+                }
+            })
+            .collect();
+        // Query returns newest-first; reverse to oldest-first.
+        events.reverse();
+        Ok(events)
     }
 
     /// Pre-warm stream-version rows so the first insert doesn't pay an upsert

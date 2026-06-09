@@ -22,6 +22,14 @@ on:
     types: [completed]
   workflow_dispatch:   # allow manual trigger
 
+# Ensure only one report runs at a time per branch/tag.
+# When a second DB workflow finishes while the first report is still running,
+# cancel the in-progress run so the final invocation (which has all results)
+# is the one that actually completes.
+concurrency:
+  group: bench-report-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   actions: read    # required to list workflow runs and download artifacts
   contents: read

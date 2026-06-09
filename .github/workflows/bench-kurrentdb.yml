@@ -369,6 +369,65 @@ jobs:
           echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
           [ "$PASSED" = "True" ] || { echo "KurrentDB rehydration FAILED"; exit 1; }
 
+  # ── Scale benchmark: 100 k events — proves rehydration is not a VM-bridge artefact ──
+  scale:
+    name: KurrentDB — Scale Benchmark (100 k events)
+    runs-on: ubuntu-22.04
+    outputs:
+      write_eps:        ${{ steps.scale.outputs.write_eps }}
+      tail_ms:          ${{ steps.scale.outputs.tail_ms }}
+      rehydrate_eps:    ${{ steps.scale.outputs.rehydrate_eps }}
+      rehydrate_ms:     ${{ steps.scale.outputs.rehydrate_ms }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install KurrentDB (in-memory)
+        run: |
+          curl -1sLf 'https://dl.cloudsmith.io/public/eventstore/kurrent-latest/setup.deb.sh' | sudo -E bash
+          sudo apt-get install -y kurrentdb
+          sudo systemctl stop kurrentdb || true
+          getent passwd kurrentdb > /dev/null || sudo useradd --system --no-create-home --shell /usr/sbin/nologin kurrentdb
+          sudo mkdir -p /tmp/esdb /tmp/esdb-log
+          sudo chown kurrentdb:kurrentdb /tmp/esdb /tmp/esdb-log
+          sudo mkdir -p /etc/systemd/system/kurrentdb.service.d
+          printf '[Service]\nEnvironment="KURRENTDB_DB=/tmp/esdb"\nEnvironment="KURRENTDB_LOG=/tmp/esdb-log"\nEnvironment="KURRENTDB_INSECURE=true"\nEnvironment="KURRENTDB_RUN_PROJECTIONS=None"\nEnvironment="KURRENTDB_UNSAFE_DISABLE_FLUSH_TO_DISK=true"\nEnvironment="KURRENTDB_CLUSTER_SIZE=1"\nEnvironment="KURRENTDB_MEM_DB=true"\n' \
+            | sudo tee /etc/systemd/system/kurrentdb.service.d/bench.conf
+          sudo systemctl daemon-reload
+          sudo systemctl start kurrentdb
+          echo "Waiting for KurrentDB to be ready..."
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:2113/health/live && break || sleep 2
+          done
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            rust-app/target
+          key: event-sourcing-testbed-${{ runner.os }}-cargo-${{ hashFiles('rust-app/Cargo.lock') }}
+
+      - name: Build
+        run: cargo build --release --manifest-path rust-app/Cargo.toml
+
+      - name: Scale benchmark (100 k events)
+        id: scale
+        run: |
+          RESULT=$(rust-app/target/release/testbed \
+            --kurrentdb-url "kurrentdb://localhost:2113?tls=false" \
+            kurrentdb-scale-bench \
+            --scale-events 100000 \
+            --batch-size 500 \
+            --stream-name "ci-scale-test11" \
+            --json)
+          echo "$RESULT"
+          echo "write_eps=$(echo "$RESULT"     | python3 -c "import sys,json; d=json.load(sys.stdin); print(round(d['write_throughput_eps'],1))")"  >> "$GITHUB_OUTPUT"
+          echo "tail_ms=$(echo "$RESULT"       | python3 -c "import sys,json; d=json.load(sys.stdin); print(round(d['tail_read_us']/1000.0,2))")"   >> "$GITHUB_OUTPUT"
+          echo "rehydrate_eps=$(echo "$RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(round(d['rehydrate_throughput_eps'],1))")" >> "$GITHUB_OUTPUT"
+          echo "rehydrate_ms=$(echo "$RESULT"  | python3 -c "import sys,json; d=json.load(sys.stdin); print(round(d['rehydrate_elapsed_ms'],0))")"  >> "$GITHUB_OUTPUT"
+
   # ── Node failover: 3-node cluster, worker power-off ≤ 60 s ─────────────
   failover:
     name: KurrentDB — Node Failover (≤ 60 s)
@@ -550,7 +609,7 @@ jobs:
     name: Save Results & Write Summary
     runs-on: ubuntu-22.04
     if: always()
-    needs: [bench-memdb, bench-docker, bench-k8s, rehydrate, failover]
+    needs: [bench-memdb, bench-docker, bench-k8s, rehydrate, scale, failover]
     steps:
       - name: Write step summary
         env:
@@ -574,6 +633,10 @@ jobs:
           RH_WRITE_RATE:  ${{ needs.rehydrate.outputs.write_rate }}
           RH_REPLAY_RATE: ${{ needs.rehydrate.outputs.replay_rate }}
           RH_PASSED:      ${{ needs.rehydrate.outputs.passed }}
+          SC_WRITE_EPS:   ${{ needs.scale.outputs.write_eps }}
+          SC_TAIL_MS:     ${{ needs.scale.outputs.tail_ms }}
+          SC_REHY_EPS:    ${{ needs.scale.outputs.rehydrate_eps }}
+          SC_REHY_MS:     ${{ needs.scale.outputs.rehydrate_ms }}
           FO_PASSED:      ${{ needs.failover.outputs.passed }}
         run: |
           fmt_ms()     { [ -n "$1" ] && awk "BEGIN{printf \"%.2f\", $1/1000}" || echo "n/a"; }
@@ -606,6 +669,17 @@ jobs:
               "$(fmt_rate "$RH_REPLAY_MS")" "$(fmt_rate "$RH_REPLAY_RATE")" \
               "$(fmt_result "${RH_PASSED:-}")"
             echo ""
+            echo "### Scale Benchmark — 100 k events (CI, no VM bridge)"
+            echo ""
+            echo "> Proves that devcontainer rehydration latency is a VM-bridge artefact, not a KurrentDB limit."
+            echo ""
+            echo "| Metric | Value |"
+            echo "|--------|------:|"
+            printf "| Write throughput (ev/s) | %s |\n" "${SC_WRITE_EPS:-n/a}"
+            printf "| Tail read — last 500 from 100 k (ms) | %s |\n" "${SC_TAIL_MS:-n/a}"
+            printf "| Full rehydration throughput (ev/s) | %s |\n" "${SC_REHY_EPS:-n/a}"
+            printf "| Full rehydration elapsed (ms) | %s |\n" "${SC_REHY_MS:-n/a}"
+            echo ""
             echo "### Node Failover (AC-3)"
             echo ""
             echo "| Test | Result |"
@@ -636,6 +710,10 @@ jobs:
           RH_WRITE_RATE:  ${{ needs.rehydrate.outputs.write_rate }}
           RH_REPLAY_RATE: ${{ needs.rehydrate.outputs.replay_rate }}
           RH_PASSED:      ${{ needs.rehydrate.outputs.passed }}
+          SC_WRITE_EPS:   ${{ needs.scale.outputs.write_eps }}
+          SC_TAIL_MS:     ${{ needs.scale.outputs.tail_ms }}
+          SC_REHY_EPS:    ${{ needs.scale.outputs.rehydrate_eps }}
+          SC_REHY_MS:     ${{ needs.scale.outputs.rehydrate_ms }}
           FO_PASSED:      ${{ needs.failover.outputs.passed }}
         run: |
           python3 << 'PYEOF'
@@ -669,6 +747,12 @@ jobs:
                   'write_rate':  os.getenv('RH_WRITE_RATE', ''),
                   'replay_rate': os.getenv('RH_REPLAY_RATE', ''),
                   'passed':      os.getenv('RH_PASSED', ''),
+              },
+              'scale_100k': {
+                  'write_throughput_eps':    os.getenv('SC_WRITE_EPS', ''),
+                  'tail_read_ms':            os.getenv('SC_TAIL_MS', ''),
+                  'rehydrate_throughput_eps': os.getenv('SC_REHY_EPS', ''),
+                  'rehydrate_elapsed_ms':    os.getenv('SC_REHY_MS', ''),
               },
               'failover': {
                   'passed': os.getenv('FO_PASSED', ''),

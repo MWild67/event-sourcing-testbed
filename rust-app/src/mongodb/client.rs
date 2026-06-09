@@ -279,6 +279,12 @@ impl MongoClient {
         Ok(())
     }
 
+    /// Expose the underlying `Database` handle for advanced operations
+    /// (e.g. opening a Change Stream directly on a collection).
+    pub fn database(&self) -> &mongodb::Database {
+        &self.db
+    }
+
     /// Drop the entire database (removes all collections and their data).
     /// Called at the start of each benchmark run to guarantee a clean slate.
     pub async fn drop_database(&self) -> Result<()> {
@@ -305,6 +311,70 @@ impl MongoClient {
                 Err(e).context(format!("failed to create collection '{collection_name}'"))
             }
         }
+    }
+
+    /// Ensure a collection exists with a `seq` index for efficient tail reads.
+    /// Safe to call repeatedly (idempotent — ignores `NamespaceExists`).
+    pub async fn ensure_hot_cache_collection(&self, collection_name: &str) -> Result<()> {
+        self.ensure_collection(collection_name).await?;
+
+        let seq_idx = IndexModel::builder()
+            .keys(doc! { "seq": 1 })
+            .options(IndexOptions::builder().name("idx_seq".to_string()).build())
+            .build();
+
+        self.db
+            .collection::<Document>(collection_name)
+            .create_indexes(vec![seq_idx])
+            .await
+            .with_context(|| format!("failed to create seq index on '{collection_name}'"))?;
+        Ok(())
+    }
+
+    /// Drop all documents from `collection_name` so each run starts clean.
+    pub async fn truncate_collection(&self, collection_name: &str) -> Result<()> {
+        self.db
+            .collection::<Document>(collection_name)
+            .delete_many(doc! {})
+            .await
+            .with_context(|| format!("failed to truncate collection '{collection_name}'"))?;
+        Ok(())
+    }
+
+    /// Read the last `n` [`crate::events::BenchmarkEvent`]s from `collection_name`
+    /// using the event-store `stream_version` column (sorted descending), then
+    /// reversed to **oldest-first**.  Only documents whose `stream_id` matches
+    /// `collection_name` are returned — identical to the semantics KurrentDB
+    /// provides when reading a named stream backwards.
+    pub async fn read_last_n_bench_events(
+        &self,
+        collection_name: &str,
+        n: usize,
+    ) -> Result<Vec<crate::events::BenchmarkEvent>> {
+        use futures::TryStreamExt as _;
+        use mongodb::options::FindOptions;
+
+        let coll = self.db.collection::<Document>(collection_name);
+        let opts = FindOptions::builder()
+            .sort(doc! { "stream_version": -1 })
+            .limit(n as i64)
+            .build();
+
+        let mut cursor = coll
+            .find(doc! { "stream_id": collection_name })
+            .with_options(opts)
+            .await
+            .with_context(|| format!("find failed on '{collection_name}'"))?;
+
+        let mut events = Vec::with_capacity(n);
+        while let Some(doc) = cursor.try_next().await? {
+            if let Ok(ev) = mongodb::bson::from_document::<crate::events::BenchmarkEvent>(doc) {
+                events.push(ev);
+            }
+        }
+        // Query returned newest-first; reverse to oldest-first.
+        events.reverse();
+        Ok(events)
     }
 
     /// Cheap health probe — issues a server-level `ping` command.

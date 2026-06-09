@@ -189,7 +189,10 @@ impl KurrentClient {
         &self,
         stream_name: &str,
     ) -> Result<Option<(String, u64, serde_json::Value)>> {
-        let opts = ReadStreamOptions::default().backwards().max_count(1);
+        let opts = ReadStreamOptions::default()
+            .backwards()
+            .position(StreamPosition::End)
+            .max_count(1);
         let mut read_stream = match self.inner.read_stream(stream_name, &opts).await {
             Ok(s) => s,
             Err(e) => {
@@ -220,6 +223,56 @@ impl KurrentClient {
                 "error reading last event '{stream_name}': {e}"
             )),
         }
+    }
+
+    /// Read the last `n` events from `stream_name` as [`crate::events::BenchmarkEvent`]
+    /// payloads, returned **oldest-first**.
+    ///
+    /// Uses a backwards read with `max_count = n` so only one gRPC round-trip is
+    /// needed regardless of stream length.  Events that cannot be deserialised
+    /// (wrong type) are silently skipped.
+    pub async fn read_last_n_bench_events(
+        &self,
+        stream_name: &str,
+        n: usize,
+    ) -> Result<Vec<crate::events::BenchmarkEvent>> {
+        let opts = ReadStreamOptions::default()
+            .backwards()
+            .position(StreamPosition::End)
+            .max_count(n);
+
+        let mut read_stream = match self.inner.read_stream(stream_name, &opts).await {
+            Ok(s) => s,
+            Err(e) => {
+                let msg = e.to_string();
+                if msg.contains("StreamNotFound")
+                    || msg.contains("stream not found")
+                    || msg.contains("not found")
+                {
+                    return Ok(Vec::new());
+                }
+                return Err(anyhow::anyhow!("read_last_n '{stream_name}' failed: {msg}"));
+            }
+        };
+
+        let mut events = Vec::with_capacity(n);
+        loop {
+            match read_stream.next().await {
+                Ok(Some(resolved)) => {
+                    let recorded = resolved.get_original_event();
+                    if let Ok(ev) =
+                        serde_json::from_slice::<crate::events::BenchmarkEvent>(&recorded.data)
+                    {
+                        events.push(ev);
+                    }
+                }
+                Ok(None) => break,
+                Err(e) => return Err(anyhow::anyhow!("error reading '{stream_name}': {e}")),
+            }
+        }
+        // Backwards read returns newest-first; reverse to get oldest-first.
+        events.reverse();
+        Ok(events)
     }
 
     /// Cheap health probe — checks whether the gRPC endpoint responds.

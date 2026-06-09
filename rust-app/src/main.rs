@@ -1,8 +1,12 @@
 mod events;
+mod hot_cache_bench;
 mod kurrentdb;
 mod mongodb;
 mod postgres;
+mod projection_bench;
 mod rabbitmq_client;
+mod scale_bench;
+mod search_bench;
 
 use std::io::Write as _;
 
@@ -81,6 +85,37 @@ enum Commands {
     MongoRehydrateDemo(MongoRehydrateDemoArgs),
     /// Write events to `PostgreSQL` then rehydrate the aggregate to verify replay.
     PgRehydrateDemo(PgRehydrateDemoArgs),
+    /// Hot-tail-cache benchmark against `KurrentDB`:
+    /// seeds 50 000 events, loads the last 500 into an in-memory ring buffer at
+    /// startup, then measures cache-read and live DB-write latency.
+    KurrentdbHotCacheBench(HotCacheBenchArgs),
+    /// Hot-tail-cache benchmark against `MongoDB`.
+    MongoHotCacheBench(MongoHotCacheBenchArgs),
+    /// Hot-tail-cache benchmark against `PostgreSQL`.
+    PgHotCacheBench(HotCacheBenchArgs),
+    /// Projection/subscription-lag benchmark against `KurrentDB`:
+    /// seeds events, starts a catch-up subscription, measures time-to-ready and
+    /// per-event lag from write-ack to materialised-view-updated.
+    KurrentdbProjectionBench(projection_bench::ProjectionBenchArgs),
+    /// Projection/subscription-lag benchmark against `MongoDB` (change streams).
+    MongoProjectionBench(projection_bench::MongoProjectionBenchArgs),
+    /// Projection/subscription-lag benchmark against `PostgreSQL` (polling).
+    PgProjectionBench(projection_bench::ProjectionBenchArgs),
+    /// Search-index projection benchmark against `KurrentDB`:
+    /// seeds events, projects them into a PostgreSQL FTS table, measures
+    /// indexing lag and query latency (exact, prefix, full-text, date-range).
+    KurrentdbSearchBench(search_bench::SearchBenchArgs),
+    /// Search-index projection benchmark against `MongoDB`.
+    MongoSearchBench(search_bench::MongoSearchBenchArgs),
+    /// Search-index projection benchmark against `PostgreSQL`.
+    PgSearchBench(search_bench::SearchBenchArgs),
+    /// Scale benchmark against `PostgreSQL` — write N events (default 500k),
+    /// then measure tail read and full-stream rehydration at scale.
+    PgScaleBench(scale_bench::ScaleBenchArgs),
+    /// Scale benchmark against `KurrentDB`.
+    KurrentdbScaleBench(scale_bench::ScaleBenchArgs),
+    /// Scale benchmark against `MongoDB`.
+    MongoScaleBench(scale_bench::MongoScaleBenchArgs),
 }
 
 #[derive(Parser)]
@@ -261,6 +296,64 @@ struct PgRehydrateDemoArgs {
     json: bool,
 }
 
+#[derive(Parser)]
+struct HotCacheBenchArgs {
+    /// Total events to write during the seed phase.
+    #[arg(long, default_value_t = 50_000)]
+    seed_events: u64,
+
+    /// Number of most-recent events held in the in-memory ring buffer.
+    #[arg(long, default_value_t = 500)]
+    cache_size: usize,
+
+    /// Additional events written one-at-a-time in the live-write phase.
+    #[arg(long, default_value_t = 500)]
+    live_writes: u64,
+
+    /// Events per batch during the seed phase.
+    #[arg(long, default_value_t = 100)]
+    seed_batch_size: u64,
+
+    /// Stream / collection name.
+    #[arg(long, default_value = "hot-cache")]
+    stream_name: String,
+
+    /// Emit results as a single JSON line (for CI parsing).
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Parser)]
+struct MongoHotCacheBenchArgs {
+    /// Total events to write during the seed phase.
+    #[arg(long, default_value_t = 50_000)]
+    seed_events: u64,
+
+    /// Number of most-recent events held in the in-memory ring buffer.
+    #[arg(long, default_value_t = 500)]
+    cache_size: usize,
+
+    /// Additional events written one-at-a-time in the live-write phase.
+    #[arg(long, default_value_t = 500)]
+    live_writes: u64,
+
+    /// Events per batch during the seed phase.
+    #[arg(long, default_value_t = 100)]
+    seed_batch_size: u64,
+
+    /// Collection name.
+    #[arg(long, default_value = "hot-cache")]
+    stream_name: String,
+
+    /// `MongoDB` database name.
+    #[arg(long, default_value = "hotcache")]
+    database: String,
+
+    /// Emit results as a single JSON line (for CI parsing).
+    #[arg(long)]
+    json: bool,
+}
+
 // ─── Entry point ─────────────────────────────────────────────────────────────
 
 #[tokio::main]
@@ -390,6 +483,167 @@ async fn main() -> Result<()> {
 
         Commands::PgRehydrateDemo(args) => {
             pg_rehydrate_demo(&cli.postgres_url, args.events, args.json).await?;
+        }
+
+        Commands::KurrentdbHotCacheBench(args) => {
+            let config = hot_cache_bench::HotCacheConfig {
+                seed_events: args.seed_events,
+                cache_size: args.cache_size,
+                live_writes: args.live_writes,
+                seed_batch_size: args.seed_batch_size,
+                stream_name: args.stream_name,
+                database: String::new(),
+                json: args.json,
+            };
+            let result = hot_cache_bench::run_kurrentdb(&cli.kurrentdb_url, config).await?;
+            if args.json {
+                result.print_json();
+            } else {
+                result.print_report();
+            }
+            let _ = std::io::stdout().flush();
+            let _ = std::io::stderr().flush();
+        }
+
+        Commands::MongoHotCacheBench(args) => {
+            let config = hot_cache_bench::HotCacheConfig {
+                seed_events: args.seed_events,
+                cache_size: args.cache_size,
+                live_writes: args.live_writes,
+                seed_batch_size: args.seed_batch_size,
+                stream_name: args.stream_name,
+                database: args.database,
+                json: args.json,
+            };
+            let result = hot_cache_bench::run_mongo(&cli.mongodb_url, config).await?;
+            if args.json {
+                result.print_json();
+            } else {
+                result.print_report();
+            }
+            let _ = std::io::stdout().flush();
+            let _ = std::io::stderr().flush();
+        }
+
+        Commands::PgHotCacheBench(args) => {
+            let config = hot_cache_bench::HotCacheConfig {
+                seed_events: args.seed_events,
+                cache_size: args.cache_size,
+                live_writes: args.live_writes,
+                seed_batch_size: args.seed_batch_size,
+                stream_name: args.stream_name,
+                database: String::new(),
+                json: args.json,
+            };
+            let result = hot_cache_bench::run_postgres(&cli.postgres_url, config).await?;
+            if args.json {
+                result.print_json();
+            } else {
+                result.print_report();
+            }
+            let _ = std::io::stdout().flush();
+            let _ = std::io::stderr().flush();
+        }
+
+        Commands::KurrentdbProjectionBench(args) => {
+            let result = projection_bench::run_kurrentdb(&cli.kurrentdb_url, &args).await?;
+            if args.json {
+                result.print_json();
+            } else {
+                result.print_report();
+            }
+            let _ = std::io::stdout().flush();
+            let _ = std::io::stderr().flush();
+        }
+
+        Commands::MongoProjectionBench(args) => {
+            let result = projection_bench::run_mongo(&cli.mongodb_url, &args).await?;
+            if args.json {
+                result.print_json();
+            } else {
+                result.print_report();
+            }
+            let _ = std::io::stdout().flush();
+            let _ = std::io::stderr().flush();
+        }
+
+        Commands::PgProjectionBench(args) => {
+            let result = projection_bench::run_postgres(&cli.postgres_url, &args).await?;
+            if args.json {
+                result.print_json();
+            } else {
+                result.print_report();
+            }
+            let _ = std::io::stdout().flush();
+            let _ = std::io::stderr().flush();
+        }
+
+        Commands::KurrentdbSearchBench(args) => {
+            let result =
+                search_bench::run_kurrentdb(&cli.kurrentdb_url, &cli.postgres_url, &args).await?;
+            if args.json {
+                result.print_json();
+            } else {
+                result.print_report();
+            }
+            let _ = std::io::stdout().flush();
+            let _ = std::io::stderr().flush();
+        }
+
+        Commands::MongoSearchBench(args) => {
+            let result =
+                search_bench::run_mongo(&cli.mongodb_url, &cli.postgres_url, &args).await?;
+            if args.json {
+                result.print_json();
+            } else {
+                result.print_report();
+            }
+            let _ = std::io::stdout().flush();
+            let _ = std::io::stderr().flush();
+        }
+
+        Commands::PgSearchBench(args) => {
+            let result = search_bench::run_postgres(&cli.postgres_url, &args).await?;
+            if args.json {
+                result.print_json();
+            } else {
+                result.print_report();
+            }
+            let _ = std::io::stdout().flush();
+            let _ = std::io::stderr().flush();
+        }
+
+        Commands::PgScaleBench(args) => {
+            let result = scale_bench::run_postgres(&cli.postgres_url, &args).await?;
+            if args.json {
+                result.print_json();
+            } else {
+                result.print_report();
+            }
+            let _ = std::io::stdout().flush();
+            let _ = std::io::stderr().flush();
+        }
+
+        Commands::KurrentdbScaleBench(args) => {
+            let result = scale_bench::run_kurrentdb(&cli.kurrentdb_url, &args).await?;
+            if args.json {
+                result.print_json();
+            } else {
+                result.print_report();
+            }
+            let _ = std::io::stdout().flush();
+            let _ = std::io::stderr().flush();
+        }
+
+        Commands::MongoScaleBench(args) => {
+            let result = scale_bench::run_mongo(&cli.mongodb_url, &args).await?;
+            if args.json {
+                result.print_json();
+            } else {
+                result.print_report();
+            }
+            let _ = std::io::stdout().flush();
+            let _ = std::io::stderr().flush();
         }
     }
 
