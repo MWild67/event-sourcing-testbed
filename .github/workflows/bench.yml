@@ -1407,6 +1407,9 @@ jobs:
     name: Benchmark Report
     runs-on: ubuntu-22.04
     if: always()
+    permissions:
+      actions: read
+      contents: read
     needs:
       - kdb-memdb
       - kdb-docker
@@ -1431,14 +1434,56 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          set -euo pipefail
           if ! command -v gh >/dev/null 2>&1; then
             sudo apt-get update
             sudo apt-get install -y gh
           fi
+
           mkdir -p bench-artifacts
-          gh run download "${GITHUB_RUN_ID}" \
-            --repo "${GITHUB_REPOSITORY}" \
-            --dir bench-artifacts || echo "No artifacts downloaded"
+
+          # Artifact indexing can lag a little; retry listing a few times.
+          ARTIFACT_NAMES=""
+          for attempt in 1 2 3 4 5 6; do
+            ARTIFACT_NAMES=$(gh api \
+              "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/artifacts?per_page=100" \
+              --jq '.artifacts[] | select(.expired==false) | .name' || true)
+            if [ -n "${ARTIFACT_NAMES}" ]; then
+              break
+            fi
+            echo "No artifacts indexed yet (attempt ${attempt}/6); retrying in 10s..."
+            sleep 10
+          done
+
+          if [ -z "${ARTIFACT_NAMES}" ]; then
+            echo "No non-expired artifacts found for this run."
+          else
+            echo "Artifacts discovered:"
+            printf '%s\n' "${ARTIFACT_NAMES}"
+
+            while IFS= read -r artifact; do
+              [ -n "${artifact}" ] || continue
+              ok=0
+              for dl_try in 1 2 3; do
+                if gh run download "${GITHUB_RUN_ID}" \
+                  --repo "${GITHUB_REPOSITORY}" \
+                  --name "${artifact}" \
+                  --dir bench-artifacts; then
+                  ok=1
+                  break
+                fi
+                echo "Download failed for ${artifact} (attempt ${dl_try}/3), retrying..."
+                sleep 3
+              done
+              if [ "${ok}" -ne 1 ]; then
+                echo "Failed to download artifact: ${artifact}"
+                exit 1
+              fi
+            done <<< "${ARTIFACT_NAMES}"
+          fi
+
+          echo "Downloaded files:"
+          find bench-artifacts -type f | sort || true
 
       - name: Generate combined summary
         env:
