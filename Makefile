@@ -2,8 +2,11 @@
 # Makefile — Event Sourcing Testbed
 # ─────────────────────────────────────────────────────────────────────────────
 .PHONY: help up down build push deploy undeploy test-all \
+	test-all-extended \
         test-storage test-bench test-failover test-monitoring \
-        test-mongodb test-postgres test-rehydration test-rate-ramp \
+	test-mongodb test-postgres test-rehydration \
+	test-hot-cache test-projection test-search test-scale \
+	test-rate-ramp test-replay-under-write test-failover-impact \
         logs-es logs-rmq pf-grafana pf-prom pf-es
 
 NAMESPACE     := event-store
@@ -94,10 +97,16 @@ undeploy: ## Remove all Kubernetes resources in the event-store namespace
 # Usage in devcontainer:  make test-all          (DIRECT=1 already in env)
 # Usage against K8s:      make test-all DIRECT=0
 
-test-all: test-storage test-bench test-failover test-monitoring test-mongodb test-postgres test-rehydration ## Run all 7 test suites
+test-all: test-storage test-bench test-failover test-monitoring test-mongodb test-postgres test-rehydration ## Run core 7 test suites
 	@echo ""
 	@echo "════════════════════════════════════════"
-	@echo "  All tests completed."
+	@echo "  Core test suite completed."
+	@echo "════════════════════════════════════════"
+
+test-all-extended: test-all test-hot-cache test-projection test-search test-scale test-rate-ramp test-replay-under-write test-failover-impact ## Run core + advanced tests (long)
+	@echo ""
+	@echo "════════════════════════════════════════"
+	@echo "  Extended test suite completed."
 	@echo "════════════════════════════════════════"
 
 test-storage: ## Test 01: StorageClass validation (skips without kubectl)
@@ -130,6 +139,18 @@ test-postgres: ## Test 07: PostgreSQL write-latency stress test
 test-rehydration: ## Test 06: Event rehydration/replay (KurrentDB, MongoDB, PostgreSQL)
 	bash tests/06-rehydration-replay-test.sh
 
+test-hot-cache: ## Test 08: Hot-tail-cache benchmark
+	bash tests/08-hot-cache-bench.sh
+
+test-projection: ## Test 09: Projection/subscription-lag benchmark
+	bash tests/09-projection-bench.sh
+
+test-search: ## Test 10: Search/index projection benchmark
+	bash tests/10-search-bench.sh
+
+test-scale: ## Test 11: Scale benchmark
+	bash tests/11-scale-bench.sh
+
 test-rate-ramp: ## Test 12: Rate ramp knee-point test (BACKEND=kurrentdb|mongodb|postgres)
 	DIRECT=$(DIRECT) \
 	BACKEND=$(BACKEND) \
@@ -140,6 +161,28 @@ test-rate-ramp: ## Test 12: Rate ramp knee-point test (BACKEND=kurrentdb|mongodb
 	EVENT_STORE_MODE=$(if $(EVENT_STORE_MODE),$(EVENT_STORE_MODE),0) \
 	TESTBED_IMAGE=$(TESTBED_IMAGE) \
 	  bash tests/12-rate-ramp-test.sh
+
+test-replay-under-write: ## Test 13: Replay-under-write (write latency regression during concurrent replay)
+	DIRECT=$(DIRECT) \
+	BACKEND=$(if $(BACKEND),$(BACKEND),kurrentdb) \
+	SEED_EVENTS=$(if $(SEED_EVENTS),$(SEED_EVENTS),100000) \
+	DURATION_SECS=$(if $(DURATION_SECS),$(DURATION_SECS),30) \
+	CONCURRENCY=$(if $(CONCURRENCY),$(CONCURRENCY),64) \
+	BATCH_SIZE=$(if $(BATCH_SIZE),$(BATCH_SIZE),1) \
+	TARGET_RATE=$(if $(TARGET_RATE),$(TARGET_RATE),10000) \
+	EVENT_STORE_MODE=$(if $(EVENT_STORE_MODE),$(EVENT_STORE_MODE),0) \
+	TESTBED_IMAGE=$(TESTBED_IMAGE) \
+	  bash tests/13-replay-under-write-test.sh
+
+test-failover-impact: ## Test 14: Short failover-impact (pause window, error spike, recovery time)
+	RECOVERY_SLA_SECS=$(if $(RECOVERY_SLA_SECS),$(RECOVERY_SLA_SECS),60) \
+	TARGET_RATE=$(if $(TARGET_RATE),$(TARGET_RATE),4000) \
+	CONCURRENCY=$(if $(CONCURRENCY),$(CONCURRENCY),48) \
+	BATCH_SIZE=$(if $(BATCH_SIZE),$(BATCH_SIZE),1) \
+	BASELINE_DURATION_SECS=$(if $(BASELINE_DURATION_SECS),$(BASELINE_DURATION_SECS),12) \
+	IMPACT_DURATION_SECS=$(if $(IMPACT_DURATION_SECS),$(IMPACT_DURATION_SECS),35) \
+	SPIKE_WINDOW_MS=$(if $(SPIKE_WINDOW_MS),$(SPIKE_WINDOW_MS),5000) \
+	bash tests/14-failover-impact-test.sh
 
 # ── Utility ───────────────────────────────────────────────────────────────────
 logs-es: ## Tail KurrentDB logs

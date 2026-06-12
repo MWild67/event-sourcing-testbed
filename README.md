@@ -419,15 +419,21 @@ event-sourcing-testbed/
 
 ## Tests
 
-Run all tests with:
+Run core tests with:
 
 ```bash
 make test-all
 ```
 
+Run core + advanced suites with:
+
+```bash
+make test-all-extended
+```
+
 In the devcontainer (`DIRECT=1`), thresholds are automatically scaled to what a shared
-dev VM can sustain. Tests requiring Kubernetes (01, 03, 04) are skipped with a clear
-`SKIPPED` message. In K8s CI mode (`DIRECT=0`), full production SLAs apply.
+dev VM can sustain. Tests requiring Kubernetes are skipped with a clear `SKIPPED`
+message. In K8s CI mode (`DIRECT=0`), full production SLAs apply.
 
 | # | Test | Devcontainer | K8s CI |
 |---|------|-------------|--------|
@@ -436,8 +442,15 @@ dev VM can sustain. Tests requiring Kubernetes (01, 03, 04) are skipped with a c
 | 03 | Automated failover | SKIPPED (no K8s) | runs |
 | 04 | Monitoring (Prometheus + Grafana) | SKIPPED (no K8s) | runs |
 | 05 | MongoDB throughput benchmark | PASS | PASS |
-| 06 | Event rehydration/replay | PASS (MongoDB needs rebuild) | PASS |
+| 06 | Event rehydration/replay | PASS (MongoDB may need RS init) | PASS |
 | 07 | PostgreSQL throughput benchmark | PASS | PASS |
+| 08 | Hot-tail-cache benchmark | PASS | optional/manual |
+| 09 | Projection/subscription-lag benchmark | PASS | optional/manual |
+| 10 | Search/index projection benchmark | PASS | optional/manual |
+| 11 | Scale benchmark | PASS | optional/manual |
+| 12 | Rate ramp knee-point | PASS | PASS |
+| 13 | Replay-under-write | PASS | PASS |
+| 14 | Short failover-impact under load | SKIPPED (no K8s) | PASS |
 
 ---
 
@@ -681,6 +694,81 @@ Output includes a table per step (`target`, `actual_rate`, `p99_us`) and a summa
 
 The knee detector marks the first step where p99 jumps by at least `KNEE_FACTOR` (default `1.8x`)
 and p99 is at least `MIN_KNEE_P99_US` (default `2000`).
+
+---
+
+### Test 13 — Replay-Under-Write
+
+Measures write-latency regression when concurrent replay/rehydration is running against a stream.
+Useful for understanding contention, lock hold times, and scheduler behavior under mixed read-heavy (replay) + write-heavy (new events) workloads.
+
+**Test design:**
+1. Pre-seed a large stream (default: 100 000 events) with past events.
+2. Run a baseline write benchmark (measure write p99 alone).
+3. Run the same write benchmark while concurrently replaying/rehydrating the seeded stream.
+4. Output baseline p99, concurrent p99, and regression factor (`concurrent_p99 / baseline_p99`).
+
+**Usage:**
+```bash
+# KurrentDB (default backend):
+make test-replay-under-write BACKEND=kurrentdb
+
+# MongoDB with 50k seed events:
+make test-replay-under-write BACKEND=mongodb SEED_EVENTS=50000
+
+# PostgreSQL with custom duration and rate:
+make test-replay-under-write BACKEND=postgres DURATION_SECS=60 TARGET_RATE=5000
+
+# Custom parameters:
+make test-replay-under-write BACKEND=kurrentdb SEED_EVENTS=200000 CONCURRENCY=128 BATCH_SIZE=2
+```
+
+**Output** includes a JSON line with:
+- `baseline_p99_us` — write p99 without concurrent replay (µs)
+- `concurrent_p99_us` — write p99 during concurrent replay (µs)
+- `regression_factor` — ratio of concurrent to baseline (e.g., 1.5 = 50% slowdown)
+
+**Interpreting regression:**
+- `< 1.1` — negligible contention; design is highly concurrent
+- `1.1–1.5` — moderate contention; typical for shared-state backends
+- `> 2.0` — severe contention; indicates lock hold times or scheduler pressure
+
+---
+
+### Test 14 — Short Failover-Impact Test
+
+Triggers a short node-level failover while active write load is running, then quantifies
+the operational blast radius beyond simple pass/fail availability.
+
+This complements Test 03 by adding impact metrics under load:
+
+- `pause_window_ms` — longest continuous outage window from high-frequency health probes
+- `error_spike_count` — failed probes in the first post-failover spike window
+- `recovery_time_ms` — failover trigger to stable healthy probe streak
+- `tail_latency_factor` — write p99 during failover run divided by baseline p99
+
+**Usage:**
+
+```bash
+# Kubernetes (requires >= 3 Ready nodes):
+make test-failover-impact
+
+# Tune load profile:
+make test-failover-impact TARGET_RATE=6000 CONCURRENCY=64 IMPACT_DURATION_SECS=45
+
+# Tighten/relax recovery SLO:
+make test-failover-impact RECOVERY_SLA_SECS=45
+```
+
+**Output JSON** includes:
+
+- `pause_window_ms`
+- `error_spike_count`
+- `write_error_count`
+- `recovery_time_ms`
+- `baseline_p99_us`
+- `impact_p99_us`
+- `tail_latency_factor`
 
 ---
 

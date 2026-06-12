@@ -477,6 +477,137 @@ jobs:
             kubectl logs "$pod" -n event-store --tail=50 2>&1 || true
           done
 
+  # ── KurrentDB failover impact under load ───────────────────────────────
+  kdb-failover-impact:
+    name: KurrentDB — Short Failover Impact (under load)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install k3d
+        run: curl -s https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | TAG=v5.8.3 bash
+
+      - name: Create k3d cluster (1 server + 3 agents)
+        run: |
+          k3d cluster create failover-impact --servers 1 --agents 3 --wait --timeout 120s
+          kubectl get nodes -o wide
+
+      - name: Pre-pull KurrentDB image
+        run: |
+          docker pull kurrentplatform/kurrentdb:latest
+          k3d image import kurrentplatform/kurrentdb:latest -c failover-impact
+
+      - name: Deploy namespace and services
+        run: |
+          kubectl apply -f k8s/00-namespace.yaml
+          kubectl apply -f k8s/02-kurrentdb/01-services.yaml
+
+      - name: Deploy KurrentDB 3-node StatefulSet
+        run: |
+          kubectl apply -f - <<'EOF'
+          apiVersion: apps/v1
+          kind: StatefulSet
+          metadata:
+            name: kurrentdb
+            namespace: event-store
+          spec:
+            serviceName: kurrentdb-headless
+            replicas: 3
+            podManagementPolicy: Parallel
+            selector:
+              matchLabels:
+                app: kurrentdb
+            template:
+              metadata:
+                labels:
+                  app: kurrentdb
+              spec:
+                topologySpreadConstraints:
+                  - maxSkew: 1
+                    topologyKey: kubernetes.io/hostname
+                    whenUnsatisfiable: DoNotSchedule
+                    labelSelector:
+                      matchLabels:
+                        app: kurrentdb
+                enableServiceLinks: false
+                terminationGracePeriodSeconds: 10
+                containers:
+                  - name: kurrentdb
+                    image: kurrentplatform/kurrentdb:latest
+                    imagePullPolicy: IfNotPresent
+                    ports:
+                      - {name: http,  containerPort: 2113}
+                      - {name: grpc,  containerPort: 2114}
+                    env:
+                      - {name: KURRENTDB_CLUSTER_SIZE,                value: "3"}
+                      - {name: KURRENTDB_DISCOVER_VIA_DNS,            value: "true"}
+                      - {name: KURRENTDB_CLUSTER_DNS,                 value: "kurrentdb-headless.event-store.svc.cluster.local"}
+                      - {name: KURRENTDB_CLUSTER_GOSSIP_PORT,         value: "2113"}
+                      - {name: KURRENTDB_NODE_PORT,                   value: "2113"}
+                      - {name: KURRENTDB_INSECURE,                    value: "true"}
+                      - {name: KURRENTDB_RUN_PROJECTIONS,             value: "None"}
+                      - {name: KURRENTDB_START_STANDARD_PROJECTIONS,  value: "false"}
+                      - {name: KURRENTDB_ENABLE_ATOM_PUB_OVER_HTTP,   value: "true"}
+                      - {name: KURRENTDB_UNSAFE_DISABLE_FLUSH_TO_DISK,value: "true"}
+                      - {name: KURRENTDB_DB,                          value: /data/db}
+                      - {name: KURRENTDB_LOG,                         value: /data/log}
+                    readinessProbe:
+                      httpGet: {path: /health/live, port: 2113}
+                      initialDelaySeconds: 20
+                      periodSeconds: 5
+                      failureThreshold: 6
+                    resources:
+                      requests: {cpu: "200m", memory: "256Mi"}
+                      limits:   {cpu: "1",    memory: "1Gi"}
+                    volumeMounts:
+                      - {name: data, mountPath: /data}
+                volumes:
+                  - name: data
+                    emptyDir: {medium: Memory, sizeLimit: 512Mi}
+          EOF
+
+      - name: Wait for cluster ready
+        run: |
+          kubectl rollout status statefulset/kurrentdb -n event-store --timeout=300s
+          kubectl get pods -n event-store -o wide
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            rust-app/target
+          key: bench-${{ runner.os }}-cargo-${{ hashFiles('rust-app/Cargo.lock') }}
+
+      - name: Build
+        run: cargo build --release --manifest-path rust-app/Cargo.toml
+
+      - name: Run short failover-impact test
+        run: |
+          chmod +x tests/14-failover-impact-test.sh
+          tests/14-failover-impact-test.sh | tee failover-impact.log
+          grep '^{' failover-impact.log > kdb-failover-impact.json || true
+
+      - name: Upload failover-impact artifact
+        uses: actions/upload-artifact@v5
+        with:
+          name: kdb-failover-impact-result
+          path: kdb-failover-impact.json
+          if-no-files-found: warn
+
+      - name: Dump diagnostics on failure
+        if: failure()
+        run: |
+          kubectl get nodes -o wide || true
+          kubectl get pods -n event-store -o wide || true
+          kubectl get events -n event-store --sort-by='.lastTimestamp' 2>/dev/null | tail -60 || true
+          kubectl describe pods -n event-store || true
+          for pod in $(kubectl get pods -n event-store -o name 2>/dev/null); do
+            kubectl logs "$pod" -n event-store --tail=80 2>&1 || true
+          done
+
   # ════════════════════════════════════════════════════════════════════════════
   # Rate Ramp Tests (Knee-Point Discovery)
   # ════════════════════════════════════════════════════════════════════════════
@@ -624,6 +755,163 @@ jobs:
         with:
           name: pg-rate-ramp-results
           path: pg-rate-ramp-*.json
+          if-no-files-found: warn
+
+      - name: Cleanup
+        if: always()
+        run: docker stop pg && docker rm pg || true
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # Replay-Under-Write Tests
+  # ════════════════════════════════════════════════════════════════════════════
+
+  kdb-replay-under-write:
+    name: KurrentDB — Replay-Under-Write
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install KurrentDB (MEM_DB)
+        run: |
+          curl -1sLf 'https://dl.cloudsmith.io/public/eventstore/kurrent-latest/setup.deb.sh' | sudo -E bash
+          sudo apt-get install -y kurrentdb
+          sudo systemctl stop kurrentdb || true
+          getent passwd kurrentdb > /dev/null || sudo useradd --system --no-create-home --shell /usr/sbin/nologin kurrentdb
+          sudo mkdir -p /tmp/esdb /tmp/esdb-log
+          sudo chown kurrentdb:kurrentdb /tmp/esdb /tmp/esdb-log
+          sudo mkdir -p /etc/systemd/system/kurrentdb.service.d
+          printf '[Service]\nEnvironment="KURRENTDB_DB=/tmp/esdb"\nEnvironment="KURRENTDB_LOG=/tmp/esdb-log"\nEnvironment="KURRENTDB_INSECURE=true"\nEnvironment="KURRENTDB_RUN_PROJECTIONS=None"\nEnvironment="KURRENTDB_UNSAFE_DISABLE_FLUSH_TO_DISK=true"\nEnvironment="KURRENTDB_CLUSTER_SIZE=1"\nEnvironment="KURRENTDB_MEM_DB=true"\n' \
+            | sudo tee /etc/systemd/system/kurrentdb.service.d/bench.conf
+          sudo systemctl daemon-reload
+          sudo systemctl start kurrentdb
+          for i in $(seq 1 30); do curl -sf http://localhost:2113/health/live && break || sleep 2; done
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            rust-app/target
+          key: bench-${{ runner.os }}-cargo-${{ hashFiles('rust-app/Cargo.lock') }}
+
+      - name: Build
+        run: cargo build --release --manifest-path rust-app/Cargo.toml
+
+      - name: Replay-under-write test
+        run: |
+          DIRECT=1 BACKEND=kurrentdb bash tests/13-replay-under-write-test.sh | tee replay-output.log
+          grep '^{' replay-output.log > kdb-replay-under-write.json || true
+
+      - name: Upload result
+        uses: actions/upload-artifact@v5
+        with:
+          name: kdb-replay-under-write-result
+          path: kdb-replay-under-write.json
+          if-no-files-found: warn
+
+  mdb-replay-under-write:
+    name: MongoDB — Replay-Under-Write [${{ matrix.mode }}]
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [peak, durable]
+        include:
+          - {mode: peak,    event_store_mode: 0}
+          - {mode: durable, event_store_mode: 1}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Start MongoDB
+        run: |
+          docker run -d --name mongodb -p 27017:27017 --tmpfs /data/db \
+            mongo:7 mongod --quiet --bind_ip_all --replSet rs0 --wiredTigerCacheSizeGB 0.25
+          for i in $(seq 1 30); do
+            docker exec mongodb mongosh --quiet --eval "db.adminCommand('ping').ok" \
+              mongodb://localhost:27017/admin 2>/dev/null && break || sleep 2
+          done
+          docker exec mongodb mongosh --quiet --eval \
+            "rs.initiate({_id:'rs0',members:[{_id:0,host:'127.0.0.1:27017'}]})"
+          for i in $(seq 1 20); do
+            docker exec mongodb mongosh --quiet --eval \
+              "if (rs.isMaster().ismaster !== true) { throw 'no primary'; }" \
+              2>/dev/null && break || sleep 3
+          done
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            rust-app/target
+          key: bench-${{ runner.os }}-cargo-${{ hashFiles('rust-app/Cargo.lock') }}
+
+      - name: Build
+        run: cargo build --release --manifest-path rust-app/Cargo.toml
+
+      - name: Replay-under-write test
+        run: |
+          DIRECT=1 BACKEND=mongodb EVENT_STORE_MODE=${{ matrix.event_store_mode }} bash tests/13-replay-under-write-test.sh | tee replay-output.log
+          grep '^{' replay-output.log > mdb-replay-under-write-${{ matrix.mode }}.json || true
+
+      - name: Upload result
+        uses: actions/upload-artifact@v5
+        with:
+          name: mdb-replay-under-write-results
+          path: mdb-replay-under-write-*.json
+          if-no-files-found: warn
+
+      - name: Cleanup
+        if: always()
+        run: docker stop mongodb && docker rm mongodb || true
+
+  pg-replay-under-write:
+    name: PostgreSQL — Replay-Under-Write [${{ matrix.mode }}]
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [peak, durable]
+        include:
+          - {mode: peak,    event_store_mode: 0}
+          - {mode: durable, event_store_mode: 1}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Start PostgreSQL
+        run: |
+          docker run -d --name pg \
+            -e POSTGRES_DB=eventbench -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres \
+            -p 5432:5432 --tmpfs /var/lib/postgresql/data \
+            postgres:16 -c fsync=off -c full_page_writes=off -c max_connections=200
+          for i in $(seq 1 30); do
+            docker exec pg pg_isready -U postgres -d eventbench && break || sleep 2
+          done
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            rust-app/target
+          key: bench-${{ runner.os }}-cargo-${{ hashFiles('rust-app/Cargo.lock') }}
+
+      - name: Build
+        run: cargo build --release --manifest-path rust-app/Cargo.toml
+
+      - name: Replay-under-write test
+        run: |
+          DIRECT=1 BACKEND=postgres EVENT_STORE_MODE=${{ matrix.event_store_mode }} bash tests/13-replay-under-write-test.sh | tee replay-output.log
+          grep '^{' replay-output.log > pg-replay-under-write-${{ matrix.mode }}.json || true
+
+      - name: Upload result
+        uses: actions/upload-artifact@v5
+        with:
+          name: pg-replay-under-write-results
+          path: pg-replay-under-write-*.json
           if-no-files-found: warn
 
       - name: Cleanup
@@ -1119,20 +1407,24 @@ jobs:
       - kdb-k8s
       - kdb-rehydrate
       - kdb-failover
+      - kdb-failover-impact
       - kdb-rate-ramp
+      - kdb-replay-under-write
       - mdb-docker
       - mdb-k8s
       - mdb-rehydrate
       - mdb-rate-ramp
+      - mdb-replay-under-write
       - pg-docker
       - pg-k8s
       - pg-rehydrate
       - pg-rate-ramp
+      - pg-replay-under-write
     steps:
       - name: Download benchmark and ramp artifacts
         uses: actions/download-artifact@v5
         with:
-          pattern: "*-bench-*|*-ramp-*"
+          pattern: "*-bench-*|*-ramp-*|*-replay-under-write-*|*-failover-impact-*"
           path: bench-artifacts
           merge-multiple: true
 
@@ -1165,187 +1457,193 @@ jobs:
           PG_RH_PASSED:      ${{ needs.pg-rehydrate.outputs.passed }}
         run: |
           python3 << 'PYEOF'
-          import os
           import json
+          import os
           from pathlib import Path
 
-          def e(v):   return os.getenv(v, '') or 'n/a'
+          def e(v):
+            return os.getenv(v, '') or 'n/a'
+
           def ms(v):
-              val = os.getenv(v, '')
-              if not val: return 'n/a'
-              try: return f'{int(val)/1000:.2f}'
-              except: return 'n/a'
+            val = os.getenv(v, '')
+            if not val:
+              return 'n/a'
+            try:
+              return f'{int(val)/1000:.2f}'
+            except Exception:
+              return 'n/a'
+
           def result(v):
-              val = os.getenv(v, '')
-              return {'True': '✓ PASS', 'False': '✗ FAIL'}.get(val, 'n/a')
+            return {'True': '✓ PASS', 'False': '✗ FAIL'}.get(os.getenv(v, ''), 'n/a')
 
           def ms_num(v):
-              try:
-                  return f'{int(v)/1000:.2f}'
-              except Exception:
-                  return 'n/a'
+            try:
+              return f'{int(v)/1000:.2f}'
+            except Exception:
+              return 'n/a'
 
-          def load_mode_results(base_dir: str):
-              base = Path(base_dir)
-              expected = [
-                'kdb-docker-peak.json',
-                'kdb-docker-durable.json',
-                'kdb-k8s-peak.json',
-                'kdb-k8s-durable.json',
-                  'mdb-docker-peak.json',
-                  'mdb-docker-durable.json',
-                  'mdb-k8s-peak.json',
-                  'mdb-k8s-durable.json',
-                  'pg-docker-peak.json',
-                  'pg-docker-durable.json',
-                  'pg-k8s-peak.json',
-                  'pg-k8s-durable.json',
-              ]
-              missing = [name for name in expected if not (base / name).exists()]
-              if missing:
-                  print('Missing mode benchmark artifacts:', ', '.join(missing))
-                  raise SystemExit(1)
+          def load_jsons(base_dir, file_map):
+            base = Path(base_dir)
+            out = {}
+            for key, name in file_map.items():
+              p = base / name
+              if p.exists():
+                try:
+                  out[key] = json.loads(p.read_text(encoding='utf-8'))
+                except Exception:
+                  pass
+            return out
 
-              data = {}
-              for name in expected:
-                  with (base / name).open('r', encoding='utf-8') as fh:
-                      data[name] = json.load(fh)
-              return data
+          mode_data = load_jsons('bench-artifacts', {
+            'kdb-docker-peak': 'kdb-docker-peak.json',
+            'kdb-docker-durable': 'kdb-docker-durable.json',
+            'kdb-k8s-peak': 'kdb-k8s-peak.json',
+            'kdb-k8s-durable': 'kdb-k8s-durable.json',
+            'mdb-docker-peak': 'mdb-docker-peak.json',
+            'mdb-docker-durable': 'mdb-docker-durable.json',
+            'mdb-k8s-peak': 'mdb-k8s-peak.json',
+            'mdb-k8s-durable': 'mdb-k8s-durable.json',
+            'pg-docker-peak': 'pg-docker-peak.json',
+            'pg-docker-durable': 'pg-docker-durable.json',
+            'pg-k8s-peak': 'pg-k8s-peak.json',
+            'pg-k8s-durable': 'pg-k8s-durable.json',
+          })
 
-          def load_ramp_results(base_dir: str):
-              base = Path(base_dir)
-              ramp_files = {
-                  'kdb': 'kdb-rate-ramp.json',
-                  'mdb-peak': 'mdb-rate-ramp-peak.json',
-                  'mdb-durable': 'mdb-rate-ramp-durable.json',
-                  'pg-peak': 'pg-rate-ramp-peak.json',
-                  'pg-durable': 'pg-rate-ramp-durable.json',
-              }
-              data = {}
-              for name, fname in ramp_files.items():
-                  fpath = base / fname
-                  if fpath.exists():
-                      try:
-                          with fpath.open('r', encoding='utf-8') as fh:
-                              data[name] = json.load(fh)
-                      except:
-                          pass
-              return data
+          ramp_data = load_jsons('bench-artifacts', {
+            'kdb': 'kdb-rate-ramp.json',
+            'mdb-peak': 'mdb-rate-ramp-peak.json',
+            'mdb-durable': 'mdb-rate-ramp-durable.json',
+            'pg-peak': 'pg-rate-ramp-peak.json',
+            'pg-durable': 'pg-rate-ramp-durable.json',
+          })
+
+          replay_data = load_jsons('bench-artifacts', {
+            'kdb': 'kdb-replay-under-write.json',
+            'mdb-peak': 'mdb-replay-under-write-peak.json',
+            'mdb-durable': 'mdb-replay-under-write-durable.json',
+            'pg-peak': 'pg-replay-under-write-peak.json',
+            'pg-durable': 'pg-replay-under-write-durable.json',
+          })
+
+          failover_impact = load_jsons('bench-artifacts', {
+            'kdb': 'kdb-failover-impact.json',
+          })
+
+          def write_mode_rows(f, backend_rows):
+            for env_name, mode_name, key in backend_rows:
+              if key not in mode_data:
+                continue
+              d = mode_data[key]
+              f.write(
+                f'| {env_name} | {mode_name} | {d.get("actual_rate_eps", "n/a")} | '
+                f'{ms_num(d.get("p50_us", "n/a"))} | {ms_num(d.get("p95_us", "n/a"))} | '
+                f'{ms_num(d.get("p99_us", "n/a"))} | {ms_num(d.get("p999_us", "n/a"))} |\\n'
+              )
 
           summary = os.environ.get('GITHUB_STEP_SUMMARY', '/dev/stdout')
-          mode_data = load_mode_results('bench-artifacts')
-          ramp_data = load_ramp_results('bench-artifacts')
-          with open(summary, 'a') as f:
-              f.write('## Benchmark Results\n\n')
-              f.write('> **Conditions:** peak + durable modes · 10 k ev/s target · 30 s · 64 concurrent tasks · ubuntu-22.04\n')
-              f.write('> **Rehydration:** 50 000 events · sequential write then full replay\n')
-              f.write('> **Scale:** 100 k events · CI loopback (no VM bridge)\n\n')
+          with open(summary, 'a', encoding='utf-8') as f:
+            f.write('## Benchmark Results\\n\\n')
+            f.write('> **Conditions:** peak + durable modes · 10 k ev/s target · 30 s · 64 concurrent tasks · ubuntu-22.04\\n')
+            f.write('> **Rehydration:** 50 000 events · sequential write then full replay\\n')
+            f.write('> **Scale:** 100 k events · CI loopback (no VM bridge)\\n\\n')
 
-              # ── KurrentDB ──────────────────────────────────────────────────
-              f.write('### KurrentDB\n\n')
-              f.write('**Sustained Write Benchmark**\n\n')
-              f.write('| Environment | Mode | Rate (ev/s) | p50 (ms) | p95 (ms) | p99 (ms) | p99.9 (ms) |\n')
-              f.write('|-------------|------|------------:|:--------:|:--------:|:--------:|:----------:|\n')
-              f.write(f'| In-memory (MEM_DB) | Peak baseline | {e("KDB_MEMDB_RATE")} | {ms("KDB_MEMDB_P50")} | {ms("KDB_MEMDB_P95")} | {ms("KDB_MEMDB_P99")} | {ms("KDB_MEMDB_P999")} |\n')
-              f.write(f'| Docker (tmpfs) | Peak | {mode_data["kdb-docker-peak.json"]["actual_rate_eps"]} | {ms_num(mode_data["kdb-docker-peak.json"]["p50_us"])} | {ms_num(mode_data["kdb-docker-peak.json"]["p95_us"])} | {ms_num(mode_data["kdb-docker-peak.json"]["p99_us"])} | {ms_num(mode_data["kdb-docker-peak.json"]["p999_us"])} |\n')
-              f.write(f'| Docker (tmpfs) | Durable | {mode_data["kdb-docker-durable.json"]["actual_rate_eps"]} | {ms_num(mode_data["kdb-docker-durable.json"]["p50_us"])} | {ms_num(mode_data["kdb-docker-durable.json"]["p95_us"])} | {ms_num(mode_data["kdb-docker-durable.json"]["p99_us"])} | {ms_num(mode_data["kdb-docker-durable.json"]["p999_us"])} |\n')
-              f.write(f'| Kubernetes k3d (emptyDir Memory) | Peak | {mode_data["kdb-k8s-peak.json"]["actual_rate_eps"]} | {ms_num(mode_data["kdb-k8s-peak.json"]["p50_us"])} | {ms_num(mode_data["kdb-k8s-peak.json"]["p95_us"])} | {ms_num(mode_data["kdb-k8s-peak.json"]["p99_us"])} | {ms_num(mode_data["kdb-k8s-peak.json"]["p999_us"])} |\n')
-              f.write(f'| Kubernetes k3d (emptyDir Memory) | Durable | {mode_data["kdb-k8s-durable.json"]["actual_rate_eps"]} | {ms_num(mode_data["kdb-k8s-durable.json"]["p50_us"])} | {ms_num(mode_data["kdb-k8s-durable.json"]["p95_us"])} | {ms_num(mode_data["kdb-k8s-durable.json"]["p99_us"])} | {ms_num(mode_data["kdb-k8s-durable.json"]["p999_us"])} |\n\n')
+            f.write('### KurrentDB\\n\\n')
+            f.write('**Sustained Write Benchmark**\\n\\n')
+            f.write('| Environment | Mode | Rate (ev/s) | p50 (ms) | p95 (ms) | p99 (ms) | p99.9 (ms) |\\n')
+            f.write('|-------------|------|------------:|:--------:|:--------:|:--------:|:----------:|\\n')
+            f.write(f'| In-memory (MEM_DB) | Peak baseline | {e("KDB_MEMDB_RATE")} | {ms("KDB_MEMDB_P50")} | {ms("KDB_MEMDB_P95")} | {ms("KDB_MEMDB_P99")} | {ms("KDB_MEMDB_P999")} |\\n')
+            write_mode_rows(f, [
+              ('Docker (tmpfs)', 'Peak', 'kdb-docker-peak'),
+              ('Docker (tmpfs)', 'Durable', 'kdb-docker-durable'),
+              ('Kubernetes k3d (emptyDir Memory)', 'Peak', 'kdb-k8s-peak'),
+              ('Kubernetes k3d (emptyDir Memory)', 'Durable', 'kdb-k8s-durable'),
+            ])
+            f.write('\\n')
 
-              f.write('**Rehydration / Replay (50 k events)**\n\n')
-              f.write('| Phase | Duration (ms) | Throughput (ev/s) | Result |\n')
-              f.write('|-------|-------------:|------------------:|:------:|\n')
-              f.write(f'| Write — batched 500 ev/gRPC | {e("KDB_RH_WRITE_MS")} | {e("KDB_RH_WRITE_RATE")} | |\n')
-              f.write(f'| Replay — gRPC server-stream | {e("KDB_RH_REPLAY_MS")} | {e("KDB_RH_REPLAY_RATE")} | {result("KDB_RH_PASSED")} |\n\n')
+            f.write('**Rehydration / Replay (50 k events)**\\n\\n')
+            f.write('| Phase | Duration (ms) | Throughput (ev/s) | Result |\\n')
+            f.write('|-------|-------------:|------------------:|:------:|\\n')
+            f.write(f'| Write — batched 500 ev/gRPC | {e("KDB_RH_WRITE_MS")} | {e("KDB_RH_WRITE_RATE")} | |\\n')
+            f.write(f'| Replay — gRPC server-stream | {e("KDB_RH_REPLAY_MS")} | {e("KDB_RH_REPLAY_RATE")} | {result("KDB_RH_PASSED")} |\\n\\n')
 
-              f.write('**Scale Benchmark — 100 k events (CI, loopback gRPC)**\n\n')
-              f.write('| Metric | Value |\n')
-              f.write('|--------|------:|\n')
-              f.write(f'| Write throughput (ev/s) | {e("KDB_SC_WRITE_EPS")} |\n')
-              f.write(f'| Tail read — last 500 from 100 k (ms) | {e("KDB_SC_TAIL_MS")} |\n')
-              f.write(f'| Full rehydration throughput (ev/s) | {e("KDB_SC_REHY_EPS")} |\n')
-              f.write(f'| Full rehydration elapsed (ms) | {e("KDB_SC_REHY_MS")} |\n\n')
+            f.write('**Scale Benchmark — 100 k events (CI, loopback gRPC)**\\n\\n')
+            f.write('| Metric | Value |\\n')
+            f.write('|--------|------:|\\n')
+            f.write(f'| Write throughput (ev/s) | {e("KDB_SC_WRITE_EPS")} |\\n')
+            f.write(f'| Tail read — last 500 from 100 k (ms) | {e("KDB_SC_TAIL_MS")} |\\n')
+            f.write(f'| Full rehydration throughput (ev/s) | {e("KDB_SC_REHY_EPS")} |\\n')
+            f.write(f'| Full rehydration elapsed (ms) | {e("KDB_SC_REHY_MS")} |\\n\\n')
 
-              f.write('**Node Failover (AC-3)**\n\n')
-              f.write('| Test | Result |\n')
-              f.write('|------|:------:|\n')
-              f.write(f'| 3-node cluster · leader evicted · quorum ≤ 60 s | {result("KDB_FO_PASSED")} |\n\n')
+            f.write('**Node Failover (AC-3)**\\n\\n')
+            f.write('| Test | Result |\\n')
+            f.write('|------|:------:|\\n')
+            f.write(f'| 3-node cluster · leader evicted · quorum ≤ 60 s | {result("KDB_FO_PASSED")} |\\n\\n')
 
-              # ── MongoDB ────────────────────────────────────────────────────
-              f.write('### MongoDB\n\n')
-              f.write('**Sustained Write Benchmark**\n\n')
-              f.write('| Environment | Mode | Rate (ev/s) | p50 (ms) | p95 (ms) | p99 (ms) | p99.9 (ms) |\n')
-              f.write('|-------------|------|------------:|:--------:|:--------:|:--------:|:----------:|\n')
-              f.write(f'| Docker (tmpfs) | Peak | {mode_data["mdb-docker-peak.json"]["actual_rate_eps"]} | {ms_num(mode_data["mdb-docker-peak.json"]["p50_us"])} | {ms_num(mode_data["mdb-docker-peak.json"]["p95_us"])} | {ms_num(mode_data["mdb-docker-peak.json"]["p99_us"])} | {ms_num(mode_data["mdb-docker-peak.json"]["p999_us"])} |\n')
-              f.write(f'| Docker (tmpfs) | Durable | {mode_data["mdb-docker-durable.json"]["actual_rate_eps"]} | {ms_num(mode_data["mdb-docker-durable.json"]["p50_us"])} | {ms_num(mode_data["mdb-docker-durable.json"]["p95_us"])} | {ms_num(mode_data["mdb-docker-durable.json"]["p99_us"])} | {ms_num(mode_data["mdb-docker-durable.json"]["p999_us"])} |\n')
-              f.write(f'| Kubernetes k3d (emptyDir Memory) | Peak | {mode_data["mdb-k8s-peak.json"]["actual_rate_eps"]} | {ms_num(mode_data["mdb-k8s-peak.json"]["p50_us"])} | {ms_num(mode_data["mdb-k8s-peak.json"]["p95_us"])} | {ms_num(mode_data["mdb-k8s-peak.json"]["p99_us"])} | {ms_num(mode_data["mdb-k8s-peak.json"]["p999_us"])} |\n')
-              f.write(f'| Kubernetes k3d (emptyDir Memory) | Durable | {mode_data["mdb-k8s-durable.json"]["actual_rate_eps"]} | {ms_num(mode_data["mdb-k8s-durable.json"]["p50_us"])} | {ms_num(mode_data["mdb-k8s-durable.json"]["p95_us"])} | {ms_num(mode_data["mdb-k8s-durable.json"]["p99_us"])} | {ms_num(mode_data["mdb-k8s-durable.json"]["p999_us"])} |\n\n')
+            f.write('**Short Failover Impact (under load)**\\n\\n')
+            if 'kdb' in failover_impact:
+              d = failover_impact['kdb']
+              f.write('| Metric | Value |\\n')
+              f.write('|--------|------:|\\n')
+              f.write(f'| Pause window (ms) | {d.get("pause_window_ms", "n/a")} |\\n')
+              f.write(f'| Probe error spike (count) | {d.get("error_spike_count", "n/a")} |\\n')
+              f.write(f'| Write error count | {d.get("write_error_count", "n/a")} |\\n')
+              f.write(f'| Recovery time (ms) | {d.get("recovery_time_ms", "n/a")} |\\n')
+              f.write(f'| Baseline p99 (us) | {d.get("baseline_p99_us", "n/a")} |\\n')
+              f.write(f'| Impact p99 (us) | {d.get("impact_p99_us", "n/a")} |\\n')
+              f.write(f'| Tail latency factor | {d.get("tail_latency_factor", "n/a")}x |\\n\\n')
+            else:
+              f.write('_Failover-impact artifact missing._\\n\\n')
 
-              f.write('**Rehydration / Replay (50 k events)**\n\n')
-              f.write('| Phase | Duration (ms) | Throughput (ev/s) | Result |\n')
-              f.write('|-------|-------------:|------------------:|:------:|\n')
-              f.write(f'| Write — one insertOne() per event | {e("MDB_RH_WRITE_MS")} | {e("MDB_RH_WRITE_RATE")} | |\n')
-              f.write(f'| Replay — bulk cursor (16 MB batch) | {e("MDB_RH_REPLAY_MS")} | {e("MDB_RH_REPLAY_RATE")} | {result("MDB_RH_PASSED")} |\n\n')
+            f.write('### MongoDB\\n\\n')
+            f.write('**Sustained Write Benchmark**\\n\\n')
+            f.write('| Environment | Mode | Rate (ev/s) | p50 (ms) | p95 (ms) | p99 (ms) | p99.9 (ms) |\\n')
+            f.write('|-------------|------|------------:|:--------:|:--------:|:--------:|:----------:|\\n')
+            write_mode_rows(f, [
+              ('Docker (tmpfs)', 'Peak', 'mdb-docker-peak'),
+              ('Docker (tmpfs)', 'Durable', 'mdb-docker-durable'),
+              ('Kubernetes k3d (emptyDir Memory)', 'Peak', 'mdb-k8s-peak'),
+              ('Kubernetes k3d (emptyDir Memory)', 'Durable', 'mdb-k8s-durable'),
+            ])
+            f.write('\\n')
 
-              # ── PostgreSQL ─────────────────────────────────────────────────
-              f.write('### PostgreSQL\n\n')
-              f.write('**Sustained Write Benchmark**\n\n')
-              f.write('| Environment | Mode | Rate (ev/s) | p50 (ms) | p95 (ms) | p99 (ms) | p99.9 (ms) |\n')
-              f.write('|-------------|------|------------:|:--------:|:--------:|:--------:|:----------:|\n')
-              f.write(f'| Docker (tmpfs · fsync=off) | Peak | {mode_data["pg-docker-peak.json"]["actual_rate_eps"]} | {ms_num(mode_data["pg-docker-peak.json"]["p50_us"])} | {ms_num(mode_data["pg-docker-peak.json"]["p95_us"])} | {ms_num(mode_data["pg-docker-peak.json"]["p99_us"])} | {ms_num(mode_data["pg-docker-peak.json"]["p999_us"])} |\n')
-              f.write(f'| Docker (tmpfs · fsync=off) | Durable | {mode_data["pg-docker-durable.json"]["actual_rate_eps"]} | {ms_num(mode_data["pg-docker-durable.json"]["p50_us"])} | {ms_num(mode_data["pg-docker-durable.json"]["p95_us"])} | {ms_num(mode_data["pg-docker-durable.json"]["p99_us"])} | {ms_num(mode_data["pg-docker-durable.json"]["p999_us"])} |\n')
-              f.write(f'| Kubernetes k3d (emptyDir Memory) | Peak | {mode_data["pg-k8s-peak.json"]["actual_rate_eps"]} | {ms_num(mode_data["pg-k8s-peak.json"]["p50_us"])} | {ms_num(mode_data["pg-k8s-peak.json"]["p95_us"])} | {ms_num(mode_data["pg-k8s-peak.json"]["p99_us"])} | {ms_num(mode_data["pg-k8s-peak.json"]["p999_us"])} |\n')
-              f.write(f'| Kubernetes k3d (emptyDir Memory) | Durable | {mode_data["pg-k8s-durable.json"]["actual_rate_eps"]} | {ms_num(mode_data["pg-k8s-durable.json"]["p50_us"])} | {ms_num(mode_data["pg-k8s-durable.json"]["p95_us"])} | {ms_num(mode_data["pg-k8s-durable.json"]["p99_us"])} | {ms_num(mode_data["pg-k8s-durable.json"]["p999_us"])} |\n\n')
+            f.write('### PostgreSQL\\n\\n')
+            f.write('**Sustained Write Benchmark**\\n\\n')
+            f.write('| Environment | Mode | Rate (ev/s) | p50 (ms) | p95 (ms) | p99 (ms) | p99.9 (ms) |\\n')
+            f.write('|-------------|------|------------:|:--------:|:--------:|:--------:|:----------:|\\n')
+            write_mode_rows(f, [
+              ('Docker (tmpfs · fsync=off)', 'Peak', 'pg-docker-peak'),
+              ('Docker (tmpfs · fsync=off)', 'Durable', 'pg-docker-durable'),
+              ('Kubernetes k3d (emptyDir Memory)', 'Peak', 'pg-k8s-peak'),
+              ('Kubernetes k3d (emptyDir Memory)', 'Durable', 'pg-k8s-durable'),
+            ])
+            f.write('\\n')
 
-              f.write('**Rehydration / Replay (50 k events)**\n\n')
-              f.write('| Phase | Duration (ms) | Throughput (ev/s) | Result |\n')
-              f.write('|-------|-------------:|------------------:|:------:|\n')
-              f.write(f'| Write — one INSERT per event | {e("PG_RH_WRITE_MS")} | {e("PG_RH_WRITE_RATE")} | |\n')
-              f.write(f'| Replay — SELECT … ORDER BY stream_version | {e("PG_RH_REPLAY_MS")} | {e("PG_RH_REPLAY_RATE")} | {result("PG_RH_PASSED")} |\n\n')
+            f.write('### Rate Ramp — Knee-Point Analysis\\n\\n')
+            if ramp_data:
+              for key, label in [('kdb', 'KurrentDB'), ('mdb-peak', 'MongoDB Peak'), ('mdb-durable', 'MongoDB Durable'), ('pg-peak', 'PostgreSQL Peak'), ('pg-durable', 'PostgreSQL Durable')]:
+                if key not in ramp_data:
+                  continue
+                d = ramp_data[key]
+                if d.get('knee_detected'):
+                  f.write(f'- **{label}:** knee {d.get("knee_rate_eps", "n/a")} ev/s, p99 {d.get("knee_p99_us", "n/a")} us, jump {d.get("knee_jump", "n/a")}x\\n')
+                else:
+                  f.write(f'- **{label}:** no knee detected in tested range\\n')
+              f.write('\\n')
+            else:
+              f.write('_Rate ramp tests did not produce artifacts._\\n\\n')
 
-              # ── Rate Ramp Results ──────────────────────────────────────────
-              f.write('### Rate Ramp — Knee-Point Analysis\n\n')
-              f.write('Automated detection of latency explosion threshold (p99 jump ≥ 1.8x + absolute ≥ 2ms).\n\n')
-              
-              if ramp_data:
-                  f.write('**KurrentDB**\n\n')
-                  if 'kdb' in ramp_data:
-                      kdb = ramp_data['kdb']
-                      if kdb.get('knee_detected'):
-                          f.write(f'- **Knee Point:** {kdb.get("knee_rate_eps", "n/a")} ev/s\n')
-                          f.write(f'- **p99 @ knee:** {kdb.get("knee_p99_us", "n/a")} µs\n')
-                          f.write(f'- **Jump ratio:** {kdb.get("knee_jump", "n/a")}x\n\n')
-                      else:
-                          f.write('- No knee detected within tested rate range.\n\n')
-                  else:
-                      f.write('- _Test did not complete or was skipped._\n\n')
+            f.write('### Replay-Under-Write — Latency Regression\\n\\n')
+            if replay_data:
+              for key, label in [('kdb', 'KurrentDB'), ('mdb-peak', 'MongoDB Peak'), ('mdb-durable', 'MongoDB Durable'), ('pg-peak', 'PostgreSQL Peak'), ('pg-durable', 'PostgreSQL Durable')]:
+                if key not in replay_data:
+                  continue
+                d = replay_data[key]
+                f.write(f'- **{label}:** baseline {d.get("baseline_p99_us", "n/a")} us -> concurrent {d.get("concurrent_p99_us", "n/a")} us ({d.get("regression_factor", "n/a")}x)\\n')
+              f.write('\\n')
+            else:
+              f.write('_Replay-under-write tests did not produce artifacts._\\n\\n')
 
-                  f.write('**MongoDB**\n\n')
-                  for mode in ['peak', 'durable']:
-                      key = f'mdb-{mode}'
-                      if key in ramp_data:
-                          mdb = ramp_data[key]
-                          f.write(f'- **{mode.capitalize()} mode:** ')
-                          if mdb.get('knee_detected'):
-                              f.write(f'{mdb.get("knee_rate_eps", "n/a")} ev/s (p99: {mdb.get("knee_p99_us", "n/a")} µs, jump: {mdb.get("knee_jump", "n/a")}x)\n')
-                          else:
-                              f.write('No knee detected.\n')
-              
-                  f.write('\n**PostgreSQL**\n\n')
-                  for mode in ['peak', 'durable']:
-                      key = f'pg-{mode}'
-                      if key in ramp_data:
-                          pg = ramp_data[key]
-                          f.write(f'- **{mode.capitalize()} mode:** ')
-                          if pg.get('knee_detected'):
-                              f.write(f'{pg.get("knee_rate_eps", "n/a")} ev/s (p99: {pg.get("knee_p99_us", "n/a")} µs, jump: {pg.get("knee_jump", "n/a")}x)\n')
-                          else:
-                              f.write('No knee detected.\n')
-                  f.write('\n')
-              else:
-                  f.write('_Rate ramp tests did not produce artifacts._\n\n')
-
-              f.write('---\n')
-              f.write('_All backends use RAM (tmpfs/emptyDir). Numbers reflect protocol + semantic overhead, not production throughput._\n')
-              f.write('_K8s latency is higher than Docker due to the port-forward loopback tunnel._\n')
+            f.write('---\\n')
+            f.write('_All backends use RAM (tmpfs/emptyDir). Numbers reflect protocol + semantic overhead, not production throughput._\\n')
+            f.write('_K8s latency is higher than Docker due to the port-forward loopback tunnel._\\n')
           PYEOF
