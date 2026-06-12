@@ -1057,7 +1057,7 @@ jobs:
       - name: Upload result
         uses: actions/upload-artifact@v6
         with:
-          name: mdb-replay-under-write-results
+          name: mdb-replay-under-write-${{ matrix.mode }}
           path: mdb-replay-under-write-*.json
           if-no-files-found: warn
 
@@ -1391,7 +1391,7 @@ jobs:
       - name: Upload result
         uses: actions/upload-artifact@v6
         with:
-          name: pg-replay-under-write-results
+          name: pg-replay-under-write-${{ matrix.mode }}
           path: pg-replay-under-write-*.json
           if-no-files-found: warn
 
@@ -1441,13 +1441,14 @@ jobs:
           fi
 
           mkdir -p bench-artifacts
+          rm -rf bench-artifacts/*
 
           # Artifact indexing can lag a little; retry listing a few times.
           ARTIFACT_NAMES=""
           for attempt in 1 2 3 4 5 6; do
             ARTIFACT_NAMES=$(gh api \
               "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/artifacts?per_page=100" \
-              --jq '.artifacts[] | select(.expired==false) | .name' || true)
+              --jq '.artifacts[] | select(.expired==false) | .name' | sort -u || true)
             if [ -n "${ARTIFACT_NAMES}" ]; then
               break
             fi
@@ -1468,7 +1469,7 @@ jobs:
                 if gh run download "${GITHUB_RUN_ID}" \
                   --repo "${GITHUB_REPOSITORY}" \
                   --name "${artifact}" \
-                  --dir bench-artifacts; then
+                  --dir "bench-artifacts/${artifact}"; then
                   ok=1
                   break
                 fi

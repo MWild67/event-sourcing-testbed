@@ -39,23 +39,20 @@ The Rust benchmark harness drives each backend at 10 000 events/second and measu
 
 ### What is being measured
 
-The CI workflow runs **7 benchmark scenarios** on every push to `main`.
+The CI workflow runs **18 benchmark/reliability scenarios** on every push to `main`,
+then a report job aggregates all artifacts.
 Each scenario runs one backend in isolation on a fresh ubuntu-22.04 runner (2 vCPU, 7 GB RAM).
 
-| # | Scenario | Backend | Deployment | Storage |
-|---|----------|---------|------------|---------|
-| 1 | `bench-kurrentdb-memdb` | KurrentDB | Docker (native) | MemDb flag — pure in-memory, zero I/O |
-| 2 | `bench-kurrentdb` | KurrentDB | Docker | `--tmpfs` (RAM) + `UNSAFE_DISABLE_FLUSH_TO_DISK=true` |
-| 3 | `bench-kurrentdb-k8s` | KurrentDB | k3d (single-node) | `emptyDir Memory` (RAM) + `UNSAFE_DISABLE_FLUSH_TO_DISK=true` |
-| 4 | `bench-mongodb` | MongoDB | Docker | `--tmpfs` (RAM) + `j:true` write concern |
-| 5 | `bench-mongodb-k8s` | MongoDB | k3d (single-node) | `emptyDir Memory` (RAM) + `j:true` write concern |
-| 6 | `bench-postgres` | PostgreSQL | Docker | `--tmpfs` (RAM) + `fsync=off` |
-| 7 | `bench-postgres-k8s` | PostgreSQL | k3d (single-node) | `emptyDir Memory` (RAM) + `fsync=off` |
+| Backend | Scenarios |
+|---|---|
+| KurrentDB | `kdb-memdb`, `kdb-docker`, `kdb-k8s`, `kdb-rehydrate`, `kdb-failover`, `kdb-failover-impact`, `kdb-rate-ramp`, `kdb-replay-under-write` |
+| MongoDB | `mdb-docker`, `mdb-k8s`, `mdb-rehydrate`, `mdb-rate-ramp`, `mdb-replay-under-write` |
+| PostgreSQL | `pg-docker`, `pg-k8s`, `pg-rehydrate`, `pg-rate-ramp`, `pg-replay-under-write` |
 
-Scenario 1 is the theoretical maximum — KurrentDB with no persistence at all.  
-Scenarios 2, 4, 6 (Docker) and 3, 5, 7 (k8s) each run the real database server with
-persistence enabled.  The difference between a Docker and its k8s counterpart is purely
-deployment overhead: k8s pod networking and the port-forward loopback tunnel.
+`kdb-memdb` is the theoretical maximum — KurrentDB with no persistence at all.  
+The Docker and k8s throughput jobs (`*-docker`, `*-k8s`) run the real database server
+with persistence enabled. The difference between a Docker and its k8s counterpart is
+primarily deployment overhead: k8s pod networking and the port-forward loopback tunnel.
 
 All 6 "real DB" scenarios share the same storage type (RAM-backed tmpfs) and the same
 durability level (OS-buffer, no fsync) so that storage I/O is never a variable — only
@@ -180,21 +177,33 @@ summary table.
 
 ## CI Pipeline
 
-The GitHub Actions workflow (`.github/workflows/bench.yml`) runs **8 jobs** on every push
-to `main`: 7 benchmark jobs + 1 report job.  All use `ubuntu-22.04` (2 vCPU, 7 GB RAM) runners.
+The GitHub Actions workflow (`.github/workflows/bench.yml`) runs **19 jobs** on every push
+to `main`: 18 benchmark/reliability jobs + 1 report job. All use `ubuntu-22.04`
+(2 vCPU, 7 GB RAM) runners.
 
 ### Job summary
 
-| Job | Backend | Deploy | Storage | Durability |
-|-----|---------|--------|---------|------------|
-| `bench-kurrentdb-memdb` | KurrentDB | Docker (native) | RAM (MemDb flag) | none — no I/O at all |
-| `bench-kurrentdb` | KurrentDB | Docker | tmpfs | OS-buffer, no fsync |
-| `bench-kurrentdb-k8s` | KurrentDB | k3d single-node | emptyDir Memory | OS-buffer, no fsync |
-| `bench-mongodb` | MongoDB | Docker | tmpfs | OS-buffer, no fsync |
-| `bench-mongodb-k8s` | MongoDB | k3d single-node | emptyDir Memory | OS-buffer, no fsync |
-| `bench-postgres` | PostgreSQL | Docker | tmpfs | OS-buffer, no fsync |
-| `bench-postgres-k8s` | PostgreSQL | k3d single-node | emptyDir Memory | OS-buffer, no fsync |
-| `report` | — | — | — | Reads all 6 bench outputs; writes two comparison tables to run summary |
+| Job | Backend | Category | Notes |
+|-----|---------|----------|-------|
+| `kdb-memdb` | KurrentDB | Throughput baseline | In-memory MEM_DB ceiling |
+| `kdb-docker` | KurrentDB | Throughput | Docker tmpfs, peak+durable modes |
+| `kdb-k8s` | KurrentDB | Throughput | k3d single-node, peak+durable modes |
+| `kdb-rehydrate` | KurrentDB | Rehydration/scale | Replay + 100k scale metrics |
+| `kdb-failover` | KurrentDB | Reliability | 3-node failover recovery |
+| `kdb-failover-impact` | KurrentDB | Reliability under load | Pause/error/recovery/tail impact |
+| `kdb-rate-ramp` | KurrentDB | Scenario | Knee-point discovery |
+| `kdb-replay-under-write` | KurrentDB | Scenario | Write p99 regression under replay |
+| `mdb-docker` | MongoDB | Throughput | Docker tmpfs, peak+durable modes |
+| `mdb-k8s` | MongoDB | Throughput | k3d single-node, peak+durable modes |
+| `mdb-rehydrate` | MongoDB | Rehydration | Replay metrics |
+| `mdb-rate-ramp` | MongoDB | Scenario | Peak+durable ramp in one job |
+| `mdb-replay-under-write` | MongoDB | Scenario | Peak+durable regression in one job |
+| `pg-docker` | PostgreSQL | Throughput | Docker tmpfs, peak+durable modes |
+| `pg-k8s` | PostgreSQL | Throughput | k3d single-node, peak+durable modes |
+| `pg-rehydrate` | PostgreSQL | Rehydration | Replay metrics |
+| `pg-rate-ramp` | PostgreSQL | Scenario | Peak+durable ramp in one job |
+| `pg-replay-under-write` | PostgreSQL | Scenario | Peak+durable regression in one job |
+| `report` | — | Aggregation | Downloads artifacts and writes combined summary |
 
 ### How the Docker benchmark jobs work
 
@@ -212,14 +221,13 @@ The k8s jobs follow the same parse-and-output pattern after the benchmark step.
 
 ### The `report` job
 
-`report` runs with `if: always()` so it executes even if a benchmark fails.
-It uses `needs` on all six bench jobs and consumes their `outputs` to build
-**two side-by-side comparison tables** written to `$GITHUB_STEP_SUMMARY`:
+`report` runs with `if: always()` so it executes even if upstream jobs fail.
+It consumes `needs` outputs plus downloaded JSON artifacts to build one combined
+summary with sections for throughput, rehydration, failover, failover-impact,
+rate-ramp, and replay-under-write regression.
 
-- **Docker Benchmark Comparison** — scenarios 2, 4, 6 (pure semantic overhead, no deployment overhead)
-- **Kubernetes Benchmark Comparison** — scenarios 3, 5, 7 (same durability, adds k8s pod networking + port-forward overhead)
-
-If a job was skipped or failed, its cells show `n/a`.
+If a job was skipped/failed or an artifact is missing, the corresponding section
+shows `n/a` or an explicit missing-artifact message.
 
 Example output:
 
@@ -412,12 +420,21 @@ event-sourcing-testbed/
     ├── 04-monitoring-check.sh       # Prometheus targets + Grafana dashboard (K8s only)
     ├── 05-mongodb-stress-test.sh    # MongoDB throughput benchmark
     ├── 06-rehydration-replay-test.sh# Event rehydration/replay (KurrentDB, MongoDB, PG)
-    └── 07-postgres-stress-test.sh   # PostgreSQL throughput benchmark
+    ├── 07-postgres-stress-test.sh   # PostgreSQL throughput benchmark
+    ├── 08-hot-cache-bench.sh        # Hot-tail cache benchmark
+    ├── 09-projection-bench.sh       # Projection/subscription-lag benchmark
+    ├── 10-search-bench.sh           # Search/index projection benchmark
+    ├── 11-scale-bench.sh            # Scale benchmark
+    ├── 12-rate-ramp-test.sh         # Rate-ramp knee-point test
+    ├── 13-replay-under-write-test.sh# Replay-under-write regression test
+    └── 14-failover-impact-test.sh   # Short failover-impact under active load
 ```
 
 ---
 
 ## Tests
+
+### Test Coverage Matrix (01-14)
 
 Run core tests with:
 
