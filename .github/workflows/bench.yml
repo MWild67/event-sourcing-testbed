@@ -462,14 +462,12 @@ jobs:
   # ════════════════════════════════════════════════════════════════════════════
 
   mdb-docker:
-    name: MongoDB — Docker (tmpfs)
+    name: MongoDB — Docker (tmpfs) [${{ matrix.mode }}]
     runs-on: ubuntu-22.04
-    outputs:
-      rate:    ${{ steps.bench.outputs.rate }}
-      p50_us:  ${{ steps.bench.outputs.p50_us }}
-      p95_us:  ${{ steps.bench.outputs.p95_us }}
-      p99_us:  ${{ steps.bench.outputs.p99_us }}
-      p999_us: ${{ steps.bench.outputs.p999_us }}
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [peak, durable]
     steps:
       - uses: actions/checkout@v6
 
@@ -507,10 +505,16 @@ jobs:
       - name: Benchmark
         id: bench
         run: |
+          MODE_FLAG=""
+          if [ "${{ matrix.mode }}" = "durable" ]; then
+            MODE_FLAG="--event-store-mode"
+          fi
+
           RESULT=$(rust-app/target/release/testbed \
             --mongodb-url "mongodb://localhost:27017" \
-            mongo-bench --target-rate 10000 --concurrency 64 --batch-size 1 --duration-secs 30 --event-store-mode --json)
+            mongo-bench --target-rate 10000 --concurrency 64 --batch-size 1 --duration-secs 30 ${MODE_FLAG} --json)
           echo "$RESULT"
+          echo "$RESULT" > "mdb-docker-${{ matrix.mode }}.json"
           echo "rate=$(echo    "$RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(round(d['actual_rate_eps'],1))")" >> "$GITHUB_OUTPUT"
           echo "p50_us=$(echo  "$RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['p50_us'])")"  >> "$GITHUB_OUTPUT"
           echo "p95_us=$(echo  "$RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['p95_us'])")"  >> "$GITHUB_OUTPUT"
@@ -518,10 +522,18 @@ jobs:
           echo "p999_us=$(echo "$RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['p999_us'])")" >> "$GITHUB_OUTPUT"
 
       - name: Validate event-store features
+        if: ${{ matrix.mode == 'durable' }}
         run: |
           rust-app/target/release/testbed \
             --mongodb-url "mongodb://localhost:27017/?replicaSet=rs0" \
             mongo-event-store-demo --database eventstoredemo --events 5
+
+      - name: Upload benchmark artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mdb-docker-bench-${{ matrix.mode }}
+          path: mdb-docker-${{ matrix.mode }}.json
+          if-no-files-found: error
 
       - name: Dump Docker logs on failure
         if: failure()
@@ -529,14 +541,12 @@ jobs:
 
   # ── MongoDB k8s benchmark ─────────────────────────────────────────────────
   mdb-k8s:
-    name: MongoDB — Kubernetes (single-node replica set)
+    name: MongoDB — Kubernetes (single-node replica set) [${{ matrix.mode }}]
     runs-on: ubuntu-22.04
-    outputs:
-      rate:    ${{ steps.bench.outputs.rate }}
-      p50_us:  ${{ steps.bench.outputs.p50_us }}
-      p95_us:  ${{ steps.bench.outputs.p95_us }}
-      p99_us:  ${{ steps.bench.outputs.p99_us }}
-      p999_us: ${{ steps.bench.outputs.p999_us }}
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [peak, durable]
     steps:
       - uses: actions/checkout@v6
 
@@ -587,10 +597,16 @@ jobs:
       - name: Benchmark
         id: bench
         run: |
+          MODE_FLAG=""
+          if [ "${{ matrix.mode }}" = "durable" ]; then
+            MODE_FLAG="--event-store-mode"
+          fi
+
           RESULT=$(rust-app/target/release/testbed \
             --mongodb-url "mongodb://localhost:27017" \
-            mongo-bench --target-rate 10000 --concurrency 64 --batch-size 1 --duration-secs 30 --event-store-mode --json)
+            mongo-bench --target-rate 10000 --concurrency 64 --batch-size 1 --duration-secs 30 ${MODE_FLAG} --json)
           echo "$RESULT"
+          echo "$RESULT" > "mdb-k8s-${{ matrix.mode }}.json"
           echo "rate=$(echo    "$RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(round(d['actual_rate_eps'],1))")" >> "$GITHUB_OUTPUT"
           echo "p50_us=$(echo  "$RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['p50_us'])")"  >> "$GITHUB_OUTPUT"
           echo "p95_us=$(echo  "$RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['p95_us'])")"  >> "$GITHUB_OUTPUT"
@@ -598,10 +614,18 @@ jobs:
           echo "p999_us=$(echo "$RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['p999_us'])")" >> "$GITHUB_OUTPUT"
 
       - name: Validate event-store features
+        if: ${{ matrix.mode == 'durable' }}
         run: |
           rust-app/target/release/testbed \
             --mongodb-url "mongodb://localhost:27017/?replicaSet=rs0" \
             mongo-event-store-demo --database eventstoredemo --events 5
+
+      - name: Upload benchmark artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mdb-k8s-bench-${{ matrix.mode }}
+          path: mdb-k8s-${{ matrix.mode }}.json
+          if-no-files-found: error
 
       - name: Stop port-forward
         if: always()
@@ -683,14 +707,12 @@ jobs:
   # ════════════════════════════════════════════════════════════════════════════
 
   pg-docker:
-    name: PostgreSQL — Docker (tmpfs)
+    name: PostgreSQL — Docker (tmpfs) [${{ matrix.mode }}]
     runs-on: ubuntu-22.04
-    outputs:
-      rate:    ${{ steps.bench.outputs.rate }}
-      p50_us:  ${{ steps.bench.outputs.p50_us }}
-      p95_us:  ${{ steps.bench.outputs.p95_us }}
-      p99_us:  ${{ steps.bench.outputs.p99_us }}
-      p999_us: ${{ steps.bench.outputs.p999_us }}
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [peak, durable]
     steps:
       - uses: actions/checkout@v6
 
@@ -719,10 +741,16 @@ jobs:
       - name: Benchmark
         id: bench
         run: |
+          MODE_FLAG=""
+          if [ "${{ matrix.mode }}" = "durable" ]; then
+            MODE_FLAG="--event-store-mode"
+          fi
+
           RESULT=$(rust-app/target/release/testbed \
             --postgres-url "postgres://postgres:postgres@localhost:5432/eventbench" \
-            pg-bench --target-rate 10000 --concurrency 64 --batch-size 1 --duration-secs 30 --event-store-mode --json)
+            pg-bench --target-rate 10000 --concurrency 64 --batch-size 1 --duration-secs 30 ${MODE_FLAG} --json)
           echo "$RESULT"
+          echo "$RESULT" > "pg-docker-${{ matrix.mode }}.json"
           echo "rate=$(echo    "$RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(round(d['actual_rate_eps'],1))")" >> "$GITHUB_OUTPUT"
           echo "p50_us=$(echo  "$RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['p50_us'])")"  >> "$GITHUB_OUTPUT"
           echo "p95_us=$(echo  "$RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['p95_us'])")"  >> "$GITHUB_OUTPUT"
@@ -730,10 +758,18 @@ jobs:
           echo "p999_us=$(echo "$RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['p999_us'])")" >> "$GITHUB_OUTPUT"
 
       - name: Validate event-store features
+        if: ${{ matrix.mode == 'durable' }}
         run: |
           rust-app/target/release/testbed \
             --postgres-url "postgres://postgres:postgres@localhost:5432/eventbench" \
             pg-event-store-demo --events 5
+
+      - name: Upload benchmark artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pg-docker-bench-${{ matrix.mode }}
+          path: pg-docker-${{ matrix.mode }}.json
+          if-no-files-found: error
 
       - name: Stop PostgreSQL
         if: always()
@@ -741,14 +777,12 @@ jobs:
 
   # ── PostgreSQL k8s benchmark ──────────────────────────────────────────────
   pg-k8s:
-    name: PostgreSQL — Kubernetes (single-node)
+    name: PostgreSQL — Kubernetes (single-node) [${{ matrix.mode }}]
     runs-on: ubuntu-22.04
-    outputs:
-      rate:    ${{ steps.bench.outputs.rate }}
-      p50_us:  ${{ steps.bench.outputs.p50_us }}
-      p95_us:  ${{ steps.bench.outputs.p95_us }}
-      p99_us:  ${{ steps.bench.outputs.p99_us }}
-      p999_us: ${{ steps.bench.outputs.p999_us }}
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [peak, durable]
     steps:
       - uses: actions/checkout@v6
 
@@ -799,10 +833,16 @@ jobs:
       - name: Benchmark
         id: bench
         run: |
+          MODE_FLAG=""
+          if [ "${{ matrix.mode }}" = "durable" ]; then
+            MODE_FLAG="--event-store-mode"
+          fi
+
           RESULT=$(rust-app/target/release/testbed \
             --postgres-url "postgres://postgres:postgres@localhost:5432/eventbench" \
-            pg-bench --target-rate 10000 --concurrency 64 --batch-size 1 --duration-secs 30 --event-store-mode --json)
+            pg-bench --target-rate 10000 --concurrency 64 --batch-size 1 --duration-secs 30 ${MODE_FLAG} --json)
           echo "$RESULT"
+          echo "$RESULT" > "pg-k8s-${{ matrix.mode }}.json"
           echo "rate=$(echo    "$RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(round(d['actual_rate_eps'],1))")" >> "$GITHUB_OUTPUT"
           echo "p50_us=$(echo  "$RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['p50_us'])")"  >> "$GITHUB_OUTPUT"
           echo "p95_us=$(echo  "$RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['p95_us'])")"  >> "$GITHUB_OUTPUT"
@@ -810,10 +850,18 @@ jobs:
           echo "p999_us=$(echo "$RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['p999_us'])")" >> "$GITHUB_OUTPUT"
 
       - name: Validate event-store features
+        if: ${{ matrix.mode == 'durable' }}
         run: |
           rust-app/target/release/testbed \
             --postgres-url "postgres://postgres:postgres@localhost:5432/eventbench" \
             pg-event-store-demo --events 5
+
+      - name: Upload benchmark artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pg-k8s-bench-${{ matrix.mode }}
+          path: pg-k8s-${{ matrix.mode }}.json
+          if-no-files-found: error
 
       - name: Stop port-forward
         if: always()
@@ -905,6 +953,13 @@ jobs:
       - pg-k8s
       - pg-rehydrate
     steps:
+      - name: Download mode benchmark artifacts
+        uses: actions/download-artifact@v5
+        with:
+          pattern: "*-bench-*"
+          path: bench-artifacts
+          merge-multiple: true
+
       - name: Generate combined summary
         env:
           KDB_MEMDB_RATE:    ${{ needs.kdb-memdb.outputs.rate }}
@@ -932,31 +987,11 @@ jobs:
           KDB_SC_REHY_EPS:   ${{ needs.kdb-rehydrate.outputs.sc_rehydrate_eps }}
           KDB_SC_REHY_MS:    ${{ needs.kdb-rehydrate.outputs.sc_rehydrate_ms }}
           KDB_FO_PASSED:     ${{ needs.kdb-failover.outputs.passed }}
-          MDB_DOCKER_RATE:   ${{ needs.mdb-docker.outputs.rate }}
-          MDB_DOCKER_P50:    ${{ needs.mdb-docker.outputs.p50_us }}
-          MDB_DOCKER_P95:    ${{ needs.mdb-docker.outputs.p95_us }}
-          MDB_DOCKER_P99:    ${{ needs.mdb-docker.outputs.p99_us }}
-          MDB_DOCKER_P999:   ${{ needs.mdb-docker.outputs.p999_us }}
-          MDB_K8S_RATE:      ${{ needs.mdb-k8s.outputs.rate }}
-          MDB_K8S_P50:       ${{ needs.mdb-k8s.outputs.p50_us }}
-          MDB_K8S_P95:       ${{ needs.mdb-k8s.outputs.p95_us }}
-          MDB_K8S_P99:       ${{ needs.mdb-k8s.outputs.p99_us }}
-          MDB_K8S_P999:      ${{ needs.mdb-k8s.outputs.p999_us }}
           MDB_RH_WRITE_MS:   ${{ needs.mdb-rehydrate.outputs.write_ms }}
           MDB_RH_REPLAY_MS:  ${{ needs.mdb-rehydrate.outputs.replay_ms }}
           MDB_RH_WRITE_RATE: ${{ needs.mdb-rehydrate.outputs.write_rate }}
           MDB_RH_REPLAY_RATE: ${{ needs.mdb-rehydrate.outputs.replay_rate }}
           MDB_RH_PASSED:     ${{ needs.mdb-rehydrate.outputs.passed }}
-          PG_DOCKER_RATE:    ${{ needs.pg-docker.outputs.rate }}
-          PG_DOCKER_P50:     ${{ needs.pg-docker.outputs.p50_us }}
-          PG_DOCKER_P95:     ${{ needs.pg-docker.outputs.p95_us }}
-          PG_DOCKER_P99:     ${{ needs.pg-docker.outputs.p99_us }}
-          PG_DOCKER_P999:    ${{ needs.pg-docker.outputs.p999_us }}
-          PG_K8S_RATE:       ${{ needs.pg-k8s.outputs.rate }}
-          PG_K8S_P50:        ${{ needs.pg-k8s.outputs.p50_us }}
-          PG_K8S_P95:        ${{ needs.pg-k8s.outputs.p95_us }}
-          PG_K8S_P99:        ${{ needs.pg-k8s.outputs.p99_us }}
-          PG_K8S_P999:       ${{ needs.pg-k8s.outputs.p999_us }}
           PG_RH_WRITE_MS:    ${{ needs.pg-rehydrate.outputs.write_ms }}
           PG_RH_REPLAY_MS:   ${{ needs.pg-rehydrate.outputs.replay_ms }}
           PG_RH_WRITE_RATE:  ${{ needs.pg-rehydrate.outputs.write_rate }}
@@ -965,6 +1000,8 @@ jobs:
         run: |
           python3 << 'PYEOF'
           import os
+          import json
+          from pathlib import Path
 
           def e(v):   return os.getenv(v, '') or 'n/a'
           def ms(v):
@@ -976,10 +1013,40 @@ jobs:
               val = os.getenv(v, '')
               return {'True': '✓ PASS', 'False': '✗ FAIL'}.get(val, 'n/a')
 
+          def ms_num(v):
+              try:
+                  return f'{int(v)/1000:.2f}'
+              except Exception:
+                  return 'n/a'
+
+          def load_mode_results(base_dir: str):
+              base = Path(base_dir)
+              expected = [
+                  'mdb-docker-peak.json',
+                  'mdb-docker-durable.json',
+                  'mdb-k8s-peak.json',
+                  'mdb-k8s-durable.json',
+                  'pg-docker-peak.json',
+                  'pg-docker-durable.json',
+                  'pg-k8s-peak.json',
+                  'pg-k8s-durable.json',
+              ]
+              missing = [name for name in expected if not (base / name).exists()]
+              if missing:
+                  print('Missing mode benchmark artifacts:', ', '.join(missing))
+                  raise SystemExit(1)
+
+              data = {}
+              for name in expected:
+                  with (base / name).open('r', encoding='utf-8') as fh:
+                      data[name] = json.load(fh)
+              return data
+
           summary = os.environ.get('GITHUB_STEP_SUMMARY', '/dev/stdout')
+          mode_data = load_mode_results('bench-artifacts')
           with open(summary, 'a') as f:
               f.write('## Benchmark Results\n\n')
-              f.write('> **Conditions:** event-store mode · 10 k ev/s target · 30 s · 64 concurrent tasks · ubuntu-22.04\n')
+              f.write('> **Conditions:** peak + durable modes · 10 k ev/s target · 30 s · 64 concurrent tasks · ubuntu-22.04\n')
               f.write('> **Rehydration:** 50 000 events · sequential write then full replay\n')
               f.write('> **Scale:** 100 k events · CI loopback (no VM bridge)\n\n')
 
@@ -1014,10 +1081,12 @@ jobs:
               # ── MongoDB ────────────────────────────────────────────────────
               f.write('### MongoDB\n\n')
               f.write('**Sustained Write Benchmark**\n\n')
-              f.write('| Environment | Rate (ev/s) | p50 (ms) | p95 (ms) | p99 (ms) | p99.9 (ms) |\n')
-              f.write('|-------------|------------:|:--------:|:--------:|:--------:|:----------:|\n')
-              f.write(f'| Docker (tmpfs · j:true) | {e("MDB_DOCKER_RATE")} | {ms("MDB_DOCKER_P50")} | {ms("MDB_DOCKER_P95")} | {ms("MDB_DOCKER_P99")} | {ms("MDB_DOCKER_P999")} |\n')
-              f.write(f'| Kubernetes k3d (emptyDir Memory) | {e("MDB_K8S_RATE")} | {ms("MDB_K8S_P50")} | {ms("MDB_K8S_P95")} | {ms("MDB_K8S_P99")} | {ms("MDB_K8S_P999")} |\n\n')
+              f.write('| Environment | Mode | Rate (ev/s) | p50 (ms) | p95 (ms) | p99 (ms) | p99.9 (ms) |\n')
+              f.write('|-------------|------|------------:|:--------:|:--------:|:--------:|:----------:|\n')
+              f.write(f'| Docker (tmpfs) | Peak | {mode_data["mdb-docker-peak.json"]["actual_rate_eps"]} | {ms_num(mode_data["mdb-docker-peak.json"]["p50_us"])} | {ms_num(mode_data["mdb-docker-peak.json"]["p95_us"])} | {ms_num(mode_data["mdb-docker-peak.json"]["p99_us"])} | {ms_num(mode_data["mdb-docker-peak.json"]["p999_us"])} |\n')
+              f.write(f'| Docker (tmpfs) | Durable | {mode_data["mdb-docker-durable.json"]["actual_rate_eps"]} | {ms_num(mode_data["mdb-docker-durable.json"]["p50_us"])} | {ms_num(mode_data["mdb-docker-durable.json"]["p95_us"])} | {ms_num(mode_data["mdb-docker-durable.json"]["p99_us"])} | {ms_num(mode_data["mdb-docker-durable.json"]["p999_us"])} |\n')
+              f.write(f'| Kubernetes k3d (emptyDir Memory) | Peak | {mode_data["mdb-k8s-peak.json"]["actual_rate_eps"]} | {ms_num(mode_data["mdb-k8s-peak.json"]["p50_us"])} | {ms_num(mode_data["mdb-k8s-peak.json"]["p95_us"])} | {ms_num(mode_data["mdb-k8s-peak.json"]["p99_us"])} | {ms_num(mode_data["mdb-k8s-peak.json"]["p999_us"])} |\n')
+              f.write(f'| Kubernetes k3d (emptyDir Memory) | Durable | {mode_data["mdb-k8s-durable.json"]["actual_rate_eps"]} | {ms_num(mode_data["mdb-k8s-durable.json"]["p50_us"])} | {ms_num(mode_data["mdb-k8s-durable.json"]["p95_us"])} | {ms_num(mode_data["mdb-k8s-durable.json"]["p99_us"])} | {ms_num(mode_data["mdb-k8s-durable.json"]["p999_us"])} |\n\n')
 
               f.write('**Rehydration / Replay (50 k events)**\n\n')
               f.write('| Phase | Duration (ms) | Throughput (ev/s) | Result |\n')
@@ -1028,10 +1097,12 @@ jobs:
               # ── PostgreSQL ─────────────────────────────────────────────────
               f.write('### PostgreSQL\n\n')
               f.write('**Sustained Write Benchmark**\n\n')
-              f.write('| Environment | Rate (ev/s) | p50 (ms) | p95 (ms) | p99 (ms) | p99.9 (ms) |\n')
-              f.write('|-------------|------------:|:--------:|:--------:|:--------:|:----------:|\n')
-              f.write(f'| Docker (tmpfs · fsync=off) | {e("PG_DOCKER_RATE")} | {ms("PG_DOCKER_P50")} | {ms("PG_DOCKER_P95")} | {ms("PG_DOCKER_P99")} | {ms("PG_DOCKER_P999")} |\n')
-              f.write(f'| Kubernetes k3d (emptyDir Memory) | {e("PG_K8S_RATE")} | {ms("PG_K8S_P50")} | {ms("PG_K8S_P95")} | {ms("PG_K8S_P99")} | {ms("PG_K8S_P999")} |\n\n')
+              f.write('| Environment | Mode | Rate (ev/s) | p50 (ms) | p95 (ms) | p99 (ms) | p99.9 (ms) |\n')
+              f.write('|-------------|------|------------:|:--------:|:--------:|:--------:|:----------:|\n')
+              f.write(f'| Docker (tmpfs · fsync=off) | Peak | {mode_data["pg-docker-peak.json"]["actual_rate_eps"]} | {ms_num(mode_data["pg-docker-peak.json"]["p50_us"])} | {ms_num(mode_data["pg-docker-peak.json"]["p95_us"])} | {ms_num(mode_data["pg-docker-peak.json"]["p99_us"])} | {ms_num(mode_data["pg-docker-peak.json"]["p999_us"])} |\n')
+              f.write(f'| Docker (tmpfs · fsync=off) | Durable | {mode_data["pg-docker-durable.json"]["actual_rate_eps"]} | {ms_num(mode_data["pg-docker-durable.json"]["p50_us"])} | {ms_num(mode_data["pg-docker-durable.json"]["p95_us"])} | {ms_num(mode_data["pg-docker-durable.json"]["p99_us"])} | {ms_num(mode_data["pg-docker-durable.json"]["p999_us"])} |\n')
+              f.write(f'| Kubernetes k3d (emptyDir Memory) | Peak | {mode_data["pg-k8s-peak.json"]["actual_rate_eps"]} | {ms_num(mode_data["pg-k8s-peak.json"]["p50_us"])} | {ms_num(mode_data["pg-k8s-peak.json"]["p95_us"])} | {ms_num(mode_data["pg-k8s-peak.json"]["p99_us"])} | {ms_num(mode_data["pg-k8s-peak.json"]["p999_us"])} |\n')
+              f.write(f'| Kubernetes k3d (emptyDir Memory) | Durable | {mode_data["pg-k8s-durable.json"]["actual_rate_eps"]} | {ms_num(mode_data["pg-k8s-durable.json"]["p50_us"])} | {ms_num(mode_data["pg-k8s-durable.json"]["p95_us"])} | {ms_num(mode_data["pg-k8s-durable.json"]["p99_us"])} | {ms_num(mode_data["pg-k8s-durable.json"]["p999_us"])} |\n\n')
 
               f.write('**Rehydration / Replay (50 k events)**\n\n')
               f.write('| Phase | Duration (ms) | Throughput (ev/s) | Result |\n')
