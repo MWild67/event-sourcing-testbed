@@ -19,6 +19,10 @@ jobs:
 
   # ════════════════════════════════════════════════════════════════════════════
   # KurrentDB
+  #   - Core throughput (MEM_DB / Docker / Kubernetes)
+  #   - Rehydration + scale
+  #   - Reliability/failover
+  #   - Scenario tests (rate ramp, replay-under-write)
   # ════════════════════════════════════════════════════════════════════════════
 
   kdb-memdb:
@@ -608,10 +612,102 @@ jobs:
             kubectl logs "$pod" -n event-store --tail=80 2>&1 || true
           done
 
+  # ── KurrentDB: Scenario — Rate Ramp (Knee-Point Discovery) ───────────────
+  kdb-rate-ramp:
+    name: "KurrentDB: Rate Ramp (Knee Point)"
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install KurrentDB (MEM_DB)
+        run: |
+          curl -1sLf 'https://dl.cloudsmith.io/public/eventstore/kurrent-latest/setup.deb.sh' | sudo -E bash
+          sudo apt-get install -y kurrentdb
+          sudo systemctl stop kurrentdb || true
+          getent passwd kurrentdb > /dev/null || sudo useradd --system --no-create-home --shell /usr/sbin/nologin kurrentdb
+          sudo mkdir -p /tmp/esdb /tmp/esdb-log
+          sudo chown kurrentdb:kurrentdb /tmp/esdb /tmp/esdb-log
+          sudo mkdir -p /etc/systemd/system/kurrentdb.service.d
+          printf '[Service]\nEnvironment="KURRENTDB_DB=/tmp/esdb"\nEnvironment="KURRENTDB_LOG=/tmp/esdb-log"\nEnvironment="KURRENTDB_INSECURE=true"\nEnvironment="KURRENTDB_RUN_PROJECTIONS=None"\nEnvironment="KURRENTDB_UNSAFE_DISABLE_FLUSH_TO_DISK=true"\nEnvironment="KURRENTDB_CLUSTER_SIZE=1"\nEnvironment="KURRENTDB_MEM_DB=true"\n' \
+            | sudo tee /etc/systemd/system/kurrentdb.service.d/bench.conf
+          sudo systemctl daemon-reload
+          sudo systemctl start kurrentdb
+          for i in $(seq 1 30); do curl -sf http://localhost:2113/health/live && break || sleep 2; done
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            rust-app/target
+          key: bench-${{ runner.os }}-cargo-${{ hashFiles('rust-app/Cargo.lock') }}
+
+      - name: Build
+        run: cargo build --release --manifest-path rust-app/Cargo.toml
+
+      - name: Rate ramp
+        run: |
+          DIRECT=1 BACKEND=kurrentdb bash tests/12-rate-ramp-test.sh | tee ramp-output.log
+          grep '^{' ramp-output.log > kdb-rate-ramp.json || true
+
+      - name: Upload ramp result
+        uses: actions/upload-artifact@v6
+        with:
+          name: kdb-rate-ramp-result
+          path: kdb-rate-ramp.json
+          if-no-files-found: warn
+
+  # ── KurrentDB: Scenario — Replay-Under-Write (Latency Regression) ────────
+  kdb-replay-under-write:
+    name: "KurrentDB: Replay-Under-Write"
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install KurrentDB (MEM_DB)
+        run: |
+          curl -1sLf 'https://dl.cloudsmith.io/public/eventstore/kurrent-latest/setup.deb.sh' | sudo -E bash
+          sudo apt-get install -y kurrentdb
+          sudo systemctl stop kurrentdb || true
+          getent passwd kurrentdb > /dev/null || sudo useradd --system --no-create-home --shell /usr/sbin/nologin kurrentdb
+          sudo mkdir -p /tmp/esdb /tmp/esdb-log
+          sudo chown kurrentdb:kurrentdb /tmp/esdb /tmp/esdb-log
+          sudo mkdir -p /etc/systemd/system/kurrentdb.service.d
+          printf '[Service]\nEnvironment="KURRENTDB_DB=/tmp/esdb"\nEnvironment="KURRENTDB_LOG=/tmp/esdb-log"\nEnvironment="KURRENTDB_INSECURE=true"\nEnvironment="KURRENTDB_RUN_PROJECTIONS=None"\nEnvironment="KURRENTDB_UNSAFE_DISABLE_FLUSH_TO_DISK=true"\nEnvironment="KURRENTDB_CLUSTER_SIZE=1"\nEnvironment="KURRENTDB_MEM_DB=true"\n' \
+            | sudo tee /etc/systemd/system/kurrentdb.service.d/bench.conf
+          sudo systemctl daemon-reload
+          sudo systemctl start kurrentdb
+          for i in $(seq 1 30); do curl -sf http://localhost:2113/health/live && break || sleep 2; done
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            rust-app/target
+          key: bench-${{ runner.os }}-cargo-${{ hashFiles('rust-app/Cargo.lock') }}
+
+      - name: Build
+        run: cargo build --release --manifest-path rust-app/Cargo.toml
+
+      - name: Replay-under-write test
+        run: |
+          DIRECT=1 BACKEND=kurrentdb bash tests/13-replay-under-write-test.sh | tee replay-output.log
+          grep '^{' replay-output.log > kdb-replay-under-write.json || true
+
+      - name: Upload result
+        uses: actions/upload-artifact@v6
+        with:
+          name: kdb-replay-under-write-result
+          path: kdb-replay-under-write.json
+          if-no-files-found: warn
+
   # ════════════════════════════════════════════════════════════════════════════
-  # Core Backend Throughput / Rehydration
-  #   - MongoDB
-  #   - PostgreSQL
+  # MongoDB
+  #   - Core throughput (Docker / Kubernetes)
+  #   - Rehydration / replay
   # ════════════════════════════════════════════════════════════════════════════
 
   mdb-docker:
@@ -855,8 +951,124 @@ jobs:
         if: failure()
         run: docker logs mongodb --tail 30 2>/dev/null || true
 
+  # ── MongoDB: Scenario — Rate Ramp (Knee-Point Discovery) ────────────────
+  mdb-rate-ramp:
+    name: "MongoDB: Rate Ramp (Knee Point)"
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Start MongoDB
+        run: |
+          docker run -d --name mongodb -p 27017:27017 --tmpfs /data/db \
+            mongo:7 mongod --quiet --bind_ip_all --replSet rs0 --wiredTigerCacheSizeGB 0.25
+          for i in $(seq 1 30); do
+            docker exec mongodb mongosh --quiet --eval "db.adminCommand('ping').ok" \
+              mongodb://localhost:27017/admin 2>/dev/null && break || sleep 2
+          done
+          docker exec mongodb mongosh --quiet --eval \
+            "rs.initiate({_id:'rs0',members:[{_id:0,host:'127.0.0.1:27017'}]})"
+          for i in $(seq 1 20); do
+            docker exec mongodb mongosh --quiet --eval \
+              "if (rs.isMaster().ismaster !== true) { throw 'no primary'; }" \
+              2>/dev/null && break || sleep 3
+          done
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            rust-app/target
+          key: bench-${{ runner.os }}-cargo-${{ hashFiles('rust-app/Cargo.lock') }}
+
+      - name: Build
+        run: cargo build --release --manifest-path rust-app/Cargo.toml
+
+      - name: Rate ramp (Peak mode)
+        run: |
+          DIRECT=1 BACKEND=mongodb EVENT_STORE_MODE=0 bash tests/12-rate-ramp-test.sh | tee ramp-peak.log
+          grep '^{' ramp-peak.log > mdb-rate-ramp-peak.json || true
+
+      - name: Rate ramp (Durable mode)
+        run: |
+          DIRECT=1 BACKEND=mongodb EVENT_STORE_MODE=1 bash tests/12-rate-ramp-test.sh | tee ramp-durable.log
+          grep '^{' ramp-durable.log > mdb-rate-ramp-durable.json || true
+
+      - name: Upload ramp results
+        uses: actions/upload-artifact@v6
+        with:
+          name: mdb-rate-ramp-results
+          path: mdb-rate-ramp-*.json
+          if-no-files-found: warn
+
+      - name: Cleanup
+        if: always()
+        run: docker stop mongodb && docker rm mongodb || true
+
+  # ── MongoDB: Scenario — Replay-Under-Write (Latency Regression) ──────────
+  mdb-replay-under-write:
+    name: "MongoDB: Replay-Under-Write [${{ matrix.mode }}]"
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [peak, durable]
+        include:
+          - {mode: peak,    event_store_mode: 0}
+          - {mode: durable, event_store_mode: 1}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Start MongoDB
+        run: |
+          docker run -d --name mongodb -p 27017:27017 --tmpfs /data/db \
+            mongo:7 mongod --quiet --bind_ip_all --replSet rs0 --wiredTigerCacheSizeGB 0.25
+          for i in $(seq 1 30); do
+            docker exec mongodb mongosh --quiet --eval "db.adminCommand('ping').ok" \
+              mongodb://localhost:27017/admin 2>/dev/null && break || sleep 2
+          done
+          docker exec mongodb mongosh --quiet --eval \
+            "rs.initiate({_id:'rs0',members:[{_id:0,host:'127.0.0.1:27017'}]})"
+          for i in $(seq 1 20); do
+            docker exec mongodb mongosh --quiet --eval \
+              "if (rs.isMaster().ismaster !== true) { throw 'no primary'; }" \
+              2>/dev/null && break || sleep 3
+          done
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            rust-app/target
+          key: bench-${{ runner.os }}-cargo-${{ hashFiles('rust-app/Cargo.lock') }}
+
+      - name: Build
+        run: cargo build --release --manifest-path rust-app/Cargo.toml
+
+      - name: Replay-under-write test
+        run: |
+          DIRECT=1 BACKEND=mongodb EVENT_STORE_MODE=${{ matrix.event_store_mode }} bash tests/13-replay-under-write-test.sh | tee replay-output.log
+          grep '^{' replay-output.log > mdb-replay-under-write-${{ matrix.mode }}.json || true
+
+      - name: Upload result
+        uses: actions/upload-artifact@v6
+        with:
+          name: mdb-replay-under-write-results
+          path: mdb-replay-under-write-*.json
+          if-no-files-found: warn
+
+      - name: Cleanup
+        if: always()
+        run: docker stop mongodb && docker rm mongodb || true
+
   # ════════════════════════════════════════════════════════════════════════════
   # PostgreSQL
+  #   - Core throughput (Docker / Kubernetes)
+  #   - Rehydration / replay
   # ════════════════════════════════════════════════════════════════════════════
 
   pg-docker:
@@ -1085,112 +1297,7 @@ jobs:
         if: failure()
         run: docker logs pg --tail 30 2>/dev/null || true
 
-  # ════════════════════════════════════════════════════════════════════════════
-  # Scenario Tests (Cross-Backend)
-  #   - Rate ramp knee-point discovery
-  #   - Replay-under-write latency regression
-  # ════════════════════════════════════════════════════════════════════════════
-
-  kdb-rate-ramp:
-    name: "KurrentDB: Rate Ramp (Knee Point)"
-    runs-on: ubuntu-22.04
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Install KurrentDB (MEM_DB)
-        run: |
-          curl -1sLf 'https://dl.cloudsmith.io/public/eventstore/kurrent-latest/setup.deb.sh' | sudo -E bash
-          sudo apt-get install -y kurrentdb
-          sudo systemctl stop kurrentdb || true
-          getent passwd kurrentdb > /dev/null || sudo useradd --system --no-create-home --shell /usr/sbin/nologin kurrentdb
-          sudo mkdir -p /tmp/esdb /tmp/esdb-log
-          sudo chown kurrentdb:kurrentdb /tmp/esdb /tmp/esdb-log
-          sudo mkdir -p /etc/systemd/system/kurrentdb.service.d
-          printf '[Service]\nEnvironment="KURRENTDB_DB=/tmp/esdb"\nEnvironment="KURRENTDB_LOG=/tmp/esdb-log"\nEnvironment="KURRENTDB_INSECURE=true"\nEnvironment="KURRENTDB_RUN_PROJECTIONS=None"\nEnvironment="KURRENTDB_UNSAFE_DISABLE_FLUSH_TO_DISK=true"\nEnvironment="KURRENTDB_CLUSTER_SIZE=1"\nEnvironment="KURRENTDB_MEM_DB=true"\n' \
-            | sudo tee /etc/systemd/system/kurrentdb.service.d/bench.conf
-          sudo systemctl daemon-reload
-          sudo systemctl start kurrentdb
-          for i in $(seq 1 30); do curl -sf http://localhost:2113/health/live && break || sleep 2; done
-
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: actions/cache@v5
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            rust-app/target
-          key: bench-${{ runner.os }}-cargo-${{ hashFiles('rust-app/Cargo.lock') }}
-
-      - name: Build
-        run: cargo build --release --manifest-path rust-app/Cargo.toml
-
-      - name: Rate ramp
-        run: |
-          DIRECT=1 BACKEND=kurrentdb bash tests/12-rate-ramp-test.sh | tee ramp-output.log
-          grep '^{' ramp-output.log > kdb-rate-ramp.json || true
-
-      - name: Upload ramp result
-        uses: actions/upload-artifact@v6
-        with:
-          name: kdb-rate-ramp-result
-          path: kdb-rate-ramp.json
-          if-no-files-found: warn
-
-  mdb-rate-ramp:
-    name: "MongoDB: Rate Ramp (Knee Point)"
-    runs-on: ubuntu-22.04
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Start MongoDB
-        run: |
-          docker run -d --name mongodb -p 27017:27017 --tmpfs /data/db \
-            mongo:7 mongod --quiet --bind_ip_all --replSet rs0 --wiredTigerCacheSizeGB 0.25
-          for i in $(seq 1 30); do
-            docker exec mongodb mongosh --quiet --eval "db.adminCommand('ping').ok" \
-              mongodb://localhost:27017/admin 2>/dev/null && break || sleep 2
-          done
-          docker exec mongodb mongosh --quiet --eval \
-            "rs.initiate({_id:'rs0',members:[{_id:0,host:'127.0.0.1:27017'}]})"
-          for i in $(seq 1 20); do
-            docker exec mongodb mongosh --quiet --eval \
-              "if (rs.isMaster().ismaster !== true) { throw 'no primary'; }" \
-              2>/dev/null && break || sleep 3
-          done
-
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: actions/cache@v5
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            rust-app/target
-          key: bench-${{ runner.os }}-cargo-${{ hashFiles('rust-app/Cargo.lock') }}
-
-      - name: Build
-        run: cargo build --release --manifest-path rust-app/Cargo.toml
-
-      - name: Rate ramp (Peak mode)
-        run: |
-          DIRECT=1 BACKEND=mongodb EVENT_STORE_MODE=0 bash tests/12-rate-ramp-test.sh | tee ramp-peak.log
-          grep '^{' ramp-peak.log > mdb-rate-ramp-peak.json || true
-
-      - name: Rate ramp (Durable mode)
-        run: |
-          DIRECT=1 BACKEND=mongodb EVENT_STORE_MODE=1 bash tests/12-rate-ramp-test.sh | tee ramp-durable.log
-          grep '^{' ramp-durable.log > mdb-rate-ramp-durable.json || true
-
-      - name: Upload ramp results
-        uses: actions/upload-artifact@v6
-        with:
-          name: mdb-rate-ramp-results
-          path: mdb-rate-ramp-*.json
-          if-no-files-found: warn
-
-      - name: Cleanup
-        if: always()
-        run: docker stop mongodb && docker rm mongodb || true
-
+  # ── PostgreSQL: Scenario — Rate Ramp (Knee-Point Discovery) ──────────────
   pg-rate-ramp:
     name: "PostgreSQL: Rate Ramp (Knee Point)"
     runs-on: ubuntu-22.04
@@ -1240,110 +1347,7 @@ jobs:
         if: always()
         run: docker stop pg && docker rm pg || true
 
-  # ── Replay-Under-Write: Latency Regression Scenarios ────────────────────
-
-  kdb-replay-under-write:
-    name: "KurrentDB: Replay-Under-Write"
-    runs-on: ubuntu-22.04
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Install KurrentDB (MEM_DB)
-        run: |
-          curl -1sLf 'https://dl.cloudsmith.io/public/eventstore/kurrent-latest/setup.deb.sh' | sudo -E bash
-          sudo apt-get install -y kurrentdb
-          sudo systemctl stop kurrentdb || true
-          getent passwd kurrentdb > /dev/null || sudo useradd --system --no-create-home --shell /usr/sbin/nologin kurrentdb
-          sudo mkdir -p /tmp/esdb /tmp/esdb-log
-          sudo chown kurrentdb:kurrentdb /tmp/esdb /tmp/esdb-log
-          sudo mkdir -p /etc/systemd/system/kurrentdb.service.d
-          printf '[Service]\nEnvironment="KURRENTDB_DB=/tmp/esdb"\nEnvironment="KURRENTDB_LOG=/tmp/esdb-log"\nEnvironment="KURRENTDB_INSECURE=true"\nEnvironment="KURRENTDB_RUN_PROJECTIONS=None"\nEnvironment="KURRENTDB_UNSAFE_DISABLE_FLUSH_TO_DISK=true"\nEnvironment="KURRENTDB_CLUSTER_SIZE=1"\nEnvironment="KURRENTDB_MEM_DB=true"\n' \
-            | sudo tee /etc/systemd/system/kurrentdb.service.d/bench.conf
-          sudo systemctl daemon-reload
-          sudo systemctl start kurrentdb
-          for i in $(seq 1 30); do curl -sf http://localhost:2113/health/live && break || sleep 2; done
-
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: actions/cache@v5
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            rust-app/target
-          key: bench-${{ runner.os }}-cargo-${{ hashFiles('rust-app/Cargo.lock') }}
-
-      - name: Build
-        run: cargo build --release --manifest-path rust-app/Cargo.toml
-
-      - name: Replay-under-write test
-        run: |
-          DIRECT=1 BACKEND=kurrentdb bash tests/13-replay-under-write-test.sh | tee replay-output.log
-          grep '^{' replay-output.log > kdb-replay-under-write.json || true
-
-      - name: Upload result
-        uses: actions/upload-artifact@v6
-        with:
-          name: kdb-replay-under-write-result
-          path: kdb-replay-under-write.json
-          if-no-files-found: warn
-
-  mdb-replay-under-write:
-    name: "MongoDB: Replay-Under-Write [${{ matrix.mode }}]"
-    runs-on: ubuntu-22.04
-    strategy:
-      fail-fast: false
-      matrix:
-        mode: [peak, durable]
-        include:
-          - {mode: peak,    event_store_mode: 0}
-          - {mode: durable, event_store_mode: 1}
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Start MongoDB
-        run: |
-          docker run -d --name mongodb -p 27017:27017 --tmpfs /data/db \
-            mongo:7 mongod --quiet --bind_ip_all --replSet rs0 --wiredTigerCacheSizeGB 0.25
-          for i in $(seq 1 30); do
-            docker exec mongodb mongosh --quiet --eval "db.adminCommand('ping').ok" \
-              mongodb://localhost:27017/admin 2>/dev/null && break || sleep 2
-          done
-          docker exec mongodb mongosh --quiet --eval \
-            "rs.initiate({_id:'rs0',members:[{_id:0,host:'127.0.0.1:27017'}]})"
-          for i in $(seq 1 20); do
-            docker exec mongodb mongosh --quiet --eval \
-              "if (rs.isMaster().ismaster !== true) { throw 'no primary'; }" \
-              2>/dev/null && break || sleep 3
-          done
-
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: actions/cache@v5
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            rust-app/target
-          key: bench-${{ runner.os }}-cargo-${{ hashFiles('rust-app/Cargo.lock') }}
-
-      - name: Build
-        run: cargo build --release --manifest-path rust-app/Cargo.toml
-
-      - name: Replay-under-write test
-        run: |
-          DIRECT=1 BACKEND=mongodb EVENT_STORE_MODE=${{ matrix.event_store_mode }} bash tests/13-replay-under-write-test.sh | tee replay-output.log
-          grep '^{' replay-output.log > mdb-replay-under-write-${{ matrix.mode }}.json || true
-
-      - name: Upload result
-        uses: actions/upload-artifact@v6
-        with:
-          name: mdb-replay-under-write-results
-          path: mdb-replay-under-write-*.json
-          if-no-files-found: warn
-
-      - name: Cleanup
-        if: always()
-        run: docker stop mongodb && docker rm mongodb || true
-
+  # ── PostgreSQL: Scenario — Replay-Under-Write (Latency Regression) ───────
   pg-replay-under-write:
     name: "PostgreSQL: Replay-Under-Write [${{ matrix.mode }}]"
     runs-on: ubuntu-22.04
@@ -1424,11 +1428,58 @@ jobs:
       - pg-replay-under-write
     steps:
       - name: Download benchmark and ramp artifacts
-        uses: actions/download-artifact@v6
-        with:
-          pattern: "*"
-          path: bench-artifacts
-          merge-multiple: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 << 'PYEOF'
+          import io
+          import json
+          import os
+          import urllib.request
+          import zipfile
+          from pathlib import Path
+
+          repo = os.environ['GITHUB_REPOSITORY']
+          run_id = os.environ['GITHUB_RUN_ID']
+          token = os.environ['GH_TOKEN']
+
+          out_dir = Path('bench-artifacts')
+          out_dir.mkdir(parents=True, exist_ok=True)
+
+          def gh_get(url):
+            req = urllib.request.Request(url)
+            req.add_header('Authorization', f'Bearer {token}')
+            req.add_header('Accept', 'application/vnd.github+json')
+            req.add_header('X-GitHub-Api-Version', '2022-11-28')
+            with urllib.request.urlopen(req) as r:
+              return json.loads(r.read().decode('utf-8'))
+
+          def gh_get_bytes(url):
+            req = urllib.request.Request(url)
+            req.add_header('Authorization', f'Bearer {token}')
+            req.add_header('Accept', 'application/vnd.github+json')
+            req.add_header('X-GitHub-Api-Version', '2022-11-28')
+            with urllib.request.urlopen(req) as r:
+              return r.read()
+
+          artifacts_url = f'https://api.github.com/repos/{repo}/actions/runs/{run_id}/artifacts?per_page=100'
+          payload = gh_get(artifacts_url)
+          artifacts = payload.get('artifacts', [])
+
+          downloaded = 0
+          for a in artifacts:
+            if a.get('expired'):
+              continue
+            name = a.get('name', f'artifact-{a.get("id", "unknown")}')
+            data = gh_get_bytes(a['archive_download_url'])
+            target = out_dir / name
+            target.mkdir(parents=True, exist_ok=True)
+            with zipfile.ZipFile(io.BytesIO(data)) as zf:
+              zf.extractall(target)
+            downloaded += 1
+
+          print(f'Downloaded {downloaded} artifacts into {out_dir}')
+          PYEOF
 
       - name: Generate combined summary
         env:
