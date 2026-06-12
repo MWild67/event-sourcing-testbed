@@ -75,6 +75,66 @@ jobs:
           echo "p99_us=$(echo  "$RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['p99_us'])")"  >> "$GITHUB_OUTPUT"
           echo "p999_us=$(echo "$RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['p999_us'])")" >> "$GITHUB_OUTPUT"
 
+  # ── KurrentDB docker benchmark ───────────────────────────────────────────
+  kdb-docker:
+    name: KurrentDB — Docker (tmpfs)
+    runs-on: ubuntu-22.04
+    outputs:
+      rate:    ${{ steps.bench.outputs.rate }}
+      p50_us:  ${{ steps.bench.outputs.p50_us }}
+      p95_us:  ${{ steps.bench.outputs.p95_us }}
+      p99_us:  ${{ steps.bench.outputs.p99_us }}
+      p999_us: ${{ steps.bench.outputs.p999_us }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Start KurrentDB on tmpfs
+        run: |
+          docker run -d --name kurrentdb -p 2113:2113 --tmpfs /data \
+            -e KURRENTDB_CLUSTER_SIZE=1 \
+            -e KURRENTDB_INSECURE=true \
+            -e KURRENTDB_RUN_PROJECTIONS=None \
+            -e KURRENTDB_START_STANDARD_PROJECTIONS=false \
+            -e KURRENTDB_UNSAFE_DISABLE_FLUSH_TO_DISK=true \
+            -e KURRENTDB_ENABLE_ATOM_PUB_OVER_HTTP=true \
+            -e KURRENTDB_DB=/data/db \
+            -e KURRENTDB_LOG=/data/log \
+            kurrentplatform/kurrentdb:latest
+          for i in $(seq 1 30); do curl -sf http://localhost:2113/health/live && break || sleep 2; done
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            rust-app/target
+          key: bench-${{ runner.os }}-cargo-${{ hashFiles('rust-app/Cargo.lock') }}
+
+      - name: Build
+        run: cargo build --release --manifest-path rust-app/Cargo.toml
+
+      - name: Benchmark
+        id: bench
+        run: |
+          RESULT=$(rust-app/target/release/testbed \
+            --kurrentdb-url "kurrentdb://localhost:2113?tls=false" \
+            kurrentdb-bench --target-rate 10000 --concurrency 64 --batch-size 1 --duration-secs 30 --json)
+          echo "$RESULT"
+          echo "rate=$(echo    "$RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(round(d['actual_rate_eps'],1))")" >> "$GITHUB_OUTPUT"
+          echo "p50_us=$(echo  "$RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['p50_us'])")"  >> "$GITHUB_OUTPUT"
+          echo "p95_us=$(echo  "$RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['p95_us'])")"  >> "$GITHUB_OUTPUT"
+          echo "p99_us=$(echo  "$RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['p99_us'])")"  >> "$GITHUB_OUTPUT"
+          echo "p999_us=$(echo "$RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['p999_us'])")" >> "$GITHUB_OUTPUT"
+
+      - name: Dump Docker logs on failure
+        if: failure()
+        run: docker logs kurrentdb --tail 50 || true
+
+      - name: Stop KurrentDB
+        if: always()
+        run: docker stop kurrentdb && docker rm kurrentdb || true
+
   # ── KurrentDB k8s benchmark ──────────────────────────────────────────────
   kdb-k8s:
     name: KurrentDB — Kubernetes (single-node, tmpfs)
@@ -834,6 +894,7 @@ jobs:
     if: always()
     needs:
       - kdb-memdb
+      - kdb-docker
       - kdb-k8s
       - kdb-rehydrate
       - kdb-failover
@@ -851,6 +912,11 @@ jobs:
           KDB_MEMDB_P95:     ${{ needs.kdb-memdb.outputs.p95_us }}
           KDB_MEMDB_P99:     ${{ needs.kdb-memdb.outputs.p99_us }}
           KDB_MEMDB_P999:    ${{ needs.kdb-memdb.outputs.p999_us }}
+          KDB_DOCKER_RATE:   ${{ needs.kdb-docker.outputs.rate }}
+          KDB_DOCKER_P50:    ${{ needs.kdb-docker.outputs.p50_us }}
+          KDB_DOCKER_P95:    ${{ needs.kdb-docker.outputs.p95_us }}
+          KDB_DOCKER_P99:    ${{ needs.kdb-docker.outputs.p99_us }}
+          KDB_DOCKER_P999:   ${{ needs.kdb-docker.outputs.p999_us }}
           KDB_K8S_RATE:      ${{ needs.kdb-k8s.outputs.rate }}
           KDB_K8S_P50:       ${{ needs.kdb-k8s.outputs.p50_us }}
           KDB_K8S_P95:       ${{ needs.kdb-k8s.outputs.p95_us }}
@@ -923,6 +989,7 @@ jobs:
               f.write('| Environment | Rate (ev/s) | p50 (ms) | p95 (ms) | p99 (ms) | p99.9 (ms) |\n')
               f.write('|-------------|------------:|:--------:|:--------:|:--------:|:----------:|\n')
               f.write(f'| In-memory (MEM_DB) | {e("KDB_MEMDB_RATE")} | {ms("KDB_MEMDB_P50")} | {ms("KDB_MEMDB_P95")} | {ms("KDB_MEMDB_P99")} | {ms("KDB_MEMDB_P999")} |\n')
+              f.write(f'| Docker (tmpfs) | {e("KDB_DOCKER_RATE")} | {ms("KDB_DOCKER_P50")} | {ms("KDB_DOCKER_P95")} | {ms("KDB_DOCKER_P99")} | {ms("KDB_DOCKER_P999")} |\n')
               f.write(f'| Kubernetes k3d (emptyDir Memory) | {e("KDB_K8S_RATE")} | {ms("KDB_K8S_P50")} | {ms("KDB_K8S_P95")} | {ms("KDB_K8S_P99")} | {ms("KDB_K8S_P999")} |\n\n')
 
               f.write('**Rehydration / Replay (50 k events)**\n\n')
