@@ -646,6 +646,44 @@ P99_LIMIT_MS=20 DIRECT=1 bash tests/07-postgres-stress-test.sh
 
 ---
 
+### Test 12 — Rate Ramp Test (Knee Point)
+
+Runs fixed target-rate steps and prints where p99 starts exploding.
+
+Default ramp steps:
+
+- **1 000 ev/s**
+- **3 000 ev/s**
+- **5 000 ev/s**
+- **8 000 ev/s**
+- **10 000 ev/s**
+
+```bash
+# KurrentDB (default backend):
+make test-rate-ramp BACKEND=kurrentdb
+
+# MongoDB with event-store-mode enabled:
+make test-rate-ramp BACKEND=mongodb EVENT_STORE_MODE=1
+
+# PostgreSQL with event-store-mode enabled:
+make test-rate-ramp BACKEND=postgres EVENT_STORE_MODE=1
+
+# Custom ramp:
+make test-rate-ramp BACKEND=postgres RATE_STEPS="1000 2000 4000 6000 8000 10000"
+```
+
+Output includes a table per step (`target`, `actual_rate`, `p99_us`) and a summary JSON line with:
+
+- `knee_detected`
+- `knee_rate_eps`
+- `knee_p99_us`
+- `knee_jump`
+
+The knee detector marks the first step where p99 jumps by at least `KNEE_FACTOR` (default `1.8x`)
+and p99 is at least `MIN_KNEE_P99_US` (default `2000`).
+
+---
+
 The provisioned dashboard ([k8s/04-monitoring/06-grafana-dashboard.yaml](k8s/04-monitoring/06-grafana-dashboard.yaml))
 contains three row groups:
 

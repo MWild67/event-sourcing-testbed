@@ -3,7 +3,7 @@
 # ─────────────────────────────────────────────────────────────────────────────
 .PHONY: help up down build push deploy undeploy test-all \
         test-storage test-bench test-failover test-monitoring \
-        test-mongodb test-postgres test-rehydration \
+        test-mongodb test-postgres test-rehydration test-rate-ramp \
         logs-es logs-rmq pf-grafana pf-prom pf-es
 
 NAMESPACE     := event-store
@@ -129,6 +129,17 @@ test-postgres: ## Test 07: PostgreSQL write-latency stress test
 
 test-rehydration: ## Test 06: Event rehydration/replay (KurrentDB, MongoDB, PostgreSQL)
 	bash tests/06-rehydration-replay-test.sh
+
+test-rate-ramp: ## Test 12: Rate ramp knee-point test (BACKEND=kurrentdb|mongodb|postgres)
+	DIRECT=$(DIRECT) \
+	BACKEND=$(BACKEND) \
+	RATE_STEPS="$(if $(RATE_STEPS),$(RATE_STEPS),1000 3000 5000 8000 10000)" \
+	CONCURRENCY=$(if $(CONCURRENCY),$(CONCURRENCY),64) \
+	BATCH_SIZE=$(if $(BATCH_SIZE),$(BATCH_SIZE),1) \
+	DURATION_SECS=$(if $(DURATION_SECS),$(DURATION_SECS),20) \
+	EVENT_STORE_MODE=$(if $(EVENT_STORE_MODE),$(EVENT_STORE_MODE),0) \
+	TESTBED_IMAGE=$(TESTBED_IMAGE) \
+	  bash tests/12-rate-ramp-test.sh
 
 # ── Utility ───────────────────────────────────────────────────────────────────
 logs-es: ## Tail KurrentDB logs
