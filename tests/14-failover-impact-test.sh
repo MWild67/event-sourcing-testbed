@@ -123,18 +123,8 @@ wait_leader_elected() {
   step "Wait for KurrentDB leader election"
   local deadline=$(( $(date +%s) + 90 ))
   while [[ $(date +%s) -lt $deadline ]]; do
-    # Check each pod's leadership status via exec
-    local leader_found=0
-    for pod in $(kubectl get pods -n "$NS" -l app="$STS" -o jsonpath='{.items[*].metadata.name}' 2>/dev/null); do
-      local state
-      state=$(kubectl exec "$pod" -n "$NS" -- wget -qO- http://127.0.0.1:2113/info 2>/dev/null | grep -oP '"state"\s*:\s*"\K[^"]+' || echo "unknown")
-      if [[ "$state" == "Leader" ]]; then
-        leader_found=1
-        break
-      fi
-    done
-    
-    if [[ "$leader_found" -eq 1 ]]; then
+    # Use the port-forward tunnel we know is working
+    if curl -fsS "http://127.0.0.1:2116/info" 2>/dev/null | grep -qE '"state"\s*:\s*"Leader"'; then
       pass "leader elected"
       sleep 2  # Allow leader to stabilize
       return 0
