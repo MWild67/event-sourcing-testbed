@@ -29,6 +29,8 @@ fi
 KURRENT_URL="${KURRENT_URL:-kurrentdb://localhost:2116?tls=false}"
 HEALTH_URL="${HEALTH_URL:-http://127.0.0.1:2116/health/live}"
 PF_RESOURCE="${PF_RESOURCE:-svc/kurrentdb}"
+PF_PIDS=()
+PF_PORTS=(2116 2117 2118)
 
 BASELINE_DURATION_SECS="${BASELINE_DURATION_SECS:-12}"
 IMPACT_DURATION_SECS="${IMPACT_DURATION_SECS:-35}"
@@ -61,9 +63,9 @@ cleanup() {
   if [[ -n "$PROBE_PID" ]]; then
     kill "$PROBE_PID" 2>/dev/null || true
   fi
-  if [[ -n "$PF_PID" ]]; then
-    kill "$PF_PID" 2>/dev/null || true
-  fi
+  for pf_pid in "${PF_PIDS[@]:-}"; do
+    kill "$pf_pid" 2>/dev/null || true
+  done
   if [[ -n "$TARGET_NODE" ]]; then
     kubectl taint nodes "$TARGET_NODE" node.kubernetes.io/unreachable:NoExecute- 2>/dev/null || true
     kubectl taint nodes "$TARGET_NODE" node.kubernetes.io/not-ready:NoExecute- 2>/dev/null || true
@@ -108,12 +110,22 @@ wait_cluster_ready() {
 
 start_port_forward() {
   step "Start port-forward for benchmark client"
-  kubectl port-forward -n "$NS" "$PF_RESOURCE" 2116:2113 >/tmp/failover-impact-pf.log 2>&1 &
-  PF_PID=$!
+  local pods=($(kubectl get pods -n "$NS" -l app="$STS" -o jsonpath='{.items[*].metadata.name}'))
+  [[ "${#pods[@]}" -ge 3 ]] || fail "expected at least 3 KurrentDB pods for port-forwarding"
+
+  PF_PIDS=()
+  for idx in 0 1 2; do
+    local local_port="${PF_PORTS[$idx]}"
+    local pod="${pods[$idx]}"
+    kubectl port-forward -n "$NS" "pod/$pod" "${local_port}:2113" >/tmp/failover-impact-pf-${local_port}.log 2>&1 &
+    PF_PIDS+=("$!")
+  done
 
   local ok=0
-  for _ in $(seq 1 40); do
-    if curl -fsS "$HEALTH_URL" >/dev/null 2>&1; then
+  for _ in $(seq 1 60); do
+    if curl -fsS "http://127.0.0.1:2116/health/live" >/dev/null 2>&1 && \
+       curl -fsS "http://127.0.0.1:2117/health/live" >/dev/null 2>&1 && \
+       curl -fsS "http://127.0.0.1:2118/health/live" >/dev/null 2>&1; then
       ok=1
       break
     fi
@@ -121,7 +133,7 @@ start_port_forward() {
   done
 
   [[ "$ok" -eq 1 ]] || fail "port-forward health check did not come up"
-  pass "port-forward ready (pid=$PF_PID)"
+  pass "port-forward ready (pids=${PF_PIDS[*]})"
 }
 
 run_probe_loop() {
@@ -178,6 +190,9 @@ step "Pre-flight"
 require_cmd kubectl
 require_cmd curl
 [[ -x "$TESTBED_BIN" ]] || fail "testbed binary not found or not executable: $TESTBED_BIN"
+
+KURRENT_URL="kurrentdb://localhost:2116,localhost:2117,localhost:2118?tls=false"
+HEALTH_URL="http://127.0.0.1:2116/health/live"
 
 ready=$(kubectl get statefulset "$STS" -n "$NS" -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo "0")
 [[ "${ready:-0}" -ge 3 ]] || fail "need 3/3 ready replicas before test, got $ready"
