@@ -417,7 +417,7 @@ fi
 if [[ "$recovery_time_ms" -lt 0 ]]; then
   warn "Recovery not observed; dumping probe CSV diagnostics:"
   if [[ -s "$PROBE_CSV" ]]; then
-    local total_lines=$(wc -l < "$PROBE_CSV")
+    total_lines=$(wc -l < "$PROBE_CSV")
     warn "Probe CSV: $total_lines samples total"
     warn "First 10 samples (baseline period):"
     head -10 "$PROBE_CSV" | sed 's/^/    /' >&2
