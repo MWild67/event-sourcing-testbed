@@ -181,6 +181,30 @@ The GitHub Actions workflow (`.github/workflows/bench.yml`) runs **19 jobs** on 
 to `main`: 18 benchmark/reliability jobs + 1 report job. All use `ubuntu-22.04`
 (2 vCPU, 7 GB RAM) runners.
 
+### Running a single job manually
+
+The workflow supports a `workflow_dispatch` trigger with a **job selector** so you can
+re-run only one job instead of waiting for the full suite (~1–2 hours):
+
+1. Go to **Actions → Benchmarks** in the GitHub repository.
+2. Click **"Run workflow"** (top-right of the job list).
+3. Pick a job from the **"Job to run"** dropdown — leave it blank to run everything.
+4. Click **"Run workflow"**.
+
+When a specific job is selected, all other benchmark jobs and the `report` job are
+skipped automatically, so only the chosen job consumes runner minutes.
+
+| Selector value | What runs |
+|---|---|
+| *(blank)* | All 18 benchmark jobs + report |
+| `kdb-failover-impact` | Only the failover-under-load test |
+| `kdb-rate-ramp` | Only the rate-ramp knee-point test |
+| `kdb-replay-under-write` | Only the replay regression test |
+| `kdb-failover` | Only the 3-node failover reliability test |
+| … any other job name | Only that one job |
+
+---
+
 ### Job summary
 
 | Job | Backend | Category | Notes |

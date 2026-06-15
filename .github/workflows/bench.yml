@@ -6,6 +6,22 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      job:
+        description: 'Job to run (blank = all)'
+        required: false
+        default: ''
+        type: choice
+        options:
+          - ''
+          - kdb-memdb
+          - kdb-docker
+          - kdb-k8s
+          - kdb-rehydrate
+          - kdb-failover
+          - kdb-failover-impact
+          - kdb-rate-ramp
+          - kdb-replay-under-write
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -28,6 +44,7 @@ jobs:
   kdb-memdb:
     name: "KurrentDB: In-Memory (MEM_DB)"
     runs-on: ubuntu-22.04
+    if: github.event_name != 'workflow_dispatch' || inputs.job == '' || inputs.job == 'kdb-memdb'
     outputs:
       rate:    ${{ steps.bench.outputs.rate }}
       p50_us:  ${{ steps.bench.outputs.p50_us }}
@@ -83,6 +100,7 @@ jobs:
   kdb-docker:
     name: "KurrentDB: Docker (tmpfs) [${{ matrix.mode }}]"
     runs-on: ubuntu-22.04
+    if: github.event_name != 'workflow_dispatch' || inputs.job == '' || inputs.job == 'kdb-docker'
     strategy:
       fail-fast: false
       matrix:
@@ -281,6 +299,7 @@ jobs:
   kdb-rehydrate:
     name: "KurrentDB: Rehydration / Replay + Scale (100k)"
     runs-on: ubuntu-22.04
+    if: github.event_name != 'workflow_dispatch' || inputs.job == '' || inputs.job == 'kdb-rehydrate'
     outputs:
       write_ms:         ${{ steps.demo.outputs.write_ms }}
       replay_ms:        ${{ steps.demo.outputs.replay_ms }}
@@ -353,6 +372,7 @@ jobs:
   kdb-failover:
     name: "KurrentDB: Node Failover (<= 60s)"
     runs-on: ubuntu-22.04
+    if: github.event_name != 'workflow_dispatch' || inputs.job == '' || inputs.job == 'kdb-failover'
     timeout-minutes: 20
     outputs:
       passed: ${{ steps.test.outputs.passed }}
@@ -485,6 +505,7 @@ jobs:
   kdb-failover-impact:
     name: "KurrentDB: Short Failover Impact (Under Load)"
     runs-on: ubuntu-22.04
+    if: github.event_name != 'workflow_dispatch' || inputs.job == '' || inputs.job == 'kdb-failover-impact'
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v6
@@ -621,6 +642,7 @@ jobs:
   kdb-rate-ramp:
     name: "KurrentDB: Rate Ramp (Knee Point)"
     runs-on: ubuntu-22.04
+    if: github.event_name != 'workflow_dispatch' || inputs.job == '' || inputs.job == 'kdb-rate-ramp'
     steps:
       - uses: actions/checkout@v6
 
@@ -672,6 +694,7 @@ jobs:
   kdb-replay-under-write:
     name: "KurrentDB: Replay-Under-Write"
     runs-on: ubuntu-22.04
+    if: github.event_name != 'workflow_dispatch' || inputs.job == '' || inputs.job == 'kdb-replay-under-write'
     steps:
       - uses: actions/checkout@v6
 
@@ -728,6 +751,7 @@ jobs:
   mdb-docker:
     name: "MongoDB: Docker (tmpfs) [${{ matrix.mode }}]"
     runs-on: ubuntu-22.04
+    if: github.event_name != 'workflow_dispatch' || inputs.job == '' || inputs.job == 'mdb-docker'
     strategy:
       fail-fast: false
       matrix:
@@ -807,6 +831,7 @@ jobs:
   mdb-k8s:
     name: "MongoDB: Kubernetes (single-node replica set) [${{ matrix.mode }}]"
     runs-on: ubuntu-22.04
+    if: github.event_name != 'workflow_dispatch' || inputs.job == '' || inputs.job == 'mdb-k8s'
     strategy:
       fail-fast: false
       matrix:
@@ -909,6 +934,7 @@ jobs:
   mdb-rehydrate:
     name: "MongoDB: Rehydration / Replay"
     runs-on: ubuntu-22.04
+    if: github.event_name != 'workflow_dispatch' || inputs.job == '' || inputs.job == 'mdb-rehydrate'
     outputs:
       write_ms:    ${{ steps.demo.outputs.write_ms }}
       replay_ms:   ${{ steps.demo.outputs.replay_ms }}
@@ -970,6 +996,7 @@ jobs:
   mdb-rate-ramp:
     name: "MongoDB: Rate Ramp (Knee Point)"
     runs-on: ubuntu-22.04
+    if: github.event_name != 'workflow_dispatch' || inputs.job == '' || inputs.job == 'mdb-rate-ramp'
     steps:
       - uses: actions/checkout@v6
 
@@ -1035,6 +1062,7 @@ jobs:
   mdb-replay-under-write:
     name: "MongoDB: Replay-Under-Write [${{ matrix.mode }}]"
     runs-on: ubuntu-22.04
+    if: github.event_name != 'workflow_dispatch' || inputs.job == '' || inputs.job == 'mdb-replay-under-write'
     strategy:
       fail-fast: false
       matrix:
@@ -1103,6 +1131,7 @@ jobs:
   pg-docker:
     name: "PostgreSQL: Docker (tmpfs) [${{ matrix.mode }}]"
     runs-on: ubuntu-22.04
+    if: github.event_name != 'workflow_dispatch' || inputs.job == '' || inputs.job == 'pg-docker'
     strategy:
       fail-fast: false
       matrix:
@@ -1173,6 +1202,7 @@ jobs:
   pg-k8s:
     name: "PostgreSQL: Kubernetes (single-node) [${{ matrix.mode }}]"
     runs-on: ubuntu-22.04
+    if: github.event_name != 'workflow_dispatch' || inputs.job == '' || inputs.job == 'pg-k8s'
     strategy:
       fail-fast: false
       matrix:
@@ -1275,6 +1305,7 @@ jobs:
   pg-rehydrate:
     name: "PostgreSQL: Rehydration / Replay"
     runs-on: ubuntu-22.04
+    if: github.event_name != 'workflow_dispatch' || inputs.job == '' || inputs.job == 'pg-rehydrate'
     outputs:
       write_ms:    ${{ steps.demo.outputs.write_ms }}
       replay_ms:   ${{ steps.demo.outputs.replay_ms }}
@@ -1330,6 +1361,7 @@ jobs:
   pg-rate-ramp:
     name: "PostgreSQL: Rate Ramp (Knee Point)"
     runs-on: ubuntu-22.04
+    if: github.event_name != 'workflow_dispatch' || inputs.job == '' || inputs.job == 'pg-rate-ramp'
     steps:
       - uses: actions/checkout@v6
 
@@ -1389,6 +1421,7 @@ jobs:
   pg-replay-under-write:
     name: "PostgreSQL: Replay-Under-Write [${{ matrix.mode }}]"
     runs-on: ubuntu-22.04
+    if: github.event_name != 'workflow_dispatch' || inputs.job == '' || inputs.job == 'pg-replay-under-write'
     strategy:
       fail-fast: false
       matrix:
@@ -1449,7 +1482,7 @@ jobs:
   report:
     name: Benchmark Report
     runs-on: ubuntu-22.04
-    if: always()
+    if: always() && (github.event_name != 'workflow_dispatch' || inputs.job == '')
     permissions:
       actions: read
       contents: read
