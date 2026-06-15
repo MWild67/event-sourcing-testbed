@@ -7,6 +7,7 @@
 	test-mongodb test-postgres test-rehydration \
 	test-hot-cache test-projection test-search test-scale \
 	test-rate-ramp test-replay-under-write test-replay-preflight test-failover-impact \
+	test-failover-impact-local \
         logs-es logs-rmq pf-grafana pf-prom pf-es
 
 NAMESPACE     := event-store
@@ -200,6 +201,9 @@ test-failover-impact: ## Test 14: Short failover-impact (pause window, error spi
 	IMPACT_DURATION_SECS=$(if $(IMPACT_DURATION_SECS),$(IMPACT_DURATION_SECS),35) \
 	SPIKE_WINDOW_MS=$(if $(SPIKE_WINDOW_MS),$(SPIKE_WINDOW_MS),5000) \
 	bash tests/14-failover-impact-test.sh
+
+test-failover-impact-local: ## Test 14 local CI-like repro using k3d (creates temporary cluster)
+	bash tests/14-failover-impact-local-repro.sh
 
 # ── Utility ───────────────────────────────────────────────────────────────────
 logs-es: ## Tail KurrentDB logs

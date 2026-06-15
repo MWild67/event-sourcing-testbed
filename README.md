@@ -800,6 +800,11 @@ make test-failover-impact TARGET_RATE=6000 CONCURRENCY=64 IMPACT_DURATION_SECS=4
 
 # Tighten/relax recovery SLO:
 make test-failover-impact RECOVERY_SLA_SECS=45
+
+# Full local CI-like reproduction (k3d + deploy + run test 14):
+# - auto-installs k3d + kubectl into ~/.local/bin when missing
+# - requires docker or podman runtime available on PATH
+make test-failover-impact-local
 ```
 
 **Output JSON** includes:
