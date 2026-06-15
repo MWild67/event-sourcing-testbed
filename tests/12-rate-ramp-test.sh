@@ -45,7 +45,8 @@ KNEE_FACTOR="${KNEE_FACTOR:-1.8}"
 MIN_KNEE_P99_US="${MIN_KNEE_P99_US:-2000}"
 
 KURRENT_URL="${KURRENT_URL:-kurrentdb://kurrentdb.event-store.svc.cluster.local:2113?tls=false}"
-KURRENT_URL_DIRECT="${KURRENT_URL_DIRECT:-kurrentdb://localhost:2116?tls=false}"
+KURRENT_URL_DIRECT_DEFAULT="kurrentdb://localhost:2116?tls=false"
+KURRENT_URL_DIRECT="${KURRENT_URL_DIRECT:-$KURRENT_URL_DIRECT_DEFAULT}"
 MONGO_URL="${MONGO_URL:-mongodb://mongodb.event-store.svc.cluster.local:27017}"
 MONGO_URL_DIRECT="${MONGO_URL_DIRECT:-mongodb://localhost:27017}"
 POSTGRES_URL="${POSTGRES_URL:-postgres://postgres:postgres@postgres.event-store.svc.cluster.local:5432/eventbench}"
@@ -53,6 +54,7 @@ POSTGRES_URL_DIRECT="${POSTGRES_URL_DIRECT:-postgres://postgres:postgres@localho
 
 pass() { echo "  + $*"; }
 fail() { echo "  x $*" >&2; exit 1; }
+warn() { echo "  ! $*"; }
 step() { echo; echo "> $*"; }
 
 require_cmd() {
@@ -66,6 +68,37 @@ parse_json_field() {
 
 is_true() {
   [[ "$1" == "1" || "$1" == "true" || "$1" == "TRUE" ]]
+}
+
+wait_for_http_health() {
+  local url="$1"
+  local timeout_secs="$2"
+  for _ in $(seq 1 "$timeout_secs"); do
+    if curl -fsS --connect-timeout 2 "$url" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
+prepare_kurrent_direct_url() {
+  local default_health="http://localhost:2116/health/live"
+  local alt_health="http://localhost:2113/health/live"
+
+  # In CI, KurrentDB runs on 2113. Keep 2116 default for local docker-compose.
+  if [[ "$KURRENT_URL_DIRECT" == "$KURRENT_URL_DIRECT_DEFAULT" ]]; then
+    if ! wait_for_http_health "$default_health" 1 && wait_for_http_health "$alt_health" 1; then
+      warn "KurrentDB healthy on 2113; switching direct URL from 2116 to 2113"
+      KURRENT_URL_DIRECT="kurrentdb://localhost:2113?tls=false"
+    fi
+  fi
+
+  if [[ "$KURRENT_URL_DIRECT" == *":2113"* ]]; then
+    wait_for_http_health "$alt_health" 60 || fail "KurrentDB not ready on 2113 after 60s"
+  else
+    wait_for_http_health "$default_health" 60 || fail "KurrentDB not ready on 2116 after 60s"
+  fi
 }
 
 bench_cmd_for_backend() {
@@ -194,6 +227,10 @@ echo "  Knee min p99      : ${MIN_KNEE_P99_US} us"
 
 if [[ "$DIRECT" == "1" ]]; then
   [[ -x "$TESTBED_BIN" ]] || fail "testbed binary not found or not executable: $TESTBED_BIN"
+  if [[ "$BACKEND" == "kurrentdb" ]]; then
+    require_cmd curl
+    prepare_kurrent_direct_url
+  fi
 else
   require_cmd kubectl
 fi

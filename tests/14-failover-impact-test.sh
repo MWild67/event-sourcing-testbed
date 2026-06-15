@@ -149,6 +149,31 @@ extract_json_last() {
   grep '^{' "$file" | tail -1
 }
 
+run_bench_json_with_retry() {
+  local label="$1"
+  local duration_secs="$2"
+  local output_file="$3"
+  local error_file="$4"
+  local attempts="${5:-3}"
+
+  for attempt in $(seq 1 "$attempts"); do
+    if "$TESTBED_BIN" --kurrentdb-url "$KURRENT_URL" \
+      kurrentdb-bench --target-rate "$TARGET_RATE" --concurrency "$CONCURRENCY" --batch-size "$BATCH_SIZE" --duration-secs "$duration_secs" --json \
+      >"$output_file" 2>"$error_file"; then
+      if grep -q '^{' "$output_file"; then
+        return 0
+      fi
+    fi
+
+    warn "${label} attempt ${attempt}/${attempts} did not produce valid JSON"
+    tail -30 "$output_file" 2>/dev/null || true
+    tail -30 "$error_file" 2>/dev/null || true
+    [[ "$attempt" -lt "$attempts" ]] && sleep 3
+  done
+
+  return 1
+}
+
 step "Pre-flight"
 require_cmd kubectl
 require_cmd curl
@@ -166,9 +191,14 @@ start_port_forward
 
 step "Baseline latency run"
 BASELINE_LOG="$(mktemp)"
-"$TESTBED_BIN" --kurrentdb-url "$KURRENT_URL" \
-  kurrentdb-bench --target-rate "$TARGET_RATE" --concurrency "$CONCURRENCY" --batch-size "$BATCH_SIZE" --duration-secs "$BASELINE_DURATION_SECS" --json \
-  >"$BASELINE_LOG" 2>/tmp/failover-impact-baseline.err
+BASELINE_ERR="$(mktemp)"
+if ! run_bench_json_with_retry "baseline benchmark" "$BASELINE_DURATION_SECS" "$BASELINE_LOG" "$BASELINE_ERR" 3; then
+  warn "Baseline benchmark stderr tail"
+  tail -60 "$BASELINE_ERR" 2>/dev/null || true
+  warn "Port-forward log tail"
+  tail -60 /tmp/failover-impact-pf.log 2>/dev/null || true
+  fail "baseline benchmark failed after retries"
+fi
 
 baseline_json=$(extract_json_last "$BASELINE_LOG")
 [[ -n "$baseline_json" ]] || fail "baseline benchmark did not output JSON"
@@ -186,6 +216,14 @@ IMPACT_ERR="$(mktemp)"
 BENCH_PID=$!
 
 sleep 5
+if ! kill -0 "$BENCH_PID" 2>/dev/null; then
+  wait "$BENCH_PID" || true
+  warn "Impact benchmark exited before failover trigger"
+  tail -60 "$IMPACT_LOG" 2>/dev/null || true
+  tail -60 "$IMPACT_ERR" 2>/dev/null || true
+  fail "impact benchmark exited early"
+fi
+
 TARGET_NODE=$(find_leader_node)
 [[ -n "$TARGET_NODE" ]] || fail "failed to resolve leader node"
 step "Evict leader node workload on $TARGET_NODE"
@@ -203,7 +241,13 @@ if [[ -n "$PROBE_PID" ]]; then
 fi
 
 impact_json=$(extract_json_last "$IMPACT_LOG")
-[[ -n "$impact_json" ]] || fail "impact benchmark did not output JSON"
+if [[ -z "$impact_json" ]]; then
+  warn "Impact benchmark stdout tail"
+  tail -60 "$IMPACT_LOG" 2>/dev/null || true
+  warn "Impact benchmark stderr tail"
+  tail -60 "$IMPACT_ERR" 2>/dev/null || true
+  fail "impact benchmark did not output JSON"
+fi
 impact_p99_us=$(echo "$impact_json" | python3 -c 'import sys, json; d=json.load(sys.stdin); print(int(d.get("p99_us",0)))')
 
 write_error_count=$(grep -c "append_batch failed" "$IMPACT_ERR" 2>/dev/null || true)
