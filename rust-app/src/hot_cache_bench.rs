@@ -79,8 +79,6 @@ pub struct HotCacheConfig {
     pub database: String,
     /// Stream / collection / table-suffix name.
     pub stream_name: String,
-    /// Emit results as a single JSON line instead of a formatted report.
-    pub json: bool,
 }
 
 impl Default for HotCacheConfig {
@@ -92,7 +90,6 @@ impl Default for HotCacheConfig {
             seed_batch_size: 100,
             database: "hotcache".to_string(),
             stream_name: "hot-cache".to_string(),
-            json: false,
         }
     }
 }
@@ -401,7 +398,9 @@ pub async fn run_mongo(mongo_url: &str, config: HotCacheConfig) -> Result<HotCac
     client.ensure_collection_event_store(coll).await?;
     client.truncate_collection(coll).await?;
     // Reset the per-stream and global counters so version numbering starts at 0.
-    client.init_event_store_counters(&[coll.clone()]).await?;
+    client
+        .init_event_store_counters(std::slice::from_ref(coll))
+        .await?;
 
     // ── Phase 1: Seed ─────────────────────────────────────────────────────────
     info!(
@@ -555,7 +554,9 @@ pub async fn run_postgres(pg_url: &str, config: HotCacheConfig) -> Result<HotCac
     client.ensure_bench_table_event_store().await?;
     client.ensure_stream_versions_table().await?;
     client.truncate_bench_table().await?;
-    client.init_stream_versions(&[stream_id.clone()]).await?;
+    client
+        .init_stream_versions(std::slice::from_ref(stream_id))
+        .await?;
 
     // ── Phase 1: Seed ─────────────────────────────────────────────────────────
     info!(

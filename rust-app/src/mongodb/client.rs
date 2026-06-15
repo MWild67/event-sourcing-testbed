@@ -315,6 +315,7 @@ impl MongoClient {
 
     /// Ensure a collection exists with a `seq` index for efficient tail reads.
     /// Safe to call repeatedly (idempotent — ignores `NamespaceExists`).
+    #[allow(dead_code)]
     pub async fn ensure_hot_cache_collection(&self, collection_name: &str) -> Result<()> {
         self.ensure_collection(collection_name).await?;
 

@@ -29,7 +29,6 @@
 use std::time::Instant;
 
 use anyhow::Result;
-use hdrhistogram::Histogram;
 use serde_json::json;
 use tracing::info;
 
@@ -131,7 +130,6 @@ pub async fn run_postgres(pg_url: &str, args: &ScaleBenchArgs) -> Result<ScaleBe
     let mut global_seq = 0u64;
     let mut t_first10_end = None;
     let mut batches_done = 0usize;
-    let total_batches = (total + batch - 1) / batch;
 
     while global_seq < total as u64 {
         let this_batch = batch.min(total - global_seq as usize);
@@ -156,7 +154,7 @@ pub async fn run_postgres(pg_url: &str, args: &ScaleBenchArgs) -> Result<ScaleBe
             t_first10_end = Some((t_write.elapsed(), global_seq));
         }
 
-        if global_seq as usize % 50_000 == 0 {
+        if (global_seq as usize).is_multiple_of(50_000) {
             info!(
                 "scale/postgres: {}/{} events written ({:.0} ev/s)",
                 global_seq,
@@ -268,7 +266,7 @@ pub async fn run_kurrentdb(kurrentdb_url: &str, args: &ScaleBenchArgs) -> Result
         if t_first10_end.is_none() && global_seq as usize >= tenth {
             t_first10_end = Some((t_write.elapsed(), global_seq));
         }
-        if global_seq as usize % 50_000 == 0 {
+        if (global_seq as usize).is_multiple_of(50_000) {
             info!(
                 "scale/kurrentdb: {}/{} events ({:.0} ev/s)",
                 global_seq,
@@ -371,7 +369,7 @@ pub async fn run_mongo(mongodb_url: &str, args: &MongoScaleBenchArgs) -> Result<
         if t_first10_end.is_none() && global_seq as usize >= tenth {
             t_first10_end = Some((t_write.elapsed(), global_seq));
         }
-        if global_seq as usize % 50_000 == 0 {
+        if (global_seq as usize).is_multiple_of(50_000) {
             info!(
                 "scale/mongodb: {}/{} events ({:.0} ev/s)",
                 global_seq,

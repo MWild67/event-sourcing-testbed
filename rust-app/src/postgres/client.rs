@@ -53,9 +53,16 @@ impl PostgresClient {
 
     /// Create the simple benchmark table (no version / global-position columns).
     pub async fn ensure_bench_table(&self) -> Result<()> {
+        // bench_events is benchmark-only state. Recreate it to avoid schema drift
+        // when switching from event-store mode back to peak mode.
+        sqlx::query("DROP TABLE IF EXISTS bench_events")
+            .execute(&self.pool)
+            .await
+            .context("failed to drop existing bench_events table")?;
+
         sqlx::query(
             r"
-            CREATE TABLE IF NOT EXISTS bench_events (
+            CREATE TABLE bench_events (
                 event_id    TEXT        NOT NULL PRIMARY KEY,
                 stream_id   TEXT        NOT NULL,
                 event_type  TEXT        NOT NULL,
@@ -82,9 +89,16 @@ impl PostgresClient {
     /// Create the event-store-mode table: adds the unique version constraint
     /// and a `global_position` identity column — mirrors `KurrentDB` semantics.
     pub async fn ensure_bench_table_event_store(&self) -> Result<()> {
+        // bench_events is benchmark-only state. Recreate it to avoid schema drift
+        // when switching between non-event-store and event-store modes.
+        sqlx::query("DROP TABLE IF EXISTS bench_events")
+            .execute(&self.pool)
+            .await
+            .context("failed to drop existing bench_events table")?;
+
         sqlx::query(
             r"
-            CREATE TABLE IF NOT EXISTS bench_events (
+            CREATE TABLE bench_events (
                 event_id        TEXT        NOT NULL PRIMARY KEY,
                 stream_id       TEXT        NOT NULL,
                 stream_version  BIGINT      NOT NULL,
@@ -362,6 +376,7 @@ impl PostgresClient {
     // ── Hot-cache helpers ─────────────────────────────────────────────────────
 
     /// Create the `hot_cache_events` table for the hot-tail-cache benchmark.
+    #[allow(dead_code)]
     pub async fn ensure_hot_cache_table(&self) -> Result<()> {
         sqlx::query(
             r"
@@ -387,6 +402,7 @@ impl PostgresClient {
     }
 
     /// Truncate `hot_cache_events` so each run starts from a clean slate.
+    #[allow(dead_code)]
     pub async fn truncate_hot_cache_table(&self) -> Result<()> {
         sqlx::query("TRUNCATE TABLE hot_cache_events")
             .execute(&self.pool)
@@ -397,6 +413,7 @@ impl PostgresClient {
 
     /// Batch-insert `events` into `hot_cache_events`.
     #[allow(clippy::cast_possible_wrap)]
+    #[allow(dead_code)]
     pub async fn insert_hot_cache_batch(
         &self,
         events: &[crate::events::BenchmarkEvent],
@@ -424,6 +441,7 @@ impl PostgresClient {
     /// Insert a single [`crate::events::BenchmarkEvent`] into `hot_cache_events`.
     /// Returns the time the INSERT was acknowledged by the server.
     #[allow(clippy::cast_possible_wrap)]
+    #[allow(dead_code)]
     pub async fn insert_hot_cache_event(
         &self,
         event: &crate::events::BenchmarkEvent,
@@ -446,6 +464,7 @@ impl PostgresClient {
     /// Read the last `n` events from `hot_cache_events` ordered by `seq`
     /// descending, then reversed to **oldest-first**.
     #[allow(clippy::cast_sign_loss)]
+    #[allow(dead_code)]
     pub async fn read_last_n_hot_cache_events(
         &self,
         n: i64,

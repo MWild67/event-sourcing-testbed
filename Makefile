@@ -6,7 +6,7 @@
         test-storage test-bench test-failover test-monitoring \
 	test-mongodb test-postgres test-rehydration \
 	test-hot-cache test-projection test-search test-scale \
-	test-rate-ramp test-replay-under-write test-failover-impact \
+	test-rate-ramp test-replay-under-write test-replay-preflight test-failover-impact \
         logs-es logs-rmq pf-grafana pf-prom pf-es
 
 NAMESPACE     := event-store
@@ -173,6 +173,23 @@ test-replay-under-write: ## Test 13: Replay-under-write (write latency regressio
 	EVENT_STORE_MODE=$(if $(EVENT_STORE_MODE),$(EVENT_STORE_MODE),0) \
 	TESTBED_IMAGE=$(TESTBED_IMAGE) \
 	  bash tests/13-replay-under-write-test.sh
+
+test-replay-preflight: ## Fast local replay-under-write smoke test for all backends (DIRECT=1)
+	@set -e; \
+	echo "Running replay preflight (kurrentdb, mongodb, postgres)"; \
+	for backend in kurrentdb mongodb postgres; do \
+	  echo ""; \
+	  echo "[preflight] backend=$$backend"; \
+	  DIRECT=1 \
+	  BACKEND=$$backend \
+	  SEED_EVENTS=$${SEED_EVENTS:-1000} \
+	  DURATION_SECS=$${DURATION_SECS:-3} \
+	  CONCURRENCY=$${CONCURRENCY:-4} \
+	  TARGET_RATE=$${TARGET_RATE:-200} \
+	  EVENT_STORE_MODE=$${EVENT_STORE_MODE:-0} \
+	  TESTBED_IMAGE=$(TESTBED_IMAGE) \
+	    bash tests/13-replay-under-write-test.sh; \
+	done
 
 test-failover-impact: ## Test 14: Short failover-impact (pause window, error spike, recovery time)
 	RECOVERY_SLA_SECS=$(if $(RECOVERY_SLA_SECS),$(RECOVERY_SLA_SECS),60) \

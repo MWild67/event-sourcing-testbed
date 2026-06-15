@@ -493,7 +493,6 @@ async fn main() -> Result<()> {
                 seed_batch_size: args.seed_batch_size,
                 stream_name: args.stream_name,
                 database: String::new(),
-                json: args.json,
             };
             let result = hot_cache_bench::run_kurrentdb(&cli.kurrentdb_url, config).await?;
             if args.json {
@@ -513,7 +512,6 @@ async fn main() -> Result<()> {
                 seed_batch_size: args.seed_batch_size,
                 stream_name: args.stream_name,
                 database: args.database,
-                json: args.json,
             };
             let result = hot_cache_bench::run_mongo(&cli.mongodb_url, config).await?;
             if args.json {
@@ -533,7 +531,6 @@ async fn main() -> Result<()> {
                 seed_batch_size: args.seed_batch_size,
                 stream_name: args.stream_name,
                 database: String::new(),
-                json: args.json,
             };
             let result = hot_cache_bench::run_postgres(&cli.postgres_url, config).await?;
             if args.json {

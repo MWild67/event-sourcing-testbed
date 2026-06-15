@@ -59,17 +59,6 @@ pub struct ProjectionBenchArgs {
     pub json: bool,
 }
 
-#[derive(Debug)]
-pub struct ProjectionBenchArgs2 {
-    pub seed_events: usize,
-    pub live_events: usize,
-    pub view_size: usize,
-    pub stream_name: String,
-    pub poll_interval_ms: u64,
-    pub json: bool,
-    pub database: String,
-}
-
 // ── MongoDB-specific args ─────────────────────────────────────────────────────
 
 #[derive(clap::Parser, Debug)]

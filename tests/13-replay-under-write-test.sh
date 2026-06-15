@@ -35,9 +35,13 @@ NS="event-store"
 IMAGE="${TESTBED_IMAGE:-event-sourcing-testbed:latest}"
 DIRECT="${DIRECT:-0}"
 TESTBED_BIN="${TESTBED_BIN:-rust-app/target/release/testbed}"
-# Handle .exe extension on Windows
+# Prefer native Linux build from CARGO_TARGET_DIR when present.
+if [[ ! -x "$TESTBED_BIN" ]] && [[ -n "${CARGO_TARGET_DIR:-}" ]] && [[ -x "${CARGO_TARGET_DIR}/release/testbed" ]]; then
+    TESTBED_BIN="${CARGO_TARGET_DIR}/release/testbed"
+fi
+# Handle .exe extension as final fallback.
 if [[ ! -x "$TESTBED_BIN" ]] && [[ -x "${TESTBED_BIN}.exe" ]]; then
-  TESTBED_BIN="${TESTBED_BIN}.exe"
+    TESTBED_BIN="${TESTBED_BIN}.exe"
 fi
 BACKEND="${BACKEND:-kurrentdb}"
 SEED_EVENTS="${SEED_EVENTS:-100000}"
@@ -72,6 +76,28 @@ is_true() {
 require_cmd() {
     command -v "$1" &>/dev/null \
         || { fail "'$1' not found in PATH"; exit 1; }
+}
+
+run_and_extract_json() {
+    local label="$1"
+    shift
+
+    local output
+    output=$("$@" 2>&1) || {
+        fail "${label} command failed"
+        echo "$output" >&2
+        return 1
+    }
+
+    local json
+    json=$(echo "$output" | grep '^{' | tail -1 || true)
+    if [[ -z "$json" ]]; then
+        fail "${label} produced no JSON output"
+        echo "$output" >&2
+        return 1
+    fi
+
+    echo "$json"
 }
 
 parse_json_field() {
@@ -145,7 +171,8 @@ EOF
 }
 
 run_direct_baseline() {
-    local url="$1"
+    local url_flag="$1"
+    local url_value="$2"
     local stream="test-replay-baseline-$$"
     
     # Map backend name to bench command name
@@ -166,9 +193,7 @@ run_direct_baseline() {
     step "Baseline write benchmark (${BACKEND})"
     
     "$TESTBED_BIN" \
-        --kurrentdb-url "$url" \
-        --mongodb-url "$url" \
-        --postgres-url "$url" \
+        "$url_flag" "$url_value" \
         "$bench_cmd" \
         --target-rate "$TARGET_RATE" \
         --concurrency "$CONCURRENCY" \
@@ -179,7 +204,8 @@ run_direct_baseline() {
 }
 
 run_direct_concurrent() {
-    local url="$1"
+    local url_flag="$1"
+    local url_value="$2"
     
     # Map backend name to bench command name
     local bench_cmd
@@ -203,9 +229,7 @@ run_direct_concurrent() {
     # In a full implementation, this would spawn write and replay tasks concurrently.
     
     "$TESTBED_BIN" \
-        --kurrentdb-url "$url" \
-        --mongodb-url "$url" \
-        --postgres-url "$url" \
+        "$url_flag" "$url_value" \
         "$bench_cmd" \
         --target-rate "$TARGET_RATE" \
         --concurrency "$CONCURRENCY" \
@@ -227,17 +251,23 @@ echo "  Concurrency   : ${CONCURRENCY}"
 echo "  Store mode    : ${EVENT_STORE_MODE}"
 
 if [[ "$DIRECT" == "1" ]]; then
-    [[ -x "$TESTBED_BIN" ]] || fail "testbed binary not found or not executable: $TESTBED_BIN"
+    if [[ ! -x "$TESTBED_BIN" ]]; then
+        fail "testbed binary not found or not executable: $TESTBED_BIN"
+        exit 1
+    fi
     
     case "$BACKEND" in
         kurrentdb)
-            url="$KURRENT_URL_DIRECT"
+            url_flag="--kurrentdb-url"
+            url_value="$KURRENT_URL_DIRECT"
             ;;
         mongodb)
-            url="$MONGO_URL_DIRECT"
+            url_flag="--mongodb-url"
+            url_value="$MONGO_URL_DIRECT"
             ;;
         postgres)
-            url="$PG_URL_DIRECT"
+            url_flag="--postgres-url"
+            url_value="$PG_URL_DIRECT"
             ;;
         *)
             fail "unknown backend: $BACKEND"
@@ -245,12 +275,12 @@ if [[ "$DIRECT" == "1" ]]; then
             ;;
     esac
     
-    baseline_json=$(run_direct_baseline "$url" 2>&1 | grep '^{' | tail -1)
+    baseline_json=$(run_and_extract_json "baseline benchmark" run_direct_baseline "$url_flag" "$url_value")
     baseline_p99=$(echo "$baseline_json" | grep -oP '"p99_us":\s*\K[^,}]+' || echo "0")
     
     pass "baseline p99: ${baseline_p99} µs"
     
-    concurrent_json=$(run_direct_concurrent "$url" 2>&1 | grep '^{' | tail -1)
+    concurrent_json=$(run_and_extract_json "concurrent benchmark" run_direct_concurrent "$url_flag" "$url_value")
     concurrent_p99=$(echo "$concurrent_json" | grep -oP '"p99_us":\s*\K[^,}]+' || echo "0")
     
     pass "concurrent p99: ${concurrent_p99} µs"
@@ -269,13 +299,16 @@ else
     
     case "$BACKEND" in
         kurrentdb)
-            url="$KURRENT_URL"
+            url_flag="--kurrentdb-url"
+            url_value="$KURRENT_URL"
             ;;
         mongodb)
-            url="$MONGO_URL"
+            url_flag="--mongodb-url"
+            url_value="$MONGO_URL"
             ;;
         postgres)
-            url="$PG_URL"
+            url_flag="--postgres-url"
+            url_value="$PG_URL"
             ;;
         *)
             fail "unknown backend: $BACKEND"
@@ -287,7 +320,7 @@ else
     # This is a simplified version; full implementation would coordinate two concurrent jobs.
     
     # Map backend name to bench command name
-    local bench_cmd
+    bench_cmd=""
     case "$BACKEND" in
         kurrentdb) bench_cmd="kurrentdb-bench" ;;
         mongodb)   bench_cmd="mongo-bench" ;;
@@ -296,7 +329,7 @@ else
     esac
     
     # Add event-store-mode flag for MongoDB/PostgreSQL when needed
-    local mode_arg=""
+    mode_arg=""
     if [[ "$BACKEND" != "kurrentdb" ]] && is_true "$EVENT_STORE_MODE"; then
         mode_arg="--event-store-mode"
     fi
@@ -307,9 +340,7 @@ else
     step "Submitting baseline Job: $job_baseline"
     run_job "$job_baseline" \
         "$TESTBED_BIN" \
-        "--kurrentdb-url=$url" \
-        "--mongodb-url=$url" \
-        "--postgres-url=$url" \
+        "$url_flag=$url_value" \
         "$bench_cmd" \
         "--target-rate=$TARGET_RATE" \
         "--concurrency=$CONCURRENCY" \
@@ -319,7 +350,13 @@ else
         "--json"
     
     # Extract baseline from logs
-    baseline_json=$(kubectl logs -n "$NS" "job/$job_baseline" --tail 500 | grep '^{' | tail -1)
+    baseline_logs=$(kubectl logs -n "$NS" "job/$job_baseline" --tail 500 2>&1 || true)
+    baseline_json=$(echo "$baseline_logs" | grep '^{' | tail -1 || true)
+    if [[ -z "$baseline_json" ]]; then
+        fail "baseline job produced no JSON output"
+        echo "$baseline_logs" >&2
+        exit 1
+    fi
     baseline_p99=$(echo "$baseline_json" | grep -oP '"p99_us":\s*\K[^,}]+' || echo "0")
     
     pass "baseline p99: ${baseline_p99} µs"
@@ -331,9 +368,7 @@ else
     step "Submitting concurrent Job: $job_concurrent"
     run_job "$job_concurrent" \
         "$TESTBED_BIN" \
-        "--kurrentdb-url=$url" \
-        "--mongodb-url=$url" \
-        "--postgres-url=$url" \
+        "$url_flag=$url_value" \
         "$bench_cmd" \
         "--target-rate=$TARGET_RATE" \
         "--concurrency=$CONCURRENCY" \
@@ -342,7 +377,13 @@ else
         $mode_arg \
         "--json"
     
-    concurrent_json=$(kubectl logs -n "$NS" "job/$job_concurrent" --tail 500 | grep '^{' | tail -1)
+    concurrent_logs=$(kubectl logs -n "$NS" "job/$job_concurrent" --tail 500 2>&1 || true)
+    concurrent_json=$(echo "$concurrent_logs" | grep '^{' | tail -1 || true)
+    if [[ -z "$concurrent_json" ]]; then
+        fail "concurrent job produced no JSON output"
+        echo "$concurrent_logs" >&2
+        exit 1
+    fi
     concurrent_p99=$(echo "$concurrent_json" | grep -oP '"p99_us":\s*\K[^,}]+' || echo "0")
     
     pass "concurrent p99: ${concurrent_p99} µs"

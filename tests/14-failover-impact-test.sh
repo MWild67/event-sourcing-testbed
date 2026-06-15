@@ -18,7 +18,11 @@ set -euo pipefail
 NS="${NS:-event-store}"
 STS="${STS:-kurrentdb}"
 TESTBED_BIN="${TESTBED_BIN:-rust-app/target/release/testbed}"
-# Handle .exe extension on Windows
+# Prefer native Linux build from CARGO_TARGET_DIR when present.
+if [[ ! -x "$TESTBED_BIN" ]] && [[ -n "${CARGO_TARGET_DIR:-}" ]] && [[ -x "${CARGO_TARGET_DIR}/release/testbed" ]]; then
+  TESTBED_BIN="${CARGO_TARGET_DIR}/release/testbed"
+fi
+# Handle .exe extension as final fallback.
 if [[ ! -x "$TESTBED_BIN" ]] && [[ -x "${TESTBED_BIN}.exe" ]]; then
   TESTBED_BIN="${TESTBED_BIN}.exe"
 fi

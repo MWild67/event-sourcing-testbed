@@ -328,7 +328,7 @@ pub async fn run(kurrent_url: &str, event_count: u32, snapshot_every: u32) -> Re
     // ── Phase 2: stop — simulate a process restart ─────────────────────────
     println!();
     println!("  Phase 2 — Simulating process restart (dropping in-memory state)…");
-    drop(live_state); // explicitly drop to make the point clear
+    let _ = live_state; // explicit ownership boundary before rehydration
 
     // ── Phase 3: rehydrate from snapshot + trailing events ─────────────────
     println!();

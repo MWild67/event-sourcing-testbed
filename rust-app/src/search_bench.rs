@@ -758,15 +758,6 @@ pub async fn run_postgres(pg_url: &str, args: &SearchBenchArgs) -> Result<Search
 
 // ── Shared query runner ───────────────────────────────────────────────────────
 
-trait BenchName {
-    fn backend_name(&self) -> String;
-}
-impl BenchName for SearchBenchArgs {
-    fn backend_name(&self) -> String {
-        "KurrentDB → PostgreSQL FTS".to_string()
-    }
-}
-
 async fn run_queries(
     pool: &sqlx::PgPool,
     indexed: usize,
