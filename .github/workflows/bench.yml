@@ -590,10 +590,13 @@ jobs:
 
       - name: Run short failover-impact test
         run: |
-          set -euo pipefail
           chmod +x tests/14-failover-impact-test.sh
           tests/14-failover-impact-test.sh | tee failover-impact.log
-          grep '^{' failover-impact.log > kdb-failover-impact.json
+          if ! grep '^{' failover-impact.log > kdb-failover-impact.json; then
+            echo "ERROR: Failover-impact test failed or produced no JSON output"
+            tail -50 failover-impact.log >&2
+            exit 1
+          fi
 
       - name: Upload failover-impact artifact
         if: always()
@@ -650,9 +653,12 @@ jobs:
 
       - name: Rate ramp
         run: |
-          set -euo pipefail
           DIRECT=1 BACKEND=kurrentdb bash tests/12-rate-ramp-test.sh | tee ramp-output.log
-          grep '^{' ramp-output.log > kdb-rate-ramp.json
+          if ! grep '^{' ramp-output.log > kdb-rate-ramp.json; then
+            echo "ERROR: Rate ramp test failed or produced no JSON output"
+            tail -50 ramp-output.log >&2
+            exit 1
+          fi
 
       - name: Upload ramp result
         if: always()
@@ -698,9 +704,12 @@ jobs:
 
       - name: Replay-under-write test
         run: |
-          set -euo pipefail
           DIRECT=1 BACKEND=kurrentdb bash tests/13-replay-under-write-test.sh | tee replay-output.log
-          grep '^{' replay-output.log > kdb-replay-under-write.json
+          if ! grep '^{' replay-output.log > kdb-replay-under-write.json; then
+            echo "ERROR: Replay-under-write test failed or produced no JSON output"
+            tail -50 replay-output.log >&2
+            exit 1
+          fi
 
       - name: Upload result
         if: always()
@@ -994,15 +1003,21 @@ jobs:
 
       - name: Rate ramp (Peak mode)
         run: |
-          set -euo pipefail
           DIRECT=1 BACKEND=mongodb EVENT_STORE_MODE=0 bash tests/12-rate-ramp-test.sh | tee ramp-peak.log
-          grep '^{' ramp-peak.log > mdb-rate-ramp-peak.json
+          if ! grep '^{' ramp-peak.log > mdb-rate-ramp-peak.json; then
+            echo "ERROR: Rate ramp (Peak) test failed or produced no JSON output"
+            tail -50 ramp-peak.log >&2
+            exit 1
+          fi
 
       - name: Rate ramp (Durable mode)
         run: |
-          set -euo pipefail
           DIRECT=1 BACKEND=mongodb EVENT_STORE_MODE=1 bash tests/12-rate-ramp-test.sh | tee ramp-durable.log
-          grep '^{' ramp-durable.log > mdb-rate-ramp-durable.json
+          if ! grep '^{' ramp-durable.log > mdb-rate-ramp-durable.json; then
+            echo "ERROR: Rate ramp (Durable) test failed or produced no JSON output"
+            tail -50 ramp-durable.log >&2
+            exit 1
+          fi
 
       - name: Upload ramp results
         if: always()
@@ -1060,9 +1075,12 @@ jobs:
 
       - name: Replay-under-write test
         run: |
-          set -euo pipefail
           DIRECT=1 BACKEND=mongodb EVENT_STORE_MODE=${{ matrix.event_store_mode }} bash tests/13-replay-under-write-test.sh | tee replay-output.log
-          grep '^{' replay-output.log > mdb-replay-under-write-${{ matrix.mode }}.json
+          if ! grep '^{' replay-output.log > mdb-replay-under-write-${{ matrix.mode }}.json; then
+            echo "ERROR: Replay-under-write test failed or produced no JSON output"
+            tail -50 replay-output.log >&2
+            exit 1
+          fi
 
       - name: Upload result
         if: always()
@@ -1339,15 +1357,21 @@ jobs:
 
       - name: Rate ramp (Peak mode)
         run: |
-          set -euo pipefail
           DIRECT=1 BACKEND=postgres EVENT_STORE_MODE=0 bash tests/12-rate-ramp-test.sh | tee ramp-peak.log
-          grep '^{' ramp-peak.log > pg-rate-ramp-peak.json
+          if ! grep '^{' ramp-peak.log > pg-rate-ramp-peak.json; then
+            echo "ERROR: Rate ramp (Peak) test failed or produced no JSON output"
+            tail -50 ramp-peak.log >&2
+            exit 1
+          fi
 
       - name: Rate ramp (Durable mode)
         run: |
-          set -euo pipefail
           DIRECT=1 BACKEND=postgres EVENT_STORE_MODE=1 bash tests/12-rate-ramp-test.sh | tee ramp-durable.log
-          grep '^{' ramp-durable.log > pg-rate-ramp-durable.json
+          if ! grep '^{' ramp-durable.log > pg-rate-ramp-durable.json; then
+            echo "ERROR: Rate ramp (Durable) test failed or produced no JSON output"
+            tail -50 ramp-durable.log >&2
+            exit 1
+          fi
 
       - name: Upload ramp results
         if: always()
@@ -1399,9 +1423,12 @@ jobs:
 
       - name: Replay-under-write test
         run: |
-          set -euo pipefail
           DIRECT=1 BACKEND=postgres EVENT_STORE_MODE=${{ matrix.event_store_mode }} bash tests/13-replay-under-write-test.sh | tee replay-output.log
-          grep '^{' replay-output.log > pg-replay-under-write-${{ matrix.mode }}.json
+          if ! grep '^{' replay-output.log > pg-replay-under-write-${{ matrix.mode }}.json; then
+            echo "ERROR: Replay-under-write test failed or produced no JSON output"
+            tail -50 replay-output.log >&2
+            exit 1
+          fi
 
       - name: Upload result
         if: always()

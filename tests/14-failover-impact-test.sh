@@ -18,6 +18,10 @@ set -euo pipefail
 NS="${NS:-event-store}"
 STS="${STS:-kurrentdb}"
 TESTBED_BIN="${TESTBED_BIN:-rust-app/target/release/testbed}"
+# Handle .exe extension on Windows
+if [[ ! -x "$TESTBED_BIN" ]] && [[ -x "${TESTBED_BIN}.exe" ]]; then
+  TESTBED_BIN="${TESTBED_BIN}.exe"
+fi
 KURRENT_URL="${KURRENT_URL:-kurrentdb://localhost:2116?tls=false}"
 HEALTH_URL="${HEALTH_URL:-http://127.0.0.1:2116/health/live}"
 PF_RESOURCE="${PF_RESOURCE:-svc/kurrentdb}"

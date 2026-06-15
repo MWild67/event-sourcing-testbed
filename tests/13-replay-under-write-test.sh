@@ -35,6 +35,10 @@ NS="event-store"
 IMAGE="${TESTBED_IMAGE:-event-sourcing-testbed:latest}"
 DIRECT="${DIRECT:-0}"
 TESTBED_BIN="${TESTBED_BIN:-rust-app/target/release/testbed}"
+# Handle .exe extension on Windows
+if [[ ! -x "$TESTBED_BIN" ]] && [[ -x "${TESTBED_BIN}.exe" ]]; then
+  TESTBED_BIN="${TESTBED_BIN}.exe"
+fi
 BACKEND="${BACKEND:-kurrentdb}"
 SEED_EVENTS="${SEED_EVENTS:-100000}"
 DURATION_SECS="${DURATION_SECS:-30}"
@@ -60,6 +64,10 @@ pass() { echo "  ✓ $*"; }
 fail() { echo "  ✗ $*" >&2; }
 step() { echo; echo "▶ $*"; }
 warn() { echo "  ⚠  $*"; }
+
+is_true() {
+  [[ "$1" == "1" || "$1" == "true" || "$1" == "TRUE" ]]
+}
 
 require_cmd() {
     command -v "$1" &>/dev/null \
@@ -140,22 +148,53 @@ run_direct_baseline() {
     local url="$1"
     local stream="test-replay-baseline-$$"
     
+    # Map backend name to bench command name
+    local bench_cmd
+    case "$BACKEND" in
+        kurrentdb) bench_cmd="kurrentdb-bench" ;;
+        mongodb)   bench_cmd="mongo-bench" ;;
+        postgres)  bench_cmd="pg-bench" ;;
+        *)         fail "unknown backend: $BACKEND"; exit 1 ;;
+    esac
+    
+    # Add event-store-mode flag for MongoDB/PostgreSQL when needed
+    local mode_flag=""
+    if [[ "$BACKEND" != "kurrentdb" ]] && is_true "$EVENT_STORE_MODE"; then
+        mode_flag="--event-store-mode"
+    fi
+    
     step "Baseline write benchmark (${BACKEND})"
     
     "$TESTBED_BIN" \
         --kurrentdb-url "$url" \
         --mongodb-url "$url" \
         --postgres-url "$url" \
-        "${BACKEND}-bench" \
+        "$bench_cmd" \
         --target-rate "$TARGET_RATE" \
         --concurrency "$CONCURRENCY" \
         --batch-size "$BATCH_SIZE" \
         --duration-secs "$DURATION_SECS" \
+        $mode_flag \
         --json
 }
 
 run_direct_concurrent() {
     local url="$1"
+    
+    # Map backend name to bench command name
+    local bench_cmd
+    case "$BACKEND" in
+        kurrentdb) bench_cmd="kurrentdb-bench" ;;
+        mongodb)   bench_cmd="mongo-bench" ;;
+        postgres)  bench_cmd="pg-bench" ;;
+        *)         fail "unknown backend: $BACKEND"; exit 1 ;;
+    esac
+    
+    # Add event-store-mode flag for MongoDB/PostgreSQL when needed
+    local mode_flag=""
+    if [[ "$BACKEND" != "kurrentdb" ]] && is_true "$EVENT_STORE_MODE"; then
+        mode_flag="--event-store-mode"
+    fi
     
     step "Concurrent write + replay benchmark (${BACKEND})"
     
@@ -167,11 +206,12 @@ run_direct_concurrent() {
         --kurrentdb-url "$url" \
         --mongodb-url "$url" \
         --postgres-url "$url" \
-        "${BACKEND}-bench" \
+        "$bench_cmd" \
         --target-rate "$TARGET_RATE" \
         --concurrency "$CONCURRENCY" \
         --batch-size "$BATCH_SIZE" \
         --duration-secs "$DURATION_SECS" \
+        $mode_flag \
         --json
 }
 
@@ -246,6 +286,21 @@ else
     # In K8s mode, orchestrate via Jobs
     # This is a simplified version; full implementation would coordinate two concurrent jobs.
     
+    # Map backend name to bench command name
+    local bench_cmd
+    case "$BACKEND" in
+        kurrentdb) bench_cmd="kurrentdb-bench" ;;
+        mongodb)   bench_cmd="mongo-bench" ;;
+        postgres)  bench_cmd="pg-bench" ;;
+        *)         fail "unknown backend: $BACKEND"; exit 1 ;;
+    esac
+    
+    # Add event-store-mode flag for MongoDB/PostgreSQL when needed
+    local mode_arg=""
+    if [[ "$BACKEND" != "kurrentdb" ]] && is_true "$EVENT_STORE_MODE"; then
+        mode_arg="--event-store-mode"
+    fi
+    
     job_baseline="replay-under-write-baseline-$BACKEND-$$"
     job_concurrent="replay-under-write-concurrent-$BACKEND-$$"
     
@@ -255,11 +310,12 @@ else
         "--kurrentdb-url=$url" \
         "--mongodb-url=$url" \
         "--postgres-url=$url" \
-        "${BACKEND}-bench" \
+        "$bench_cmd" \
         "--target-rate=$TARGET_RATE" \
         "--concurrency=$CONCURRENCY" \
         "--batch-size=$BATCH_SIZE" \
         "--duration-secs=$DURATION_SECS" \
+        $mode_arg \
         "--json"
     
     # Extract baseline from logs
@@ -278,11 +334,12 @@ else
         "--kurrentdb-url=$url" \
         "--mongodb-url=$url" \
         "--postgres-url=$url" \
-        "${BACKEND}-bench" \
+        "$bench_cmd" \
         "--target-rate=$TARGET_RATE" \
         "--concurrency=$CONCURRENCY" \
         "--batch-size=$BATCH_SIZE" \
         "--duration-secs=$DURATION_SECS" \
+        $mode_arg \
         "--json"
     
     concurrent_json=$(kubectl logs -n "$NS" "job/$job_concurrent" --tail 500 | grep '^{' | tail -1)

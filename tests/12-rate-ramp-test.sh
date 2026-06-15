@@ -22,6 +22,10 @@ NS="event-store"
 IMAGE="${TESTBED_IMAGE:-event-sourcing-testbed:latest}"
 DIRECT="${DIRECT:-0}"
 TESTBED_BIN="${TESTBED_BIN:-rust-app/target/release/testbed}"
+# Handle .exe extension on Windows
+if [[ ! -x "$TESTBED_BIN" ]] && [[ -x "${TESTBED_BIN}.exe" ]]; then
+  TESTBED_BIN="${TESTBED_BIN}.exe"
+fi
 
 BACKEND="${BACKEND:-kurrentdb}"
 RATE_STEPS="${RATE_STEPS:-1000 3000 5000 8000 10000}"
