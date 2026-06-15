@@ -61,6 +61,33 @@ impl KurrentClient {
         Ok(result.next_expected_version)
     }
 
+    /// Append a single event using an explicit expected stream state.
+    ///
+    /// Used by contention benchmarks to trigger and measure optimistic
+    /// concurrency conflicts on hot streams.
+    #[allow(clippy::future_not_send)]
+    pub async fn append_with_stream_state<T: Serialize>(
+        &self,
+        stream_name: &str,
+        event_type: &str,
+        payload: &T,
+        stream_state: StreamState,
+    ) -> Result<u64> {
+        let event = EventData::json(event_type, payload)
+            .with_context(|| format!("failed to serialise event type '{event_type}'"))?
+            .id(Uuid::new_v4());
+
+        let opts = AppendToStreamOptions::default().stream_state(stream_state);
+
+        let result = self
+            .inner
+            .append_to_stream(stream_name, &opts, event)
+            .await
+            .with_context(|| format!("append to stream '{stream_name}' failed"))?;
+
+        Ok(result.next_expected_version)
+    }
+
     /// Append a pre-built batch of events in a single gRPC call.
     /// More efficient at high throughput than one-by-one appends.
     #[allow(clippy::future_not_send)]

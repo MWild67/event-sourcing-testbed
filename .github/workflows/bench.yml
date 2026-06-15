@@ -22,6 +22,7 @@ name: Benchmarks
           - kdb-failover-impact
           - kdb-rate-ramp
           - kdb-replay-under-write
+          - kdb-hot-stream-contention
           - mdb-docker
           - mdb-k8s
           - mdb-rehydrate
@@ -48,7 +49,7 @@ jobs:
   #   - Core throughput (MEM_DB / Docker / Kubernetes)
   #   - Rehydration + scale
   #   - Reliability/failover
-  #   - Scenario tests (rate ramp, replay-under-write)
+  #   - Scenario tests (rate ramp, replay-under-write, hot-stream-contention)
   # ════════════════════════════════════════════════════════════════════════════
 
   kdb-memdb:
@@ -750,6 +751,59 @@ jobs:
         with:
           name: kdb-replay-under-write-result
           path: kdb-replay-under-write.json
+          if-no-files-found: warn
+
+  # ── KurrentDB: Scenario — Hot-Stream Contention ──────────────────────────
+  kdb-hot-stream-contention:
+    name: "KurrentDB: Hot-Stream Contention"
+    runs-on: ubuntu-22.04
+    if: github.event_name != 'workflow_dispatch' || inputs.job == '' || inputs.job == 'kdb-hot-stream-contention'
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install KurrentDB (MEM_DB)
+        run: |
+          curl -1sLf 'https://dl.cloudsmith.io/public/eventstore/kurrent-latest/setup.deb.sh' | sudo -E bash
+          sudo apt-get install -y kurrentdb
+          sudo systemctl stop kurrentdb || true
+          getent passwd kurrentdb > /dev/null || sudo useradd --system --no-create-home --shell /usr/sbin/nologin kurrentdb
+          sudo mkdir -p /tmp/esdb /tmp/esdb-log
+          sudo chown kurrentdb:kurrentdb /tmp/esdb /tmp/esdb-log
+          sudo mkdir -p /etc/systemd/system/kurrentdb.service.d
+          printf '[Service]\nEnvironment="KURRENTDB_DB=/tmp/esdb"\nEnvironment="KURRENTDB_LOG=/tmp/esdb-log"\nEnvironment="KURRENTDB_INSECURE=true"\nEnvironment="KURRENTDB_RUN_PROJECTIONS=None"\nEnvironment="KURRENTDB_UNSAFE_DISABLE_FLUSH_TO_DISK=true"\nEnvironment="KURRENTDB_CLUSTER_SIZE=1"\nEnvironment="KURRENTDB_MEM_DB=true"\n' \
+            | sudo tee /etc/systemd/system/kurrentdb.service.d/bench.conf
+          sudo systemctl daemon-reload
+          sudo systemctl start kurrentdb
+          for i in $(seq 1 30); do curl -sf http://localhost:2113/health/live && break || sleep 2; done
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            rust-app/target
+          key: bench-${{ runner.os }}-cargo-${{ hashFiles('rust-app/Cargo.lock') }}
+
+      - name: Build
+        run: cargo build --release --manifest-path rust-app/Cargo.toml
+
+      - name: Hot-stream contention test
+        run: |
+          chmod +x tests/15-hot-stream-contention-test.sh
+          DIRECT=1 KURRENT_URL_DIRECT='kurrentdb://localhost:2113?tls=false' bash tests/15-hot-stream-contention-test.sh | tee hot-stream-output.log
+          if ! grep '^{' hot-stream-output.log > kdb-hot-stream-contention.json; then
+            echo "ERROR: Hot-stream contention test failed or produced no JSON output"
+            tail -50 hot-stream-output.log >&2
+            exit 1
+          fi
+
+      - name: Upload result
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: kdb-hot-stream-contention-result
+          path: kdb-hot-stream-contention.json
           if-no-files-found: warn
 
   # ════════════════════════════════════════════════════════════════════════════
@@ -1513,6 +1567,7 @@ jobs:
       - mdb-rate-ramp
       - pg-rate-ramp
       - kdb-replay-under-write
+      - kdb-hot-stream-contention
       - mdb-replay-under-write
       - pg-replay-under-write
     steps:
@@ -1681,6 +1736,10 @@ jobs:
             'pg-durable': 'pg-replay-under-write-durable.json',
           })
 
+          contention_data = load_jsons('bench-artifacts', {
+            'kdb': 'kdb-hot-stream-contention.json',
+          })
+
           failover_impact = load_jsons('bench-artifacts', {
             'kdb': 'kdb-failover-impact.json',
           })
@@ -1729,6 +1788,7 @@ jobs:
             f.write('## Benchmark Results\n\n')
             f.write(f'> **Artifacts discovered:** {artifact_json_count} JSON files in bench-artifacts\n')
             f.write(f'> **Parsed sections:** throughput={len(mode_data)}, ramp={len(ramp_data)}, replay={len(replay_data)}, failover_impact={len(failover_impact)}\n')
+            f.write(f'> **Hot-stream contention artifacts:** {len(contention_data)}\n')
             f.write('> **Conditions:** peak + durable modes · 10 k ev/s target · 30 s · 64 concurrent tasks · ubuntu-22.04\n')
             f.write('> **Rehydration:** 50 000 events · sequential write then full replay\n')
             f.write('> **Scale:** 100 k events · CI loopback (no VM bridge)\n\n')
@@ -1833,6 +1893,24 @@ jobs:
               f.write('\n')
             else:
               f.write('_Replay-under-write tests did not produce artifacts._\n\n')
+
+            f.write('### Hot-Stream Contention — Conflict/Retry + Tail Impact\n\n')
+            if 'kdb' in contention_data:
+              d = contention_data['kdb']
+              f.write('| Metric | Value |\n')
+              f.write('|--------|------:|\n')
+              f.write(f'| Baseline p99 (us) | {d.get("baseline_p99_us", "n/a")} |\n')
+              f.write(f'| Contention p99 (us) | {d.get("contention_p99_us", "n/a")} |\n')
+              f.write(f'| Tail latency factor | {d.get("tail_latency_factor", "n/a")}x |\n')
+              f.write(f'| Hot writes | {d.get("hot_events", "n/a")} |\n')
+              f.write(f'| Cold writes | {d.get("cold_events", "n/a")} |\n')
+              f.write(f'| Conflict count | {d.get("conflict_count", "n/a")} |\n')
+              f.write(f'| Retry count | {d.get("retry_count", "n/a")} |\n')
+              f.write(f'| Retry success count | {d.get("retry_success_count", "n/a")} |\n')
+              f.write(f'| Retry exhausted count | {d.get("retry_exhausted_count", "n/a")} |\n')
+              f.write(f'| Failed writes | {d.get("failed_writes", "n/a")} |\n\n')
+            else:
+              f.write('_Hot-stream contention artifact missing._\n\n')
 
             f.write('---\n')
             f.write('_All backends use RAM (tmpfs/emptyDir). Numbers reflect protocol + semantic overhead, not production throughput._\n')

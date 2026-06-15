@@ -116,6 +116,53 @@ enum Commands {
     KurrentdbScaleBench(scale_bench::ScaleBenchArgs),
     /// Scale benchmark against `MongoDB`.
     MongoScaleBench(scale_bench::MongoScaleBenchArgs),
+    /// Hot-stream contention benchmark against `KurrentDB`:
+    /// concentrates writes on a small hot set using optimistic concurrency,
+    /// while keeping background distributed writes active.
+    KurrentdbHotStreamContentionBench(KurrentdbHotStreamContentionBenchArgs),
+}
+
+#[derive(Parser)]
+struct KurrentdbHotStreamContentionBenchArgs {
+    /// Aggregate target write rate (events/sec) during each phase.
+    #[arg(long, default_value_t = 8_000)]
+    target_rate: u64,
+
+    /// Baseline phase duration in seconds (distributed writes only).
+    #[arg(long, default_value_t = 15)]
+    baseline_duration_secs: u64,
+
+    /// Contention phase duration in seconds.
+    #[arg(long, default_value_t = 20)]
+    contention_duration_secs: u64,
+
+    /// Maximum concurrent in-flight writes.
+    #[arg(long, default_value_t = 64)]
+    concurrency: u64,
+
+    /// Number of hot streams receiving skewed writes.
+    #[arg(long, default_value_t = 4)]
+    hot_streams: u64,
+
+    /// Number of background distributed streams.
+    #[arg(long, default_value_t = 128)]
+    cold_streams: u64,
+
+    /// Fraction [0..1] of writes sent to hot streams.
+    #[arg(long, default_value_t = 0.9)]
+    hot_ratio: f64,
+
+    /// Max retries for a hot write on conflict.
+    #[arg(long, default_value_t = 8)]
+    max_retries: u64,
+
+    /// Stream name prefix.
+    #[arg(long, default_value = "hot-stream")]
+    stream_prefix: String,
+
+    /// Emit results as a single JSON line.
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Parser)]
@@ -634,6 +681,31 @@ async fn main() -> Result<()> {
 
         Commands::MongoScaleBench(args) => {
             let result = scale_bench::run_mongo(&cli.mongodb_url, &args).await?;
+            if args.json {
+                result.print_json();
+            } else {
+                result.print_report();
+            }
+            let _ = std::io::stdout().flush();
+            let _ = std::io::stderr().flush();
+        }
+
+        Commands::KurrentdbHotStreamContentionBench(args) => {
+            let config = kurrentdb::hot_stream_contention_bench::HotStreamContentionConfig {
+                target_rate: args.target_rate,
+                baseline_duration_secs: args.baseline_duration_secs,
+                contention_duration_secs: args.contention_duration_secs,
+                concurrency: args.concurrency,
+                hot_streams: args.hot_streams,
+                cold_streams: args.cold_streams,
+                hot_ratio: args.hot_ratio,
+                max_retries: args.max_retries,
+                stream_prefix: args.stream_prefix,
+            };
+
+            let result = kurrentdb::hot_stream_contention_bench::run(&cli.kurrentdb_url, config)
+                .await?;
+
             if args.json {
                 result.print_json();
             } else {

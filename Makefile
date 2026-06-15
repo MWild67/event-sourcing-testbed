@@ -7,6 +7,7 @@
 	test-mongodb test-postgres test-rehydration \
 	test-hot-cache test-projection test-search test-scale \
 	test-rate-ramp test-replay-under-write test-replay-preflight test-failover-impact \
+	test-hot-stream-contention \
 	test-failover-impact-local \
         logs-es logs-rmq pf-grafana pf-prom pf-es
 
@@ -104,7 +105,7 @@ test-all: test-storage test-bench test-failover test-monitoring test-mongodb tes
 	@echo "  Core test suite completed."
 	@echo "════════════════════════════════════════"
 
-test-all-extended: test-all test-hot-cache test-projection test-search test-scale test-rate-ramp test-replay-under-write test-failover-impact ## Run core + advanced tests (long)
+test-all-extended: test-all test-hot-cache test-projection test-search test-scale test-rate-ramp test-replay-under-write test-hot-stream-contention test-failover-impact ## Run core + advanced tests (long)
 	@echo ""
 	@echo "════════════════════════════════════════"
 	@echo "  Extended test suite completed."
@@ -204,6 +205,18 @@ test-failover-impact: ## Test 14: Short failover-impact (pause window, error spi
 
 test-failover-impact-local: ## Test 14 local CI-like repro using k3d (creates temporary cluster)
 	bash tests/14-failover-impact-local-repro.sh
+
+test-hot-stream-contention: ## Test 15: Hot-stream contention (conflicts/retries + tail-latency impact)
+	DIRECT=$(DIRECT) \
+	TARGET_RATE=$(if $(TARGET_RATE),$(TARGET_RATE),6000) \
+	BASELINE_DURATION_SECS=$(if $(BASELINE_DURATION_SECS),$(BASELINE_DURATION_SECS),12) \
+	CONTENTION_DURATION_SECS=$(if $(CONTENTION_DURATION_SECS),$(CONTENTION_DURATION_SECS),18) \
+	CONCURRENCY=$(if $(CONCURRENCY),$(CONCURRENCY),64) \
+	HOT_STREAMS=$(if $(HOT_STREAMS),$(HOT_STREAMS),3) \
+	COLD_STREAMS=$(if $(COLD_STREAMS),$(COLD_STREAMS),128) \
+	HOT_RATIO=$(if $(HOT_RATIO),$(HOT_RATIO),0.92) \
+	MAX_RETRIES=$(if $(MAX_RETRIES),$(MAX_RETRIES),10) \
+	bash tests/15-hot-stream-contention-test.sh
 
 # ── Utility ───────────────────────────────────────────────────────────────────
 logs-es: ## Tail KurrentDB logs
