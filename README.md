@@ -186,10 +186,11 @@ to `main`: 18 benchmark/reliability jobs + 1 report job. All use `ubuntu-22.04`
 The workflow supports a `workflow_dispatch` trigger with a **job selector** so you can
 re-run only one job instead of waiting for the full suite (~1–2 hours):
 
-1. Go to **Actions → Benchmarks** in the GitHub repository.
-2. Click **"Run workflow"** (top-right of the job list).
-3. Pick a job from the **"Job to run"** dropdown — leave it blank to run everything.
-4. Click **"Run workflow"**.
+1. Click the **Actions** tab at the top of the GitHub repository.
+2. In the left sidebar under "Workflows", click **Benchmarks**.
+3. Click the **"Run workflow"** button with a dropdown arrow (on the right side, below the tab bar).
+4. Pick a job from the **"Job to run"** dropdown — leave it blank to run everything.
+5. Click **"Run workflow"** to trigger the run.
 
 When a specific job is selected, all other benchmark jobs and the `report` job are
 skipped automatically, so only the chosen job consumes runner minutes.

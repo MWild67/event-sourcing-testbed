@@ -33,6 +33,8 @@ SPIKE_WINDOW_MS="${SPIKE_WINDOW_MS:-5000}"
 PROBE_INTERVAL_SECS="${PROBE_INTERVAL_SECS:-0.2}"
 RECOVERY_SUCCESS_STREAK="${RECOVERY_SUCCESS_STREAK:-5}"
 
+export SPIKE_WINDOW_MS RECOVERY_SUCCESS_STREAK
+
 TARGET_NODE=""
 PF_PID=""
 PROBE_PID=""
@@ -215,6 +217,7 @@ kubectl cordon "$TARGET_NODE" >/dev/null
 kubectl taint nodes "$TARGET_NODE" node.kubernetes.io/unreachable:NoExecute --overwrite >/dev/null
 kubectl taint nodes "$TARGET_NODE" node.kubernetes.io/not-ready:NoExecute --overwrite >/dev/null
 FAILOVER_TS_MS=$(now_ms)
+export FAILOVER_TS_MS
 pass "failover triggered at ${FAILOVER_TS_MS}ms"
 
 wait "$BENCH_PID" || true
