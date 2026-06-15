@@ -21,6 +21,7 @@ set -euo pipefail
 NS="event-store"
 IMAGE="${TESTBED_IMAGE:-event-sourcing-testbed:latest}"
 DIRECT="${DIRECT:-0}"
+TESTBED_BIN="${TESTBED_BIN:-rust-app/target/release/testbed}"
 
 BACKEND="${BACKEND:-kurrentdb}"
 RATE_STEPS="${RATE_STEPS:-1000 3000 5000 8000 10000}"
@@ -105,7 +106,7 @@ run_direct_step() {
     mode_flag="--event-store-mode"
   fi
 
-  testbed \
+  "$TESTBED_BIN" \
     "$url_flag" "$url_value" \
     "$bench_cmd" \
     --target-rate "$rate" \
@@ -184,7 +185,7 @@ echo "  Knee factor       : ${KNEE_FACTOR}x"
 echo "  Knee min p99      : ${MIN_KNEE_P99_US} us"
 
 if [[ "$DIRECT" == "1" ]]; then
-  require_cmd testbed
+  [[ -x "$TESTBED_BIN" ]] || fail "testbed binary not found or not executable: $TESTBED_BIN"
 else
   require_cmd kubectl
 fi

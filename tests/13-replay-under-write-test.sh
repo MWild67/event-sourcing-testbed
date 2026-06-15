@@ -34,6 +34,7 @@ set -euo pipefail
 NS="event-store"
 IMAGE="${TESTBED_IMAGE:-event-sourcing-testbed:latest}"
 DIRECT="${DIRECT:-0}"
+TESTBED_BIN="${TESTBED_BIN:-rust-app/target/release/testbed}"
 BACKEND="${BACKEND:-kurrentdb}"
 SEED_EVENTS="${SEED_EVENTS:-100000}"
 DURATION_SECS="${DURATION_SECS:-30}"
@@ -141,7 +142,7 @@ run_direct_baseline() {
     
     step "Baseline write benchmark (${BACKEND})"
     
-    /workspace/rust-app/target/release/testbed \
+    "$TESTBED_BIN" \
         --kurrentdb-url "$url" \
         --mongodb-url "$url" \
         --postgres-url "$url" \
@@ -162,7 +163,7 @@ run_direct_concurrent() {
     # For now, we'll run writes and separately measure replay.
     # In a full implementation, this would spawn write and replay tasks concurrently.
     
-    /workspace/rust-app/target/release/testbed \
+    "$TESTBED_BIN" \
         --kurrentdb-url "$url" \
         --mongodb-url "$url" \
         --postgres-url "$url" \
@@ -186,7 +187,7 @@ echo "  Concurrency   : ${CONCURRENCY}"
 echo "  Store mode    : ${EVENT_STORE_MODE}"
 
 if [[ "$DIRECT" == "1" ]]; then
-    require_cmd /workspace/rust-app/target/release/testbed
+    [[ -x "$TESTBED_BIN" ]] || fail "testbed binary not found or not executable: $TESTBED_BIN"
     
     case "$BACKEND" in
         kurrentdb)
@@ -250,7 +251,7 @@ else
     
     step "Submitting baseline Job: $job_baseline"
     run_job "$job_baseline" \
-        /workspace/rust-app/target/release/testbed \
+        "$TESTBED_BIN" \
         "--kurrentdb-url=$url" \
         "--mongodb-url=$url" \
         "--postgres-url=$url" \
@@ -273,7 +274,7 @@ else
     # Concurrent job (in practice, would spawn two jobs that coordinate via shared storage or messaging)
     step "Submitting concurrent Job: $job_concurrent"
     run_job "$job_concurrent" \
-        /workspace/rust-app/target/release/testbed \
+        "$TESTBED_BIN" \
         "--kurrentdb-url=$url" \
         "--mongodb-url=$url" \
         "--postgres-url=$url" \
