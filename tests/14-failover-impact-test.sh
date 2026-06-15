@@ -125,7 +125,7 @@ wait_leader_elected() {
     local info_out
     if info_out=$(curl -fsS "http://127.0.0.1:2116/info" 2>/dev/null); then
       local has_leader
-      has_leader=$(echo "$info_out" | grep -c '"state"\s*:\s*"Leader"' || echo "0")
+      has_leader=$(echo "$info_out" | grep -cE '"state"\s*:\s*"Leader"' || echo "0")
       if [[ "$has_leader" -gt 0 ]]; then
         pass "leader elected"
         return 0
