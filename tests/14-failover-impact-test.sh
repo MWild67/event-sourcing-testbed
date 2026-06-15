@@ -118,6 +118,24 @@ start_port_forward() {
   pass "port-forward ready (pid=$PF_PID)"
 }
 
+wait_leader_elected() {
+  step "Wait for KurrentDB leader election"
+  local deadline=$(( $(date +%s) + 60 ))
+  while [[ $(date +%s) -lt $deadline ]]; do
+    local info_out
+    if info_out=$(curl -fsS "http://127.0.0.1:2116/info" 2>/dev/null); then
+      local has_leader
+      has_leader=$(echo "$info_out" | grep -c '"state"\s*:\s*"Leader"' || echo "0")
+      if [[ "$has_leader" -gt 0 ]]; then
+        pass "leader elected"
+        return 0
+      fi
+    fi
+    sleep 1
+  done
+  fail "KurrentDB did not elect leader within 60s"
+}
+
 run_probe_loop() {
   PROBE_CSV="$(mktemp)"
   export PROBE_CSV
@@ -182,6 +200,8 @@ node_count=$(kubectl get nodes --no-headers | grep -c ' Ready' || true)
 pass "cluster has $node_count ready nodes"
 
 start_port_forward
+
+wait_leader_elected
 
 step "Baseline latency run"
 BASELINE_LOG="$(mktemp)"
