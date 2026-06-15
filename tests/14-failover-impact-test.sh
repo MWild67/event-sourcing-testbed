@@ -305,6 +305,28 @@ pass "failover triggered at ${FAILOVER_TS_MS}ms"
 
 wait "$BENCH_PID" || true
 
+# Give system time for failover and new leader election
+sleep 10
+
+# Restart port-forward if it died during failover
+if ! curl -fsS "$HEALTH_URL" >/dev/null 2>&1; then
+  pass "Reconnecting port-forward after failover..."
+  kill "$PF_PID" 2>/dev/null || true
+  sleep 2
+  kubectl port-forward -n "$NS" "$PF_RESOURCE" 2116:2113 >/tmp/failover-impact-pf-recovery.log 2>&1 &
+  PF_PID=$!
+  for _ in $(seq 1 30); do
+    if curl -fsS "$HEALTH_URL" >/dev/null 2>&1; then
+      pass "port-forward recovered"
+      break
+    fi
+    sleep 1
+  done
+fi
+
+# Allow additional time for recovery observation
+sleep 5
+
 # Stop probe loop now that impact load ended.
 if [[ -n "$PROBE_PID" ]]; then
   kill "$PROBE_PID" 2>/dev/null || true
@@ -393,7 +415,24 @@ else
 fi
 
 if [[ "$recovery_time_ms" -lt 0 ]]; then
-  fail "did not observe recovery in probe window"
+  warn "Recovery not observed; dumping probe CSV diagnostics:"
+  if [[ -s "$PROBE_CSV" ]]; then
+    local total_lines=$(wc -l < "$PROBE_CSV")
+    warn "Probe CSV: $total_lines samples total"
+    warn "First 10 samples (baseline period):"
+    head -10 "$PROBE_CSV" | sed 's/^/    /' >&2
+    warn "Last 20 samples (recovery period):"
+    tail -20 "$PROBE_CSV" | sed 's/^/    /' >&2
+  else
+    warn "Probe CSV is empty!"
+  fi
+  warn "Checking port-forward status..."
+  if ! curl -fsS "$HEALTH_URL" >/dev/null 2>&1; then
+    fail "FAILURE: port-forward not responding; recovery impossible"
+  else
+    warn "Port-forward IS responding; recovery should have been captured"
+    fail "did not observe recovery in probe window"
+  fi
 fi
 
 if (( recovery_time_ms > RECOVERY_SLA_SECS * 1000 )); then
