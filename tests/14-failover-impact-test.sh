@@ -18,19 +18,9 @@ set -euo pipefail
 NS="${NS:-event-store}"
 STS="${STS:-kurrentdb}"
 TESTBED_BIN="${TESTBED_BIN:-rust-app/target/release/testbed}"
-# Prefer native Linux build from CARGO_TARGET_DIR when present.
-if [[ ! -x "$TESTBED_BIN" ]] && [[ -n "${CARGO_TARGET_DIR:-}" ]] && [[ -x "${CARGO_TARGET_DIR}/release/testbed" ]]; then
-  TESTBED_BIN="${CARGO_TARGET_DIR}/release/testbed"
-fi
-# Handle .exe extension as final fallback.
-if [[ ! -x "$TESTBED_BIN" ]] && [[ -x "${TESTBED_BIN}.exe" ]]; then
-  TESTBED_BIN="${TESTBED_BIN}.exe"
-fi
 KURRENT_URL="${KURRENT_URL:-kurrentdb://localhost:2116?tls=false}"
 HEALTH_URL="${HEALTH_URL:-http://127.0.0.1:2116/health/live}"
 PF_RESOURCE="${PF_RESOURCE:-svc/kurrentdb}"
-PF_PIDS=()
-PF_PORTS=(2116 2117 2118)
 
 BASELINE_DURATION_SECS="${BASELINE_DURATION_SECS:-12}"
 IMPACT_DURATION_SECS="${IMPACT_DURATION_SECS:-35}"
@@ -63,9 +53,9 @@ cleanup() {
   if [[ -n "$PROBE_PID" ]]; then
     kill "$PROBE_PID" 2>/dev/null || true
   fi
-  for pf_pid in "${PF_PIDS[@]:-}"; do
-    kill "$pf_pid" 2>/dev/null || true
-  done
+  if [[ -n "$PF_PID" ]]; then
+    kill "$PF_PID" 2>/dev/null || true
+  fi
   if [[ -n "$TARGET_NODE" ]]; then
     kubectl taint nodes "$TARGET_NODE" node.kubernetes.io/unreachable:NoExecute- 2>/dev/null || true
     kubectl taint nodes "$TARGET_NODE" node.kubernetes.io/not-ready:NoExecute- 2>/dev/null || true
@@ -110,22 +100,12 @@ wait_cluster_ready() {
 
 start_port_forward() {
   step "Start port-forward for benchmark client"
-  local pods=($(kubectl get pods -n "$NS" -l app="$STS" -o jsonpath='{.items[*].metadata.name}'))
-  [[ "${#pods[@]}" -ge 3 ]] || fail "expected at least 3 KurrentDB pods for port-forwarding"
-
-  PF_PIDS=()
-  for idx in 0 1 2; do
-    local local_port="${PF_PORTS[$idx]}"
-    local pod="${pods[$idx]}"
-    kubectl port-forward -n "$NS" "pod/$pod" "${local_port}:2113" >/tmp/failover-impact-pf-${local_port}.log 2>&1 &
-    PF_PIDS+=("$!")
-  done
+  kubectl port-forward -n "$NS" "$PF_RESOURCE" 2116:2113 >/tmp/failover-impact-pf.log 2>&1 &
+  PF_PID=$!
 
   local ok=0
-  for _ in $(seq 1 60); do
-    if curl -fsS "http://127.0.0.1:2116/health/live" >/dev/null 2>&1 && \
-       curl -fsS "http://127.0.0.1:2117/health/live" >/dev/null 2>&1 && \
-       curl -fsS "http://127.0.0.1:2118/health/live" >/dev/null 2>&1; then
+  for _ in $(seq 1 40); do
+    if curl -fsS "$HEALTH_URL" >/dev/null 2>&1; then
       ok=1
       break
     fi
@@ -133,7 +113,7 @@ start_port_forward() {
   done
 
   [[ "$ok" -eq 1 ]] || fail "port-forward health check did not come up"
-  pass "port-forward ready (pids=${PF_PIDS[*]})"
+  pass "port-forward ready (pid=$PF_PID)"
 }
 
 run_probe_loop() {
@@ -161,38 +141,10 @@ extract_json_last() {
   grep '^{' "$file" | tail -1
 }
 
-run_bench_json_with_retry() {
-  local label="$1"
-  local duration_secs="$2"
-  local output_file="$3"
-  local error_file="$4"
-  local attempts="${5:-3}"
-
-  for attempt in $(seq 1 "$attempts"); do
-    if "$TESTBED_BIN" --kurrentdb-url "$KURRENT_URL" \
-      kurrentdb-bench --target-rate "$TARGET_RATE" --concurrency "$CONCURRENCY" --batch-size "$BATCH_SIZE" --duration-secs "$duration_secs" --json \
-      >"$output_file" 2>"$error_file"; then
-      if grep -q '^{' "$output_file"; then
-        return 0
-      fi
-    fi
-
-    warn "${label} attempt ${attempt}/${attempts} did not produce valid JSON"
-    tail -30 "$output_file" 2>/dev/null || true
-    tail -30 "$error_file" 2>/dev/null || true
-    [[ "$attempt" -lt "$attempts" ]] && sleep 3
-  done
-
-  return 1
-}
-
 step "Pre-flight"
 require_cmd kubectl
 require_cmd curl
 [[ -x "$TESTBED_BIN" ]] || fail "testbed binary not found or not executable: $TESTBED_BIN"
-
-KURRENT_URL="kurrentdb://localhost:2116,localhost:2117,localhost:2118?tls=false"
-HEALTH_URL="http://127.0.0.1:2116/health/live"
 
 ready=$(kubectl get statefulset "$STS" -n "$NS" -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo "0")
 [[ "${ready:-0}" -ge 3 ]] || fail "need 3/3 ready replicas before test, got $ready"
@@ -206,14 +158,9 @@ start_port_forward
 
 step "Baseline latency run"
 BASELINE_LOG="$(mktemp)"
-BASELINE_ERR="$(mktemp)"
-if ! run_bench_json_with_retry "baseline benchmark" "$BASELINE_DURATION_SECS" "$BASELINE_LOG" "$BASELINE_ERR" 3; then
-  warn "Baseline benchmark stderr tail"
-  tail -60 "$BASELINE_ERR" 2>/dev/null || true
-  warn "Port-forward log tail"
-  tail -60 /tmp/failover-impact-pf.log 2>/dev/null || true
-  fail "baseline benchmark failed after retries"
-fi
+"$TESTBED_BIN" --kurrentdb-url "$KURRENT_URL" \
+  kurrentdb-bench --target-rate "$TARGET_RATE" --concurrency "$CONCURRENCY" --batch-size "$BATCH_SIZE" --duration-secs "$BASELINE_DURATION_SECS" --json \
+  >"$BASELINE_LOG" 2>/tmp/failover-impact-baseline.err
 
 baseline_json=$(extract_json_last "$BASELINE_LOG")
 [[ -n "$baseline_json" ]] || fail "baseline benchmark did not output JSON"
@@ -231,14 +178,6 @@ IMPACT_ERR="$(mktemp)"
 BENCH_PID=$!
 
 sleep 5
-if ! kill -0 "$BENCH_PID" 2>/dev/null; then
-  wait "$BENCH_PID" || true
-  warn "Impact benchmark exited before failover trigger"
-  tail -60 "$IMPACT_LOG" 2>/dev/null || true
-  tail -60 "$IMPACT_ERR" 2>/dev/null || true
-  fail "impact benchmark exited early"
-fi
-
 TARGET_NODE=$(find_leader_node)
 [[ -n "$TARGET_NODE" ]] || fail "failed to resolve leader node"
 step "Evict leader node workload on $TARGET_NODE"
@@ -256,13 +195,7 @@ if [[ -n "$PROBE_PID" ]]; then
 fi
 
 impact_json=$(extract_json_last "$IMPACT_LOG")
-if [[ -z "$impact_json" ]]; then
-  warn "Impact benchmark stdout tail"
-  tail -60 "$IMPACT_LOG" 2>/dev/null || true
-  warn "Impact benchmark stderr tail"
-  tail -60 "$IMPACT_ERR" 2>/dev/null || true
-  fail "impact benchmark did not output JSON"
-fi
+[[ -n "$impact_json" ]] || fail "impact benchmark did not output JSON"
 impact_p99_us=$(echo "$impact_json" | python3 -c 'import sys, json; d=json.load(sys.stdin); print(int(d.get("p99_us",0)))')
 
 write_error_count=$(grep -c "append_batch failed" "$IMPACT_ERR" 2>/dev/null || true)
