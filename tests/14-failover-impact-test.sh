@@ -40,7 +40,7 @@ FAILOVER_TS_MS="0"
 PROBE_CSV=""
 
 pass() { echo "  OK: $*"; }
-warn() { echo "  WARN: $*"; }
+warn() { echo "  WARN: $*" >&2; }
 fail() { echo "  ERR: $*" >&2; exit 1; }
 step() { echo; echo "> $*"; }
 
