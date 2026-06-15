@@ -72,7 +72,7 @@ find_leader_node() {
   local leader_pod=""
   for pod in $(kubectl get pods -n "$NS" -l app="$STS" -o jsonpath='{.items[*].metadata.name}'); do
     state=$(kubectl exec "$pod" -n "$NS" -- wget -qO- http://127.0.0.1:2113/info 2>/dev/null | grep -oP '"state"\s*:\s*"\K[^"]+' || echo "unknown")
-    echo "  $pod state=$state"
+    echo "  $pod state=$state" >&2
     if [[ "$state" == "Leader" ]]; then
       leader_pod="$pod"
     fi
