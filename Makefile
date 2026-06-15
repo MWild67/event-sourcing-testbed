@@ -208,13 +208,14 @@ test-failover-impact-local: ## Test 14 local CI-like repro using k3d (creates te
 
 test-hot-stream-contention: ## Test 15: Hot-stream contention (conflicts/retries + tail-latency impact)
 	DIRECT=$(DIRECT) \
+	BACKEND=$(if $(BACKEND),$(BACKEND),kurrentdb) \
 	TARGET_RATE=$(if $(TARGET_RATE),$(TARGET_RATE),6000) \
 	BASELINE_DURATION_SECS=$(if $(BASELINE_DURATION_SECS),$(BASELINE_DURATION_SECS),12) \
 	CONTENTION_DURATION_SECS=$(if $(CONTENTION_DURATION_SECS),$(CONTENTION_DURATION_SECS),18) \
-	CONCURRENCY=$(if $(CONCURRENCY),$(CONCURRENCY),64) \
-	HOT_STREAMS=$(if $(HOT_STREAMS),$(HOT_STREAMS),3) \
+	CONCURRENCY=$(if $(CONCURRENCY),$(CONCURRENCY),96) \
+	HOT_STREAMS=$(if $(HOT_STREAMS),$(HOT_STREAMS),2) \
 	COLD_STREAMS=$(if $(COLD_STREAMS),$(COLD_STREAMS),128) \
-	HOT_RATIO=$(if $(HOT_RATIO),$(HOT_RATIO),0.92) \
+	HOT_RATIO=$(if $(HOT_RATIO),$(HOT_RATIO),0.95) \
 	MAX_RETRIES=$(if $(MAX_RETRIES),$(MAX_RETRIES),10) \
 	bash tests/15-hot-stream-contention-test.sh
 

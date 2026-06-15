@@ -28,11 +28,13 @@ name: Benchmarks
           - mdb-rehydrate
           - mdb-rate-ramp
           - mdb-replay-under-write
+          - mdb-hot-stream-contention
           - pg-docker
           - pg-k8s
           - pg-rehydrate
           - pg-rate-ramp
           - pg-replay-under-write
+          - pg-hot-stream-contention
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -812,6 +814,64 @@ jobs:
   #   - Rehydration / replay
   # ════════════════════════════════════════════════════════════════════════════
 
+  # ── MongoDB: Scenario — Hot-Stream Contention ────────────────────────────
+  mdb-hot-stream-contention:
+    name: "MongoDB: Hot-Stream Contention"
+    runs-on: ubuntu-22.04
+    if: github.event_name != 'workflow_dispatch' || inputs.job == '' || inputs.job == 'mdb-hot-stream-contention'
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Start MongoDB
+        run: |
+          docker run -d --name mongodb -p 27017:27017 --tmpfs /data/db \
+            mongo:7 mongod --quiet --bind_ip_all --replSet rs0 --wiredTigerCacheSizeGB 0.25
+          for i in $(seq 1 30); do
+            docker exec mongodb mongosh --quiet --eval "db.adminCommand('ping').ok" \
+              mongodb://localhost:27017/admin 2>/dev/null && break || sleep 2
+          done
+          docker exec mongodb mongosh --quiet --eval \
+            "rs.initiate({_id:'rs0',members:[{_id:0,host:'127.0.0.1:27017'}]})"
+          for i in $(seq 1 20); do
+            docker exec mongodb mongosh --quiet --eval \
+              "if (rs.isMaster().ismaster !== true) { throw 'no primary'; }" \
+              2>/dev/null && break || sleep 3
+          done
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            rust-app/target
+          key: bench-${{ runner.os }}-cargo-${{ hashFiles('rust-app/Cargo.lock') }}
+
+      - name: Build
+        run: cargo build --release --manifest-path rust-app/Cargo.toml
+
+      - name: Hot-stream contention test
+        run: |
+          chmod +x tests/15-hot-stream-contention-test.sh
+          DIRECT=1 BACKEND=mongodb MONGO_URL_DIRECT='mongodb://localhost:27017' bash tests/15-hot-stream-contention-test.sh | tee hot-stream-output.log
+          if ! grep '^{' hot-stream-output.log > mdb-hot-stream-contention.json; then
+            echo "ERROR: Hot-stream contention test failed or produced no JSON output"
+            tail -50 hot-stream-output.log >&2
+            exit 1
+          fi
+
+      - name: Upload result
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: mdb-hot-stream-contention-result
+          path: mdb-hot-stream-contention.json
+          if-no-files-found: warn
+
+      - name: Cleanup
+        if: always()
+        run: docker stop mongodb && docker rm mongodb || true
+
   mdb-docker:
     name: "MongoDB: Docker (tmpfs) [${{ matrix.mode }}]"
     runs-on: ubuntu-22.04
@@ -1192,6 +1252,58 @@ jobs:
   #   - Rehydration / replay
   # ════════════════════════════════════════════════════════════════════════════
 
+  # ── PostgreSQL: Scenario — Hot-Stream Contention ─────────────────────────
+  pg-hot-stream-contention:
+    name: "PostgreSQL: Hot-Stream Contention"
+    runs-on: ubuntu-22.04
+    if: github.event_name != 'workflow_dispatch' || inputs.job == '' || inputs.job == 'pg-hot-stream-contention'
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Start PostgreSQL
+        run: |
+          docker run -d --name pg \
+            -e POSTGRES_DB=eventbench -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres \
+            -p 5432:5432 --tmpfs /var/lib/postgresql/data \
+            postgres:16 -c fsync=off -c full_page_writes=off -c max_connections=200
+          for i in $(seq 1 30); do
+            docker exec pg pg_isready -U postgres -d eventbench && break || sleep 2
+          done
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            rust-app/target
+          key: bench-${{ runner.os }}-cargo-${{ hashFiles('rust-app/Cargo.lock') }}
+
+      - name: Build
+        run: cargo build --release --manifest-path rust-app/Cargo.toml
+
+      - name: Hot-stream contention test
+        run: |
+          chmod +x tests/15-hot-stream-contention-test.sh
+          DIRECT=1 BACKEND=postgres POSTGRES_URL_DIRECT='postgres://postgres:postgres@localhost:5432/eventbench' bash tests/15-hot-stream-contention-test.sh | tee hot-stream-output.log
+          if ! grep '^{' hot-stream-output.log > pg-hot-stream-contention.json; then
+            echo "ERROR: Hot-stream contention test failed or produced no JSON output"
+            tail -50 hot-stream-output.log >&2
+            exit 1
+          fi
+
+      - name: Upload result
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: pg-hot-stream-contention-result
+          path: pg-hot-stream-contention.json
+          if-no-files-found: warn
+
+      - name: Cleanup
+        if: always()
+        run: docker stop pg && docker rm pg || true
+
   pg-docker:
     name: "PostgreSQL: Docker (tmpfs) [${{ matrix.mode }}]"
     runs-on: ubuntu-22.04
@@ -1569,7 +1681,9 @@ jobs:
       - kdb-replay-under-write
       - kdb-hot-stream-contention
       - mdb-replay-under-write
+      - mdb-hot-stream-contention
       - pg-replay-under-write
+      - pg-hot-stream-contention
     steps:
       - name: Download benchmark and ramp artifacts
         env:
@@ -1738,6 +1852,8 @@ jobs:
 
           contention_data = load_jsons('bench-artifacts', {
             'kdb': 'kdb-hot-stream-contention.json',
+            'mdb': 'mdb-hot-stream-contention.json',
+            'pg': 'pg-hot-stream-contention.json',
           })
 
           failover_impact = load_jsons('bench-artifacts', {
@@ -1895,20 +2011,24 @@ jobs:
               f.write('_Replay-under-write tests did not produce artifacts._\n\n')
 
             f.write('### Hot-Stream Contention — Conflict/Retry + Tail Impact\n\n')
-            if 'kdb' in contention_data:
-              d = contention_data['kdb']
-              f.write('| Metric | Value |\n')
-              f.write('|--------|------:|\n')
-              f.write(f'| Baseline p99 (us) | {d.get("baseline_p99_us", "n/a")} |\n')
-              f.write(f'| Contention p99 (us) | {d.get("contention_p99_us", "n/a")} |\n')
-              f.write(f'| Tail latency factor | {d.get("tail_latency_factor", "n/a")}x |\n')
-              f.write(f'| Hot writes | {d.get("hot_events", "n/a")} |\n')
-              f.write(f'| Cold writes | {d.get("cold_events", "n/a")} |\n')
-              f.write(f'| Conflict count | {d.get("conflict_count", "n/a")} |\n')
-              f.write(f'| Retry count | {d.get("retry_count", "n/a")} |\n')
-              f.write(f'| Retry success count | {d.get("retry_success_count", "n/a")} |\n')
-              f.write(f'| Retry exhausted count | {d.get("retry_exhausted_count", "n/a")} |\n')
-              f.write(f'| Failed writes | {d.get("failed_writes", "n/a")} |\n\n')
+            if contention_data:
+              for key, label in [('kdb', 'KurrentDB'), ('mdb', 'MongoDB'), ('pg', 'PostgreSQL')]:
+                if key not in contention_data:
+                  continue
+                d = contention_data[key]
+                f.write(f'**{label}**\n\n')
+                f.write('| Metric | Value |\n')
+                f.write('|--------|------:|\n')
+                f.write(f'| Baseline p99 (us) | {d.get("baseline_p99_us", "n/a")} |\n')
+                f.write(f'| Contention p99 (us) | {d.get("contention_p99_us", "n/a")} |\n')
+                f.write(f'| Tail latency factor | {d.get("tail_latency_factor", "n/a")}x |\n')
+                f.write(f'| Hot writes | {d.get("hot_events", "n/a")} |\n')
+                f.write(f'| Cold writes | {d.get("cold_events", "n/a")} |\n')
+                f.write(f'| Conflict count | {d.get("conflict_count", "n/a")} |\n')
+                f.write(f'| Retry count | {d.get("retry_count", "n/a")} |\n')
+                f.write(f'| Retry success count | {d.get("retry_success_count", "n/a")} |\n')
+                f.write(f'| Retry exhausted count | {d.get("retry_exhausted_count", "n/a")} |\n')
+                f.write(f'| Failed writes | {d.get("failed_writes", "n/a")} |\n\n')
             else:
               f.write('_Hot-stream contention artifact missing._\n\n')
 

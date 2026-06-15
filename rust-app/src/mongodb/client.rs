@@ -279,6 +279,78 @@ impl MongoClient {
         Ok(())
     }
 
+    /// Insert a single event with an explicit expected stream version.
+    ///
+    /// This is used by hot-stream contention benchmarks to intentionally create
+    /// optimistic-concurrency conflicts on hot streams.
+    #[allow(clippy::future_not_send)]
+    pub async fn append_with_stream_version<T: Serialize>(
+        &self,
+        collection_name: &str,
+        event_type: &str,
+        payload: &T,
+        stream_version: i64,
+    ) -> Result<()> {
+        // Keep global_position monotonic across all explicit-version appends.
+        let gseq_coll = self.db.collection::<Document>("_global_seq");
+        let gseq_before = gseq_coll
+            .find_one_and_update(doc! { "_id": "counter" }, doc! { "$inc": { "seq": 1i64 } })
+            .upsert(true)
+            .return_document(ReturnDocument::Before)
+            .await
+            .context("global sequence counter update failed")?;
+
+        let global_position: i64 = gseq_before
+            .as_ref()
+            .and_then(|d| d.get_i64("seq").ok())
+            .unwrap_or(0);
+
+        let mut document =
+            to_document(payload).with_context(|| "failed to serialise event to BSON")?;
+        document.insert("_id", Uuid::new_v4().to_string());
+        document.insert("event_type", event_type);
+        document.insert("stream_id", collection_name);
+        document.insert("stream_version", stream_version);
+        document.insert("global_position", global_position);
+
+        let coll = self.db.collection::<Document>(collection_name);
+        match coll.insert_one(document).await {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                if matches!(
+                    *e.kind,
+                    mongodb::error::ErrorKind::Write(mongodb::error::WriteFailure::WriteError(
+                        mongodb::error::WriteError { code: 11000, .. }
+                    ))
+                ) {
+                    anyhow::bail!("wrong expected version");
+                }
+                Err(anyhow::Error::new(e).context(format!(
+                    "explicit-version insert to '{collection_name}' failed"
+                )))
+            }
+        }
+    }
+
+    /// Return the last stream_version for `collection_name`, or None if empty.
+    pub async fn read_last_stream_version(&self, collection_name: &str) -> Result<Option<i64>> {
+        use mongodb::options::FindOneOptions;
+
+        let coll = self.db.collection::<Document>(collection_name);
+        let opts = FindOneOptions::builder()
+            .sort(doc! { "stream_version": -1 })
+            .projection(doc! { "stream_version": 1, "_id": 0 })
+            .build();
+
+        let maybe = coll
+            .find_one(doc! { "stream_id": collection_name })
+            .with_options(opts)
+            .await
+            .with_context(|| format!("find last stream version failed for '{collection_name}'"))?;
+
+        Ok(maybe.and_then(|d| d.get_i64("stream_version").ok()))
+    }
+
     /// Expose the underlying `Database` handle for advanced operations
     /// (e.g. opening a Change Stream directly on a collection).
     pub fn database(&self) -> &mongodb::Database {

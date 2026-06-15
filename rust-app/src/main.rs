@@ -120,6 +120,10 @@ enum Commands {
     /// concentrates writes on a small hot set using optimistic concurrency,
     /// while keeping background distributed writes active.
     KurrentdbHotStreamContentionBench(KurrentdbHotStreamContentionBenchArgs),
+    /// Hot-stream contention benchmark against `MongoDB`.
+    MongoHotStreamContentionBench(MongoHotStreamContentionBenchArgs),
+    /// Hot-stream contention benchmark against `PostgreSQL`.
+    PgHotStreamContentionBench(PgHotStreamContentionBenchArgs),
 }
 
 #[derive(Parser)]
@@ -161,6 +165,56 @@ struct KurrentdbHotStreamContentionBenchArgs {
     stream_prefix: String,
 
     /// Emit results as a single JSON line.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Parser)]
+struct MongoHotStreamContentionBenchArgs {
+    #[arg(long, default_value_t = 8_000)]
+    target_rate: u64,
+    #[arg(long, default_value_t = 15)]
+    baseline_duration_secs: u64,
+    #[arg(long, default_value_t = 20)]
+    contention_duration_secs: u64,
+    #[arg(long, default_value_t = 64)]
+    concurrency: u64,
+    #[arg(long, default_value_t = 4)]
+    hot_streams: u64,
+    #[arg(long, default_value_t = 128)]
+    cold_streams: u64,
+    #[arg(long, default_value_t = 0.9)]
+    hot_ratio: f64,
+    #[arg(long, default_value_t = 8)]
+    max_retries: u64,
+    #[arg(long, default_value = "hot-stream")]
+    stream_prefix: String,
+    #[arg(long, default_value = "eventbench")]
+    database: String,
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Parser)]
+struct PgHotStreamContentionBenchArgs {
+    #[arg(long, default_value_t = 8_000)]
+    target_rate: u64,
+    #[arg(long, default_value_t = 15)]
+    baseline_duration_secs: u64,
+    #[arg(long, default_value_t = 20)]
+    contention_duration_secs: u64,
+    #[arg(long, default_value_t = 64)]
+    concurrency: u64,
+    #[arg(long, default_value_t = 4)]
+    hot_streams: u64,
+    #[arg(long, default_value_t = 128)]
+    cold_streams: u64,
+    #[arg(long, default_value_t = 0.9)]
+    hot_ratio: f64,
+    #[arg(long, default_value_t = 8)]
+    max_retries: u64,
+    #[arg(long, default_value = "hot-stream")]
+    stream_prefix: String,
     #[arg(long)]
     json: bool,
 }
@@ -703,8 +757,59 @@ async fn main() -> Result<()> {
                 stream_prefix: args.stream_prefix,
             };
 
-            let result = kurrentdb::hot_stream_contention_bench::run(&cli.kurrentdb_url, config)
-                .await?;
+            let result =
+                kurrentdb::hot_stream_contention_bench::run(&cli.kurrentdb_url, config).await?;
+
+            if args.json {
+                result.print_json();
+            } else {
+                result.print_report();
+            }
+            let _ = std::io::stdout().flush();
+            let _ = std::io::stderr().flush();
+        }
+
+        Commands::MongoHotStreamContentionBench(args) => {
+            let config = mongodb::hot_stream_contention_bench::HotStreamContentionConfig {
+                target_rate: args.target_rate,
+                baseline_duration_secs: args.baseline_duration_secs,
+                contention_duration_secs: args.contention_duration_secs,
+                concurrency: args.concurrency,
+                hot_streams: args.hot_streams,
+                cold_streams: args.cold_streams,
+                hot_ratio: args.hot_ratio,
+                max_retries: args.max_retries,
+                stream_prefix: args.stream_prefix,
+                database: args.database,
+            };
+
+            let result =
+                mongodb::hot_stream_contention_bench::run(&cli.mongodb_url, config).await?;
+
+            if args.json {
+                result.print_json();
+            } else {
+                result.print_report();
+            }
+            let _ = std::io::stdout().flush();
+            let _ = std::io::stderr().flush();
+        }
+
+        Commands::PgHotStreamContentionBench(args) => {
+            let config = postgres::hot_stream_contention_bench::HotStreamContentionConfig {
+                target_rate: args.target_rate,
+                baseline_duration_secs: args.baseline_duration_secs,
+                contention_duration_secs: args.contention_duration_secs,
+                concurrency: args.concurrency,
+                hot_streams: args.hot_streams,
+                cold_streams: args.cold_streams,
+                hot_ratio: args.hot_ratio,
+                max_retries: args.max_retries,
+                stream_prefix: args.stream_prefix,
+            };
+
+            let result =
+                postgres::hot_stream_contention_bench::run(&cli.postgres_url, config).await?;
 
             if args.json {
                 result.print_json();

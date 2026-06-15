@@ -272,6 +272,60 @@ impl PostgresClient {
         Ok(batch_len)
     }
 
+    /// Insert a single event at an explicit stream version.
+    ///
+    /// If `(stream_id, stream_version)` is already taken, returns an error
+    /// whose message contains "wrong expected version" so contention benches
+    /// can classify it as an optimistic-concurrency conflict.
+    #[allow(clippy::future_not_send, clippy::cast_possible_wrap)]
+    pub async fn append_with_stream_version<T: Serialize>(
+        &self,
+        stream_id: &str,
+        event_type: &str,
+        payload: &T,
+        stream_version: i64,
+        seq: u64,
+        task_id: u64,
+    ) -> Result<()> {
+        let payload_bytes = serde_json::to_vec(payload).unwrap_or_default();
+        match sqlx::query(
+            "INSERT INTO bench_events \
+             (event_id, stream_id, stream_version, event_type, seq, task_id, payload) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7)",
+        )
+        .bind(Uuid::new_v4().to_string())
+        .bind(stream_id)
+        .bind(stream_version)
+        .bind(event_type)
+        .bind(seq as i64)
+        .bind(task_id as i64)
+        .bind(payload_bytes)
+        .execute(&self.pool)
+        .await
+        {
+            Ok(_) => Ok(()),
+            Err(sqlx::Error::Database(db_err)) if db_err.code().as_deref() == Some("23505") => {
+                anyhow::bail!("wrong expected version")
+            }
+            Err(e) => Err(anyhow::Error::new(e)
+                .context(format!("explicit-version insert failed for '{stream_id}'"))),
+        }
+    }
+
+    /// Return the latest stream_version for `stream_id`, or None if empty.
+    pub async fn read_last_stream_version(&self, stream_id: &str) -> Result<Option<i64>> {
+        let row = sqlx::query(
+            "SELECT stream_version FROM bench_events \
+             WHERE stream_id = $1 ORDER BY stream_version DESC LIMIT 1",
+        )
+        .bind(stream_id)
+        .fetch_optional(&self.pool)
+        .await
+        .with_context(|| format!("failed to read last stream version for '{stream_id}'"))?;
+
+        Ok(row.map(|r| r.get::<i64, _>("stream_version")))
+    }
+
     /// Read the last `n` [`crate::events::BenchmarkEvent`]s from `bench_events`
     /// for the given `stream_id`, ordered by `stream_version` descending, then
     /// reversed to **oldest-first**.  Mirrors KurrentDB stream-backwards semantics.

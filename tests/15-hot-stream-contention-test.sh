@@ -9,6 +9,7 @@ set -euo pipefail
 
 DIRECT="${DIRECT:-1}"
 TESTBED_BIN="${TESTBED_BIN:-rust-app/target/release/testbed}"
+BACKEND="${BACKEND:-kurrentdb}"
 
 TARGET_RATE="${TARGET_RATE:-6000}"
 BASELINE_DURATION_SECS="${BASELINE_DURATION_SECS:-12}"
@@ -21,6 +22,8 @@ MAX_RETRIES="${MAX_RETRIES:-10}"
 
 KURRENT_URL_DIRECT_DEFAULT="${KURRENT_URL_DIRECT:-kurrentdb://localhost:2116?tls=false}"
 KURRENT_URL_DIRECT="$KURRENT_URL_DIRECT_DEFAULT"
+MONGO_URL_DIRECT="${MONGO_URL_DIRECT:-mongodb://localhost:27017}"
+POSTGRES_URL_DIRECT="${POSTGRES_URL_DIRECT:-postgres://postgres:postgres@localhost:5432/eventbench}"
 
 pass() { echo "  ✓ $*"; }
 warn() { echo "  ⚠  $*"; }
@@ -66,7 +69,8 @@ extract_json_last() {
   echo "$text" | grep '^{' | tail -1
 }
 
-step "Hot-stream contention test (KurrentDB)"
+step "Hot-stream contention test (${BACKEND})"
+echo "  Backend                   : $BACKEND"
 echo "  Direct mode               : $DIRECT"
 echo "  Target rate               : $TARGET_RATE ev/s"
 echo "  Baseline duration         : ${BASELINE_DURATION_SECS}s"
@@ -80,25 +84,67 @@ echo "  Max retries               : $MAX_RETRIES"
 [[ "$DIRECT" == "1" ]] || fail "this test currently supports DIRECT=1 only"
 [[ -x "$TESTBED_BIN" ]] || fail "testbed binary not found or not executable: $TESTBED_BIN"
 require_cmd curl
-prepare_kurrent_direct_url
+
+case "$BACKEND" in
+  kurrentdb)
+    prepare_kurrent_direct_url
+    ;;
+  mongodb|postgres)
+    ;;
+  *)
+    fail "unsupported BACKEND: '$BACKEND' (expected: kurrentdb|mongodb|postgres)"
+    ;;
+esac
 
 step "Executing benchmark"
 attempts=3
 RESULT_JSON=""
 for attempt in $(seq 1 "$attempts"); do
   echo "  Attempt $attempt/$attempts..."
-  output=$("$TESTBED_BIN" \
-    --kurrentdb-url "$KURRENT_URL_DIRECT" \
-    kurrentdb-hot-stream-contention-bench \
-    --target-rate "$TARGET_RATE" \
-    --baseline-duration-secs "$BASELINE_DURATION_SECS" \
-    --contention-duration-secs "$CONTENTION_DURATION_SECS" \
-    --concurrency "$CONCURRENCY" \
-    --hot-streams "$HOT_STREAMS" \
-    --cold-streams "$COLD_STREAMS" \
-    --hot-ratio "$HOT_RATIO" \
-    --max-retries "$MAX_RETRIES" \
-    --json 2>&1) || true
+  case "$BACKEND" in
+    kurrentdb)
+      output=$("$TESTBED_BIN" \
+        --kurrentdb-url "$KURRENT_URL_DIRECT" \
+        kurrentdb-hot-stream-contention-bench \
+        --target-rate "$TARGET_RATE" \
+        --baseline-duration-secs "$BASELINE_DURATION_SECS" \
+        --contention-duration-secs "$CONTENTION_DURATION_SECS" \
+        --concurrency "$CONCURRENCY" \
+        --hot-streams "$HOT_STREAMS" \
+        --cold-streams "$COLD_STREAMS" \
+        --hot-ratio "$HOT_RATIO" \
+        --max-retries "$MAX_RETRIES" \
+        --json 2>&1) || true
+      ;;
+    mongodb)
+      output=$("$TESTBED_BIN" \
+        --mongodb-url "$MONGO_URL_DIRECT" \
+        mongo-hot-stream-contention-bench \
+        --target-rate "$TARGET_RATE" \
+        --baseline-duration-secs "$BASELINE_DURATION_SECS" \
+        --contention-duration-secs "$CONTENTION_DURATION_SECS" \
+        --concurrency "$CONCURRENCY" \
+        --hot-streams "$HOT_STREAMS" \
+        --cold-streams "$COLD_STREAMS" \
+        --hot-ratio "$HOT_RATIO" \
+        --max-retries "$MAX_RETRIES" \
+        --json 2>&1) || true
+      ;;
+    postgres)
+      output=$("$TESTBED_BIN" \
+        --postgres-url "$POSTGRES_URL_DIRECT" \
+        pg-hot-stream-contention-bench \
+        --target-rate "$TARGET_RATE" \
+        --baseline-duration-secs "$BASELINE_DURATION_SECS" \
+        --contention-duration-secs "$CONTENTION_DURATION_SECS" \
+        --concurrency "$CONCURRENCY" \
+        --hot-streams "$HOT_STREAMS" \
+        --cold-streams "$COLD_STREAMS" \
+        --hot-ratio "$HOT_RATIO" \
+        --max-retries "$MAX_RETRIES" \
+        --json 2>&1) || true
+      ;;
+  esac
 
   RESULT_JSON=$(extract_json_last "$output")
   if [[ -n "$RESULT_JSON" ]]; then
