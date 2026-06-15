@@ -281,15 +281,15 @@ pub async fn run(
                             break;
                         }
                         Err(err) => {
-                            let msg = err.to_string().to_lowercase();
-                            // Check for all variants of wrong expected version errors
+                            // Use {:#} to get the full anyhow error chain, not just the
+                            // outermost context message. Without this, the inner
+                            // WrongExpectedVersion is hidden behind "append to stream '...' failed".
+                            let msg = format!("{:#}", err).to_lowercase();
                             let is_conflict = msg.contains("wrongexpectedversion")
                                 || msg.contains("wrong expected version")
                                 || msg.contains("wrong expected")
                                 || msg.contains("expected revision")
-                                || msg.contains("expected version")
-                                || msg.contains("concurrency")
-                                || msg.contains("conflict");
+                                || msg.contains("expected version");
 
                             if is_conflict {
                                 conflicts_ctr.fetch_add(1, Ordering::Relaxed);
