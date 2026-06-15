@@ -590,9 +590,10 @@ jobs:
 
       - name: Run short failover-impact test
         run: |
+          set -euo pipefail
           chmod +x tests/14-failover-impact-test.sh
-          tests/14-failover-impact-test.sh | tee failover-impact.log || true
-          grep '^{' failover-impact.log > kdb-failover-impact.json || echo '{}' > kdb-failover-impact.json
+          tests/14-failover-impact-test.sh | tee failover-impact.log
+          grep '^{' failover-impact.log > kdb-failover-impact.json
 
       - name: Upload failover-impact artifact
         if: always()
@@ -649,8 +650,9 @@ jobs:
 
       - name: Rate ramp
         run: |
-          DIRECT=1 BACKEND=kurrentdb bash tests/12-rate-ramp-test.sh | tee ramp-output.log || true
-          grep '^{' ramp-output.log > kdb-rate-ramp.json || echo '{}' > kdb-rate-ramp.json
+          set -euo pipefail
+          DIRECT=1 BACKEND=kurrentdb bash tests/12-rate-ramp-test.sh | tee ramp-output.log
+          grep '^{' ramp-output.log > kdb-rate-ramp.json
 
       - name: Upload ramp result
         if: always()
@@ -696,8 +698,9 @@ jobs:
 
       - name: Replay-under-write test
         run: |
-          DIRECT=1 BACKEND=kurrentdb bash tests/13-replay-under-write-test.sh | tee replay-output.log || true
-          grep '^{' replay-output.log > kdb-replay-under-write.json || echo '{}' > kdb-replay-under-write.json
+          set -euo pipefail
+          DIRECT=1 BACKEND=kurrentdb bash tests/13-replay-under-write-test.sh | tee replay-output.log
+          grep '^{' replay-output.log > kdb-replay-under-write.json
 
       - name: Upload result
         if: always()
@@ -991,13 +994,15 @@ jobs:
 
       - name: Rate ramp (Peak mode)
         run: |
-          DIRECT=1 BACKEND=mongodb EVENT_STORE_MODE=0 bash tests/12-rate-ramp-test.sh | tee ramp-peak.log || true
-          grep '^{' ramp-peak.log > mdb-rate-ramp-peak.json || echo '{}' > mdb-rate-ramp-peak.json
+          set -euo pipefail
+          DIRECT=1 BACKEND=mongodb EVENT_STORE_MODE=0 bash tests/12-rate-ramp-test.sh | tee ramp-peak.log
+          grep '^{' ramp-peak.log > mdb-rate-ramp-peak.json
 
       - name: Rate ramp (Durable mode)
         run: |
-          DIRECT=1 BACKEND=mongodb EVENT_STORE_MODE=1 bash tests/12-rate-ramp-test.sh | tee ramp-durable.log || true
-          grep '^{' ramp-durable.log > mdb-rate-ramp-durable.json || echo '{}' > mdb-rate-ramp-durable.json
+          set -euo pipefail
+          DIRECT=1 BACKEND=mongodb EVENT_STORE_MODE=1 bash tests/12-rate-ramp-test.sh | tee ramp-durable.log
+          grep '^{' ramp-durable.log > mdb-rate-ramp-durable.json
 
       - name: Upload ramp results
         if: always()
@@ -1055,8 +1060,9 @@ jobs:
 
       - name: Replay-under-write test
         run: |
-          DIRECT=1 BACKEND=mongodb EVENT_STORE_MODE=${{ matrix.event_store_mode }} bash tests/13-replay-under-write-test.sh | tee replay-output.log || true
-          grep '^{' replay-output.log > mdb-replay-under-write-${{ matrix.mode }}.json || echo '{}' > mdb-replay-under-write-${{ matrix.mode }}.json
+          set -euo pipefail
+          DIRECT=1 BACKEND=mongodb EVENT_STORE_MODE=${{ matrix.event_store_mode }} bash tests/13-replay-under-write-test.sh | tee replay-output.log
+          grep '^{' replay-output.log > mdb-replay-under-write-${{ matrix.mode }}.json
 
       - name: Upload result
         if: always()
@@ -1333,13 +1339,15 @@ jobs:
 
       - name: Rate ramp (Peak mode)
         run: |
-          DIRECT=1 BACKEND=postgres EVENT_STORE_MODE=0 bash tests/12-rate-ramp-test.sh | tee ramp-peak.log || true
-          grep '^{' ramp-peak.log > pg-rate-ramp-peak.json || echo '{}' > pg-rate-ramp-peak.json
+          set -euo pipefail
+          DIRECT=1 BACKEND=postgres EVENT_STORE_MODE=0 bash tests/12-rate-ramp-test.sh | tee ramp-peak.log
+          grep '^{' ramp-peak.log > pg-rate-ramp-peak.json
 
       - name: Rate ramp (Durable mode)
         run: |
-          DIRECT=1 BACKEND=postgres EVENT_STORE_MODE=1 bash tests/12-rate-ramp-test.sh | tee ramp-durable.log || true
-          grep '^{' ramp-durable.log > pg-rate-ramp-durable.json || echo '{}' > pg-rate-ramp-durable.json
+          set -euo pipefail
+          DIRECT=1 BACKEND=postgres EVENT_STORE_MODE=1 bash tests/12-rate-ramp-test.sh | tee ramp-durable.log
+          grep '^{' ramp-durable.log > pg-rate-ramp-durable.json
 
       - name: Upload ramp results
         if: always()
@@ -1391,8 +1399,9 @@ jobs:
 
       - name: Replay-under-write test
         run: |
-          DIRECT=1 BACKEND=postgres EVENT_STORE_MODE=${{ matrix.event_store_mode }} bash tests/13-replay-under-write-test.sh | tee replay-output.log || true
-          grep '^{' replay-output.log > pg-replay-under-write-${{ matrix.mode }}.json || echo '{}' > pg-replay-under-write-${{ matrix.mode }}.json
+          set -euo pipefail
+          DIRECT=1 BACKEND=postgres EVENT_STORE_MODE=${{ matrix.event_store_mode }} bash tests/13-replay-under-write-test.sh | tee replay-output.log
+          grep '^{' replay-output.log > pg-replay-under-write-${{ matrix.mode }}.json
 
       - name: Upload result
         if: always()
@@ -1607,6 +1616,33 @@ jobs:
           })
 
           artifact_json_count = len(list(Path('bench-artifacts').rglob('*.json')))
+
+          replay_expected = {
+            'kdb': 'KurrentDB',
+            'mdb-peak': 'MongoDB Peak',
+            'mdb-durable': 'MongoDB Durable',
+            'pg-peak': 'PostgreSQL Peak',
+            'pg-durable': 'PostgreSQL Durable',
+          }
+          replay_required_fields = ['baseline_p99_us', 'concurrent_p99_us', 'regression_factor']
+          replay_errors = []
+          for key, label in replay_expected.items():
+            if key not in replay_data:
+              replay_errors.append(f'{label}: missing replay artifact')
+              continue
+            d = replay_data.get(key)
+            if not isinstance(d, dict):
+              replay_errors.append(f'{label}: invalid replay JSON object')
+              continue
+            missing = [fld for fld in replay_required_fields if fld not in d or d.get(fld) in (None, '')]
+            if missing:
+              replay_errors.append(f'{label}: missing fields: {", ".join(missing)}')
+
+          if replay_errors:
+            print('Replay data validation failed:')
+            for err in replay_errors:
+              print(f'- {err}')
+            raise SystemExit('Replay artifacts are incomplete; refusing to publish n/a summary.')
 
           def write_mode_rows(f, backend_rows):
             for env_name, mode_name, key in backend_rows:
