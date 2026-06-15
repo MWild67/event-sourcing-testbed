@@ -281,22 +281,32 @@ pub async fn run(
                             break;
                         }
                         Err(err) => {
-                            let msg = err.to_string();
-                            if msg.contains("WrongExpectedVersion")
-                                || msg.contains("wrong expected")
+                            let msg = err.to_string().to_lowercase();
+                            // Check for all variants of wrong expected version errors
+                            let is_conflict = msg.contains("wrongexpectedversion")
                                 || msg.contains("wrong expected version")
-                            {
+                                || msg.contains("wrong expected")
+                                || msg.contains("expected revision")
+                                || msg.contains("expected version")
+                                || msg.contains("concurrency")
+                                || msg.contains("conflict");
+
+                            if is_conflict {
                                 conflicts_ctr.fetch_add(1, Ordering::Relaxed);
                                 retries_ctr.fetch_add(1, Ordering::Relaxed);
+                                // Re-read current stream state to get latest revision
                                 if let Ok(Some(current)) =
                                     client.read_last_event(&stream_name).await
                                 {
                                     hot_rev.store(current.1, Ordering::Release);
+                                } else {
+                                    // If read fails, reset to zero and let server assign
+                                    hot_rev.store(0, Ordering::Release);
                                 }
                                 continue;
                             }
 
-                            warn!(error = %err, stream = %stream_name, "hot write failed");
+                            warn!(error = %err, stream = %stream_name, attempt = attempt, "hot write failed");
                             failed_writes_ctr.fetch_add(1, Ordering::Relaxed);
                             break;
                         }
