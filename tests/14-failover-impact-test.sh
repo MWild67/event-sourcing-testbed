@@ -40,6 +40,8 @@ PF_PID=""
 PROBE_PID=""
 FAILOVER_TS_MS="0"
 PROBE_CSV=""
+LEADER_POD=""
+PF_ACTIVE_RESOURCE=""
 
 pass() { echo "  OK: $*"; }
 warn() { echo "  WARN: $*" >&2; }
@@ -100,6 +102,12 @@ is_leader_state() {
 }
 
 find_leader_node() {
+  local leader_pod
+  leader_pod=$(find_leader_pod)
+  kubectl get pod "$leader_pod" -n "$NS" -o jsonpath='{.spec.nodeName}'
+}
+
+find_leader_pod() {
   local leader_pod=""
   for pod in $(kubectl get pods -n "$NS" -l app="$STS" -o jsonpath='{.items[*].metadata.name}'); do
     state=$(pod_state_from_info "$pod")
@@ -114,7 +122,7 @@ find_leader_node() {
     warn "leader not detected from /info, using first pod: $leader_pod"
   fi
 
-  kubectl get pod "$leader_pod" -n "$NS" -o jsonpath='{.spec.nodeName}'
+  printf '%s\n' "$leader_pod"
 }
 
 wait_cluster_ready() {
@@ -131,7 +139,17 @@ wait_cluster_ready() {
 
 start_port_forward() {
   step "Start port-forward for benchmark client"
-  kubectl port-forward -n "$NS" "$PF_RESOURCE" 2116:2113 >/tmp/failover-impact-pf.log 2>&1 &
+
+  # Writes must hit a leader-capable endpoint; service load-balancing can pin to followers.
+  local resource="$PF_RESOURCE"
+  if [[ "$PF_RESOURCE" == "svc/kurrentdb" ]]; then
+    LEADER_POD=$(find_leader_pod)
+    resource="pod/$LEADER_POD"
+    pass "using leader pod for port-forward: $LEADER_POD"
+  fi
+
+  PF_ACTIVE_RESOURCE="$resource"
+  kubectl port-forward -n "$NS" "$PF_ACTIVE_RESOURCE" 2116:2113 >/tmp/failover-impact-pf.log 2>&1 &
   PF_PID=$!
 
   local ok=0
@@ -250,9 +268,9 @@ node_count=$(kubectl get nodes --no-headers | grep -c ' Ready' || true)
 [[ "${node_count:-0}" -ge 3 ]] || fail "need >=3 ready nodes for failover test, got $node_count"
 pass "cluster has $node_count ready nodes"
 
-start_port_forward
-
 wait_leader_elected
+
+start_port_forward
 
 step "Baseline latency run"
 BASELINE_LOG="$(mktemp)"
@@ -313,7 +331,17 @@ if ! curl -fsS "$HEALTH_URL" >/dev/null 2>&1; then
   pass "Reconnecting port-forward after failover..."
   kill "$PF_PID" 2>/dev/null || true
   sleep 2
-  kubectl port-forward -n "$NS" "$PF_RESOURCE" 2116:2113 >/tmp/failover-impact-pf-recovery.log 2>&1 &
+
+  # Re-resolve leader after failover before recreating the tunnel.
+  if [[ "$PF_RESOURCE" == "svc/kurrentdb" ]]; then
+    LEADER_POD=$(find_leader_pod)
+    PF_ACTIVE_RESOURCE="pod/$LEADER_POD"
+    pass "using recovered leader pod for port-forward: $LEADER_POD"
+  else
+    PF_ACTIVE_RESOURCE="$PF_RESOURCE"
+  fi
+
+  kubectl port-forward -n "$NS" "$PF_ACTIVE_RESOURCE" 2116:2113 >/tmp/failover-impact-pf-recovery.log 2>&1 &
   PF_PID=$!
   for _ in $(seq 1 30); do
     if curl -fsS "$HEALTH_URL" >/dev/null 2>&1; then
