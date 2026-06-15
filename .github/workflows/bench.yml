@@ -22,6 +22,16 @@ on:
           - kdb-failover-impact
           - kdb-rate-ramp
           - kdb-replay-under-write
+          - mdb-docker
+          - mdb-k8s
+          - mdb-rehydrate
+          - mdb-rate-ramp
+          - mdb-replay-under-write
+          - pg-docker
+          - pg-k8s
+          - pg-rehydrate
+          - pg-rate-ramp
+          - pg-replay-under-write
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
