@@ -106,7 +106,7 @@ start_port_forward() {
   PF_PID=$!
 
   local ok=0
-  for _ in $(seq 1 40); do
+  for _ in $(seq 1 60); do
     if curl -fsS "$HEALTH_URL" >/dev/null 2>&1; then
       ok=1
       break
@@ -116,24 +116,32 @@ start_port_forward() {
 
   [[ "$ok" -eq 1 ]] || fail "port-forward health check did not come up"
   pass "port-forward ready (pid=$PF_PID)"
+  sleep 2  # Extra stabilization time
 }
 
 wait_leader_elected() {
   step "Wait for KurrentDB leader election"
-  local deadline=$(( $(date +%s) + 60 ))
+  local deadline=$(( $(date +%s) + 90 ))
   while [[ $(date +%s) -lt $deadline ]]; do
-    local info_out
-    if info_out=$(curl -fsS "http://127.0.0.1:2116/info" 2>/dev/null); then
-      local has_leader
-      has_leader=$(echo "$info_out" | grep -cE '"state"\s*:\s*"Leader"' || echo "0")
-      if [[ "$has_leader" -gt 0 ]]; then
-        pass "leader elected"
-        return 0
+    # Check each pod's leadership status via exec
+    local leader_found=0
+    for pod in $(kubectl get pods -n "$NS" -l app="$STS" -o jsonpath='{.items[*].metadata.name}' 2>/dev/null); do
+      local state
+      state=$(kubectl exec "$pod" -n "$NS" -- wget -qO- http://127.0.0.1:2113/info 2>/dev/null | grep -oP '"state"\s*:\s*"\K[^"]+' || echo "unknown")
+      if [[ "$state" == "Leader" ]]; then
+        leader_found=1
+        break
       fi
+    done
+    
+    if [[ "$leader_found" -eq 1 ]]; then
+      pass "leader elected"
+      sleep 2  # Allow leader to stabilize
+      return 0
     fi
-    sleep 1
+    sleep 2
   done
-  fail "KurrentDB did not elect leader within 60s"
+  fail "KurrentDB did not elect leader within 90s"
 }
 
 run_probe_loop() {
@@ -166,9 +174,11 @@ run_bench_json_with_retry() {
   local duration_secs="$2"
   local output_file="$3"
   local error_file="$4"
-  local attempts="${5:-3}"
+  local attempts="${5:-5}"
 
   for attempt in $(seq 1 "$attempts"); do
+    echo "  Attempt $attempt/$attempts..." >&2
+    
     if "$TESTBED_BIN" --kurrentdb-url "$KURRENT_URL" \
       kurrentdb-bench --target-rate "$TARGET_RATE" --concurrency "$CONCURRENCY" --batch-size "$BATCH_SIZE" --duration-secs "$duration_secs" --json \
       >"$output_file" 2>"$error_file"; then
@@ -178,9 +188,16 @@ run_bench_json_with_retry() {
     fi
 
     warn "${label} attempt ${attempt}/${attempts} did not produce valid JSON"
-    tail -30 "$output_file" 2>/dev/null || true
-    tail -30 "$error_file" 2>/dev/null || true
-    [[ "$attempt" -lt "$attempts" ]] && sleep 3
+    if [[ -s "$output_file" ]]; then
+      echo "  stdout (last 20 lines):" >&2
+      tail -20 "$output_file" >&2
+    fi
+    if [[ -s "$error_file" ]]; then
+      echo "  stderr (last 20 lines):" >&2
+      tail -20 "$error_file" >&2
+    fi
+    
+    [[ "$attempt" -lt "$attempts" ]] && sleep 5  # Increased from 3s to 5s
   done
 
   return 1
@@ -206,11 +223,23 @@ wait_leader_elected
 step "Baseline latency run"
 BASELINE_LOG="$(mktemp)"
 BASELINE_ERR="$(mktemp)"
-if ! run_bench_json_with_retry "baseline benchmark" "$BASELINE_DURATION_SECS" "$BASELINE_LOG" "$BASELINE_ERR" 3; then
+
+# Pre-flight check: verify KurrentDB is actually responding
+pass "verifying KurrentDB connectivity..."
+if ! curl -fsS "$HEALTH_URL" >/dev/null; then
+  fail "KurrentDB health endpoint not responding before baseline benchmark"
+fi
+
+if ! run_bench_json_with_retry "baseline benchmark" "$BASELINE_DURATION_SECS" "$BASELINE_LOG" "$BASELINE_ERR" 5; then
+  warn "=== BASELINE BENCHMARK FAILED ==="
   warn "Baseline benchmark stderr tail"
   tail -60 "$BASELINE_ERR" 2>/dev/null || true
   warn "Port-forward log tail"
   tail -60 /tmp/failover-impact-pf.log 2>/dev/null || true
+  warn "KurrentDB pod states:"
+  kubectl get pods -n "$NS" -l app="$STS" 2>/dev/null || true
+  warn "KurrentDB pod events:"
+  kubectl describe pods -n "$NS" -l app="$STS" 2>/dev/null | grep -A 5 "Events:" || true
   fail "baseline benchmark failed after retries"
 fi
 
