@@ -393,8 +393,11 @@ for ts, ok in post:
 if cur_fail_start is not None and post:
     max_pause_ms = max(max_pause_ms, post[-1][0] - cur_fail_start)
 
-if recovery_ms is None:
-    recovery_ms = -1
+# If no probe failures were observed after failover trigger, recovery was effectively immediate.
+if not first_failure_seen:
+  recovery_ms = 0
+elif recovery_ms is None:
+  recovery_ms = -1
 
 print(json.dumps({
     'pause_window_ms': int(max_pause_ms),
