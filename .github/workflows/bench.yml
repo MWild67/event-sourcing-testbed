@@ -2080,10 +2080,10 @@ jobs:
       contents: write
     steps:
       - name: Checkout repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Download current benchmark bundle
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@v8
         with:
           name: bench-report-bundle
           path: bundle
@@ -2102,6 +2102,7 @@ jobs:
             git config user.name "github-actions[bot]"
             git config user.email "github-actions[bot]@users.noreply.github.com"
             git remote add origin https://github.com/${{ github.repository }}.git
+            git checkout -B bench-history
           }
 
       - name: Build rolling history (last 10 runs)
@@ -2113,5 +2114,5 @@ jobs:
           git add history.json current.json README.md
           git diff --quiet --cached || {
             git commit -m "bench: update rolling history (run ${{ github.run_number }})"
-            git push -u origin bench-history 2>&1 | grep -v "GITHUB_TOKEN" || true
+            git push -u origin HEAD:bench-history
           }
