@@ -23,6 +23,7 @@ name: Benchmarks
           - kdb-rate-ramp
           - kdb-replay-under-write
           - kdb-hot-stream-contention
+          - payload-batch-sensitivity
           - mdb-docker
           - mdb-k8s
           - mdb-rehydrate
@@ -1304,6 +1305,103 @@ jobs:
         if: always()
         run: docker stop pg && docker rm pg || true
 
+  # ── Cross-Backend: Scenario — Payload + Batch-Shape Sensitivity ─────────
+  payload-batch-sensitivity:
+    name: "Cross-Backend: Payload + Batch-Shape Sensitivity"
+    runs-on: ubuntu-22.04
+    if: github.event_name != 'workflow_dispatch' || inputs.job == '' || inputs.job == 'payload-batch-sensitivity'
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Start KurrentDB (MEM_DB)
+        run: |
+          curl -1sLf 'https://dl.cloudsmith.io/public/eventstore/kurrent-latest/setup.deb.sh' | sudo -E bash
+          sudo apt-get install -y kurrentdb
+          sudo systemctl stop kurrentdb || true
+          getent passwd kurrentdb > /dev/null || sudo useradd --system --no-create-home --shell /usr/sbin/nologin kurrentdb
+          sudo mkdir -p /tmp/esdb /tmp/esdb-log
+          sudo chown kurrentdb:kurrentdb /tmp/esdb /tmp/esdb-log
+          sudo mkdir -p /etc/systemd/system/kurrentdb.service.d
+          printf '[Service]\nEnvironment="KURRENTDB_DB=/tmp/esdb"\nEnvironment="KURRENTDB_LOG=/tmp/esdb-log"\nEnvironment="KURRENTDB_INSECURE=true"\nEnvironment="KURRENTDB_RUN_PROJECTIONS=None"\nEnvironment="KURRENTDB_UNSAFE_DISABLE_FLUSH_TO_DISK=true"\nEnvironment="KURRENTDB_CLUSTER_SIZE=1"\nEnvironment="KURRENTDB_MEM_DB=true"\n' \
+            | sudo tee /etc/systemd/system/kurrentdb.service.d/bench.conf
+          sudo systemctl daemon-reload
+          sudo systemctl start kurrentdb
+          for i in $(seq 1 30); do curl -sf http://localhost:2113/health/live && break || sleep 2; done
+
+      - name: Start MongoDB
+        run: |
+          docker run -d --name mongodb -p 27017:27017 --tmpfs /data/db \
+            mongo:7 mongod --quiet --bind_ip_all --replSet rs0 --wiredTigerCacheSizeGB 0.25
+          for i in $(seq 1 30); do
+            docker exec mongodb mongosh --quiet --eval "db.adminCommand('ping').ok" \
+              mongodb://localhost:27017/admin 2>/dev/null && break || sleep 2
+          done
+          docker exec mongodb mongosh --quiet --eval \
+            "rs.initiate({_id:'rs0',members:[{_id:0,host:'127.0.0.1:27017'}]})"
+          for i in $(seq 1 20); do
+            docker exec mongodb mongosh --quiet --eval \
+              "if (rs.isMaster().ismaster !== true) { throw 'no primary'; }" \
+              2>/dev/null && break || sleep 3
+          done
+
+      - name: Start PostgreSQL
+        run: |
+          docker run -d --name pg \
+            -e POSTGRES_DB=eventbench -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres \
+            -p 5432:5432 --tmpfs /var/lib/postgresql/data \
+            postgres:16 -c fsync=off -c full_page_writes=off -c max_connections=200
+          for i in $(seq 1 30); do
+            docker exec pg pg_isready -U postgres -d eventbench && break || sleep 2
+          done
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            rust-app/target
+          key: bench-${{ runner.os }}-cargo-${{ hashFiles('rust-app/Cargo.lock') }}
+
+      - name: Build
+        run: cargo build --release --manifest-path rust-app/Cargo.toml
+
+      - name: Payload + batch-shape sensitivity test
+        run: |
+          chmod +x tests/16-payload-batch-sensitivity-test.sh
+          DIRECT=1 \
+          TESTBED_BIN='rust-app/target/release/testbed' \
+          BACKENDS='kurrentdb mongodb postgres' \
+          KURRENT_URL_DIRECT='kurrentdb://localhost:2113?tls=false' \
+          MONGO_URL_DIRECT='mongodb://localhost:27017' \
+          POSTGRES_URL_DIRECT='postgres://postgres:postgres@localhost:5432/eventbench' \
+          PAYLOAD_SIZES='256 1024 4096' \
+          BATCH_SIZES='1 8' \
+          TARGET_RATE=5000 \
+          CONCURRENCY=64 \
+          DURATION_SECS=12 \
+          EVENT_STORE_MODE=0 \
+          bash tests/16-payload-batch-sensitivity-test.sh | tee payload-batch-output.log
+          if ! grep '^{' payload-batch-output.log > payload-batch-sensitivity.json; then
+            echo "ERROR: Payload/batch-sensitivity test failed or produced no JSON output"
+            tail -50 payload-batch-output.log >&2
+            exit 1
+          fi
+
+      - name: Upload result
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: payload-batch-sensitivity-result
+          path: payload-batch-sensitivity.json
+          if-no-files-found: warn
+
+      - name: Cleanup
+        if: always()
+        run: |
+          docker stop mongodb pg 2>/dev/null || true
+          docker rm mongodb pg 2>/dev/null || true
+
   pg-docker:
     name: "PostgreSQL: Docker (tmpfs) [${{ matrix.mode }}]"
     runs-on: ubuntu-22.04
@@ -1680,6 +1778,7 @@ jobs:
       - pg-rate-ramp
       - kdb-replay-under-write
       - kdb-hot-stream-contention
+      - payload-batch-sensitivity
       - mdb-replay-under-write
       - mdb-hot-stream-contention
       - pg-replay-under-write
@@ -1856,6 +1955,10 @@ jobs:
             'pg': 'pg-hot-stream-contention.json',
           })
 
+          payload_batch_data = load_jsons('bench-artifacts', {
+            'matrix': 'payload-batch-sensitivity.json',
+          })
+
           failover_impact = load_jsons('bench-artifacts', {
             'kdb': 'kdb-failover-impact.json',
           })
@@ -1900,6 +2003,7 @@ jobs:
               'rate_ramp': ramp_data,
               'replay_under_write': replay_data,
               'hot_stream_contention': contention_data,
+              'payload_batch_sensitivity': payload_batch_data,
               'failover_impact': failover_impact,
             },
           }
@@ -1930,7 +2034,7 @@ jobs:
           with open(summary, 'a', encoding='utf-8') as f:
             f.write('## Benchmark Results\n\n')
             f.write(f'> **Artifacts discovered:** {artifact_json_count} JSON files in bench-artifacts\n')
-            f.write(f'> **Parsed sections:** throughput={len(mode_data)}, ramp={len(ramp_data)}, replay={len(replay_data)}, failover_impact={len(failover_impact)}\n')
+            f.write(f'> **Parsed sections:** throughput={len(mode_data)}, ramp={len(ramp_data)}, replay={len(replay_data)}, payload_batch={len(payload_batch_data)}, failover_impact={len(failover_impact)}\n')
             f.write(f'> **Hot-stream contention artifacts:** {len(contention_data)}\n')
             f.write('> **Conditions:** peak + durable modes · 10 k ev/s target · 30 s · 64 concurrent tasks · ubuntu-22.04\n')
             f.write('> **Rehydration:** 50 000 events · sequential write then full replay\n')
@@ -2058,6 +2162,27 @@ jobs:
                 f.write(f'| Failed writes | {d.get("failed_writes", "n/a")} |\n\n')
             else:
               f.write('_Hot-stream contention artifact missing._\n\n')
+
+            f.write('### Payload + Batch-Shape Sensitivity\n\n')
+            matrix = payload_batch_data.get('matrix')
+            if isinstance(matrix, dict):
+              baseline = matrix.get('baseline_ranking', [])
+              changed = matrix.get('ranking_changed', 'n/a')
+              f.write(f'- **Baseline ranking:** {" > ".join(baseline) if baseline else "n/a"}\n')
+              f.write(f'- **Ranking changed across shapes:** {changed}\n\n')
+              for shape in matrix.get('shapes', []):
+                payload = shape.get('payload_bytes', 'n/a')
+                batch = shape.get('batch_size', 'n/a')
+                ranking = shape.get('ranking', [])
+                f.write(f'**Shape payload={payload}B, batch={batch}**\n\n')
+                f.write(f'- Ranking: {" > ".join(ranking) if ranking else "n/a"}\n')
+                f.write('| Backend | Rate (ev/s) | p99 (us) |\n')
+                f.write('|---------|------------:|---------:|\n')
+                for item in shape.get('results', []):
+                  f.write(f'| {item.get("backend", "n/a")} | {item.get("actual_rate_eps", "n/a")} | {item.get("p99_us", "n/a")} |\n')
+                f.write('\n')
+            else:
+              f.write('_Payload/batch-sensitivity artifact missing._\n\n')
 
             f.write('---\n')
             f.write('_All backends use RAM (tmpfs/emptyDir). Numbers reflect protocol + semantic overhead, not production throughput._\n')

@@ -7,7 +7,7 @@
 	test-mongodb test-postgres test-rehydration \
 	test-hot-cache test-projection test-search test-scale \
 	test-rate-ramp test-replay-under-write test-replay-preflight test-failover-impact \
-	test-hot-stream-contention \
+	test-hot-stream-contention test-payload-batch-sensitivity \
 	test-failover-impact-local \
         logs-es logs-rmq pf-grafana pf-prom pf-es
 
@@ -105,7 +105,7 @@ test-all: test-storage test-bench test-failover test-monitoring test-mongodb tes
 	@echo "  Core test suite completed."
 	@echo "════════════════════════════════════════"
 
-test-all-extended: test-all test-hot-cache test-projection test-search test-scale test-rate-ramp test-replay-under-write test-hot-stream-contention test-failover-impact ## Run core + advanced tests (long)
+test-all-extended: test-all test-hot-cache test-projection test-search test-scale test-rate-ramp test-replay-under-write test-hot-stream-contention test-payload-batch-sensitivity test-failover-impact ## Run core + advanced tests (long)
 	@echo ""
 	@echo "════════════════════════════════════════"
 	@echo "  Extended test suite completed."
@@ -218,6 +218,17 @@ test-hot-stream-contention: ## Test 15: Hot-stream contention (conflicts/retries
 	HOT_RATIO=$(if $(HOT_RATIO),$(HOT_RATIO),0.95) \
 	MAX_RETRIES=$(if $(MAX_RETRIES),$(MAX_RETRIES),10) \
 	bash tests/15-hot-stream-contention-test.sh
+
+test-payload-batch-sensitivity: ## Test 16: Payload + batch-shape sensitivity (ranking shift across shapes)
+	DIRECT=$(DIRECT) \
+	BACKENDS="$(if $(BACKENDS),$(BACKENDS),kurrentdb mongodb postgres)" \
+	PAYLOAD_SIZES="$(if $(PAYLOAD_SIZES),$(PAYLOAD_SIZES),256 1024 4096)" \
+	BATCH_SIZES="$(if $(BATCH_SIZES),$(BATCH_SIZES),1 8)" \
+	TARGET_RATE=$(if $(TARGET_RATE),$(TARGET_RATE),5000) \
+	CONCURRENCY=$(if $(CONCURRENCY),$(CONCURRENCY),64) \
+	DURATION_SECS=$(if $(DURATION_SECS),$(DURATION_SECS),12) \
+	EVENT_STORE_MODE=$(if $(EVENT_STORE_MODE),$(EVENT_STORE_MODE),0) \
+	bash tests/16-payload-batch-sensitivity-test.sh
 
 # ── Utility ───────────────────────────────────────────────────────────────────
 logs-es: ## Tail KurrentDB logs

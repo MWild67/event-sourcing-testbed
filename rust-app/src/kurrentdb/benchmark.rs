@@ -29,6 +29,8 @@ pub struct BenchmarkConfig {
     pub stream_prefix: String,
     /// Number of events per gRPC append call (batching).
     pub batch_size: u64,
+    /// Payload size in bytes for each synthetic benchmark event.
+    pub payload_bytes: usize,
 }
 
 impl Default for BenchmarkConfig {
@@ -40,6 +42,7 @@ impl Default for BenchmarkConfig {
             concurrency: 64,
             stream_prefix: "bench-stream".to_string(),
             batch_size: 1,
+            payload_bytes: 256,
         }
     }
 }
@@ -190,7 +193,13 @@ pub async fn run(kurrent_url: &str, config: BenchmarkConfig) -> Result<Benchmark
         let hist = Arc::clone(&shared_hist);
         let stream_name = format!("{}-{}", config.stream_prefix, seq % config.concurrency);
         let events: Vec<BenchmarkEvent> = (0..batch_size)
-            .map(|i| BenchmarkEvent::new(seq * batch_size + i, seq % config.concurrency))
+            .map(|i| {
+                BenchmarkEvent::new_with_payload(
+                    seq * batch_size + i,
+                    seq % config.concurrency,
+                    config.payload_bytes,
+                )
+            })
             .collect();
         seq += 1;
 

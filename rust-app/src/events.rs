@@ -75,10 +75,14 @@ pub struct BenchmarkEvent {
 
 impl BenchmarkEvent {
     pub fn new(seq: u64, task_id: u64) -> Self {
+        Self::new_with_payload(seq, task_id, 256)
+    }
+
+    pub fn new_with_payload(seq: u64, task_id: u64, payload_bytes: usize) -> Self {
         Self {
             seq,
             task_id,
-            payload: vec![0xAB; 256],
+            payload: vec![0xAB; payload_bytes.max(1)],
             created_at: Utc::now(),
         }
     }

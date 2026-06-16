@@ -32,6 +32,8 @@ pub struct BenchmarkConfig {
     pub stream_prefix: String,
     /// Number of events per `INSERT … VALUES` call.
     pub batch_size: u64,
+    /// Payload size in bytes for each synthetic benchmark event.
+    pub payload_bytes: usize,
     /// `PostgreSQL` database URL (overrides any URL in the connection string).
     #[allow(dead_code)]
     pub database_url: String,
@@ -52,6 +54,7 @@ impl Default for BenchmarkConfig {
             concurrency: 64,
             stream_prefix: "bench-stream".to_string(),
             batch_size: 1,
+            payload_bytes: 256,
             database_url: String::new(),
             truncate_before_run: true,
             event_store_mode: false,
@@ -188,7 +191,9 @@ pub async fn run(pg_url: &str, config: BenchmarkConfig) -> Result<BenchmarkResul
     // We warm up max_in_flight + 4 connections: the extra 4 act as a small
     // buffer so the pool never has to create a connection on the hot path
     // even if a task briefly holds its connection longer than expected.
-    let max_in_flight = usize::try_from(config.concurrency).unwrap_or(usize::MAX).min(96);
+    let max_in_flight = usize::try_from(config.concurrency)
+        .unwrap_or(usize::MAX)
+        .min(96);
     {
         let warm_count = max_in_flight + 4;
         let warm_handles: Vec<_> = (0..warm_count)
@@ -227,14 +232,22 @@ pub async fn run(pg_url: &str, config: BenchmarkConfig) -> Result<BenchmarkResul
             break;
         }
 
-        let Ok(permit) = Arc::clone(&in_flight).try_acquire_owned() else { continue };
+        let Ok(permit) = Arc::clone(&in_flight).try_acquire_owned() else {
+            continue;
+        };
 
         let client = Arc::clone(&client);
         let total_ev = Arc::clone(&total_events);
         let hist = Arc::clone(&shared_hist);
         let stream_id = format!("{}-{}", stream_prefix, seq % config.concurrency);
         let events: Vec<BenchmarkEvent> = (0..batch_size)
-            .map(|i| BenchmarkEvent::new(seq * batch_size + i, seq % config.concurrency))
+            .map(|i| {
+                BenchmarkEvent::new_with_payload(
+                    seq * batch_size + i,
+                    seq % config.concurrency,
+                    config.payload_bytes,
+                )
+            })
             .collect();
         let base_seq = seq * batch_size;
         let task_id = seq % config.concurrency;
@@ -270,7 +283,9 @@ pub async fn run(pg_url: &str, config: BenchmarkConfig) -> Result<BenchmarkResul
         });
     }
 
-    let _ = in_flight.acquire_many(u32::try_from(max_in_flight).unwrap_or(96)).await;
+    let _ = in_flight
+        .acquire_many(u32::try_from(max_in_flight).unwrap_or(96))
+        .await;
 
     let elapsed = wall_start.elapsed();
     let total = total_events.load(Ordering::Relaxed);

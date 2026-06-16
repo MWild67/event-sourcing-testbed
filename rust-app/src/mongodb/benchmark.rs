@@ -33,6 +33,8 @@ pub struct BenchmarkConfig {
     pub collection_prefix: String,
     /// Number of events per `insert_many` call (batching).
     pub batch_size: u64,
+    /// Payload size in bytes for each synthetic benchmark event.
+    pub payload_bytes: usize,
     /// `MongoDB` database name.
     pub database: String,
     /// Drop the database before the run starts to guarantee a clean slate.
@@ -54,6 +56,7 @@ impl Default for BenchmarkConfig {
             concurrency: 64,
             collection_prefix: "bench-events".to_string(),
             batch_size: 1,
+            payload_bytes: 256,
             database: "eventbench".to_string(),
             drop_before_run: true,
             event_store_mode: false,
@@ -255,7 +258,13 @@ pub async fn run(mongo_url: &str, config: BenchmarkConfig) -> Result<BenchmarkRe
         let hist = Arc::clone(&shared_hist);
         let collection_name = format!("{}-{}", config.collection_prefix, seq % config.concurrency);
         let events: Vec<BenchmarkEvent> = (0..batch_size)
-            .map(|i| BenchmarkEvent::new(seq * batch_size + i, seq % config.concurrency))
+            .map(|i| {
+                BenchmarkEvent::new_with_payload(
+                    seq * batch_size + i,
+                    seq % config.concurrency,
+                    config.payload_bytes,
+                )
+            })
             .collect();
         seq += 1;
 

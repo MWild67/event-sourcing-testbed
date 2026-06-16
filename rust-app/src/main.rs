@@ -244,6 +244,10 @@ struct BenchArgs {
     #[arg(long, default_value_t = 1)]
     batch_size: u64,
 
+    /// Synthetic payload size in bytes for each benchmark event.
+    #[arg(long, default_value_t = 256)]
+    payload_bytes: usize,
+
     /// Emit results as a single JSON line (for CI parsing).
     #[arg(long)]
     json: bool,
@@ -270,6 +274,10 @@ struct MongoBenchArgs {
     /// Events sent per `insert_many` call.  Default 1 = one event per call.
     #[arg(long, default_value_t = 1)]
     batch_size: u64,
+
+    /// Synthetic payload size in bytes for each benchmark event.
+    #[arg(long, default_value_t = 256)]
+    payload_bytes: usize,
 
     /// Emit results as a single JSON line (for CI parsing).
     #[arg(long)]
@@ -332,6 +340,10 @@ struct PgBenchArgs {
     /// Events sent per INSERT … VALUES call.
     #[arg(long, default_value_t = 1)]
     batch_size: u64,
+
+    /// Synthetic payload size in bytes for each benchmark event.
+    #[arg(long, default_value_t = 256)]
+    payload_bytes: usize,
 
     /// Emit results as a single JSON line (for CI parsing).
     #[arg(long)]
@@ -479,6 +491,7 @@ async fn main() -> Result<()> {
                 concurrency: args.concurrency,
                 stream_prefix: args.stream_prefix,
                 batch_size: args.batch_size,
+                payload_bytes: args.payload_bytes,
             };
 
             let result = kurrentdb::benchmark::run(&cli.kurrentdb_url, config).await?;
@@ -504,6 +517,7 @@ async fn main() -> Result<()> {
                 concurrency: args.concurrency,
                 collection_prefix: args.collection_prefix,
                 batch_size: args.batch_size,
+                payload_bytes: args.payload_bytes,
                 database: args.database,
                 drop_before_run: !args.no_drop,
                 event_store_mode: args.event_store_mode,
@@ -544,6 +558,7 @@ async fn main() -> Result<()> {
                 concurrency: args.concurrency,
                 stream_prefix: args.stream_prefix,
                 batch_size: args.batch_size,
+                payload_bytes: args.payload_bytes,
                 database_url: cli.postgres_url.clone(),
                 truncate_before_run: true,
                 event_store_mode: args.event_store_mode,
