@@ -2076,6 +2076,8 @@ jobs:
     runs-on: ubuntu-22.04
     needs: report
     if: needs.report.result == 'success' && github.ref == 'refs/heads/main' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.job == ''))
+    continue-on-error: true
+    timeout-minutes: 10
     permissions:
       contents: write
     steps:
@@ -2093,15 +2095,30 @@ jobs:
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
 
+      - name: Verify repository write access
+        run: |
+          REPO_URL="https://github.com/${{ github.repository }}.git"
+          for attempt in 1 2 3; do
+            if git -c http.https://github.com/.extraheader="AUTHORIZATION: bearer ${{ github.token }}" ls-remote "$REPO_URL" >/dev/null 2>&1; then
+              exit 0
+            fi
+            echo "ls-remote auth check failed (attempt ${attempt}/3), retrying..."
+            sleep $((attempt * 2))
+          done
+          echo "::warning::Repository auth preflight failed; skipping bench-history publish for this run."
+          exit 0
+
       - name: Checkout bench-history branch
         run: |
-          git clone --depth 1 --branch bench-history https://github.com/${{ github.repository }}.git bench-repo 2>/dev/null || {
+          REPO_URL="https://github.com/${{ github.repository }}.git"
+          git -c http.https://github.com/.extraheader="AUTHORIZATION: bearer ${{ github.token }}" \
+            clone --depth 1 --branch bench-history "$REPO_URL" bench-repo 2>/dev/null || {
             mkdir -p bench-repo
             cd bench-repo
             git init
             git config user.name "github-actions[bot]"
             git config user.email "github-actions[bot]@users.noreply.github.com"
-            git remote add origin https://github.com/${{ github.repository }}.git
+            git remote add origin "$REPO_URL"
             git checkout -B bench-history
           }
 
@@ -2112,7 +2129,29 @@ jobs:
         run: |
           cd bench-repo
           git add history.json current.json README.md
-          git diff --quiet --cached || {
-            git commit -m "bench: update rolling history (run ${{ github.run_number }})"
-            git push -u origin HEAD:bench-history
-          }
+          if git diff --quiet --cached; then
+            echo "No bench-history changes detected"
+            exit 0
+          fi
+
+          git commit -m "bench: update rolling history (run ${{ github.run_number }})"
+
+          for attempt in 1 2 3; do
+            if git -c http.https://github.com/.extraheader="AUTHORIZATION: bearer ${{ github.token }}" push -u origin HEAD:bench-history; then
+              echo "bench-history push succeeded"
+              exit 0
+            fi
+
+            echo "push failed (attempt ${attempt}/3), reconciling and retrying..."
+            git -c http.https://github.com/.extraheader="AUTHORIZATION: bearer ${{ github.token }}" fetch origin bench-history || true
+            if git show-ref --quiet refs/remotes/origin/bench-history; then
+              git rebase origin/bench-history || {
+                git rebase --abort || true
+                echo "rebase conflict while retrying push"
+              }
+            fi
+            sleep $((attempt * 3))
+          done
+
+          echo "::warning::Failed to publish bench-history after retries; benchmark run stays green."
+          exit 0
