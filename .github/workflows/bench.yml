@@ -2040,6 +2040,13 @@ jobs:
             f.write('> **Rehydration:** 50 000 events · sequential write then full replay\n')
             f.write('> **Scale:** 100 k events · CI loopback (no VM bridge)\n\n')
 
+            f.write('### Scenario Coverage Map\n\n')
+            f.write('- **Cross-backend (KurrentDB + MongoDB + PostgreSQL):** sustained write benchmark, rehydration/replay, rate ramp, replay-under-write, hot-stream contention, payload+batch sensitivity\n')
+            f.write('- **KurrentDB-only:** MEM_DB baseline, scale benchmark (100 k), node failover (AC-3), short failover-impact under load\n\n')
+            f.write('> Why KurrentDB-only here: these are HA/failover readiness checks, not just throughput checks.\n')
+            f.write('> MongoDB/PostgreSQL failover parity needs dedicated HA control planes (Mongo replica-set election scenarios and PostgreSQL Patroni/repmgr-style promotion scenarios) to remain apples-to-apples.\n')
+            f.write('> Next step: add MongoDB and PostgreSQL failover-impact jobs with the same output schema used by KurrentDB for full cross-backend reliability parity.\n\n')
+
             f.write('### KurrentDB\n\n')
             f.write('**Sustained Write Benchmark**\n\n')
             f.write('| Environment | Mode | Rate (ev/s) | p50 (ms) | p95 (ms) | p99 (ms) | p99.9 (ms) |\n')
@@ -2059,7 +2066,7 @@ jobs:
             f.write(f'| Write — batched 500 ev/gRPC | {e("KDB_RH_WRITE_MS")} | {e("KDB_RH_WRITE_RATE")} | |\n')
             f.write(f'| Replay — gRPC server-stream | {e("KDB_RH_REPLAY_MS")} | {e("KDB_RH_REPLAY_RATE")} | {result("KDB_RH_PASSED")} |\n\n')
 
-            f.write('**Scale Benchmark — 100 k events (CI, loopback gRPC)**\n\n')
+            f.write('**Scale Benchmark — 100 k events (KurrentDB-only, CI loopback gRPC)**\n\n')
             f.write('| Metric | Value |\n')
             f.write('|--------|------:|\n')
             f.write(f'| Write throughput (ev/s) | {e("KDB_SC_WRITE_EPS")} |\n')
@@ -2067,20 +2074,41 @@ jobs:
             f.write(f'| Full rehydration throughput (ev/s) | {e("KDB_SC_REHY_EPS")} |\n')
             f.write(f'| Full rehydration elapsed (ms) | {e("KDB_SC_REHY_MS")} |\n\n')
 
-            f.write('**Node Failover (AC-3)**\n\n')
+            f.write('**Node Failover (AC-3, KurrentDB-only)**\n\n')
             f.write('| Test | Result |\n')
             f.write('|------|:------:|\n')
             f.write(f'| 3-node cluster · leader evicted · quorum ≤ 60 s | {result("KDB_FO_PASSED")} |\n\n')
 
-            f.write('**Short Failover Impact (Under Load)**\n\n')
+            f.write('**Short Failover Impact (Under Load, KurrentDB-only)**\n\n')
             if 'kdb' in failover_impact:
               d = failover_impact['kdb']
+              pause_window = d.get("pause_window_ms", "n/a")
+              error_spike = d.get("error_spike_count", "n/a")
+              write_errors = d.get("write_error_count", "n/a")
+              recovery_time = d.get("recovery_time_ms", "n/a")
+
+              def _as_int(value):
+                try:
+                  return int(value)
+                except Exception:
+                  return None
+
+              pw = _as_int(pause_window)
+              es = _as_int(error_spike)
+              we = _as_int(write_errors)
+              rt = _as_int(recovery_time)
+
+              if pw == 0 and es == 0 and we == 0 and rt == 0:
+                f.write('> Interpretation: no client-visible outage or error spike was observed during the failover window in this run.\n\n')
+              else:
+                f.write('> Interpretation: non-zero values below indicate client-visible disruption during failover (outage window, probe failures, write errors, or delayed recovery).\n\n')
+
               f.write('| Metric | Value |\n')
               f.write('|--------|------:|\n')
-              f.write(f'| Pause window (ms) | {d.get("pause_window_ms", "n/a")} |\n')
-              f.write(f'| Probe error spike (count) | {d.get("error_spike_count", "n/a")} |\n')
-              f.write(f'| Write error count | {d.get("write_error_count", "n/a")} |\n')
-              f.write(f'| Recovery time (ms) | {d.get("recovery_time_ms", "n/a")} |\n')
+              f.write(f'| Pause window (ms) | {pause_window} |\n')
+              f.write(f'| Probe error spike (count) | {error_spike} |\n')
+              f.write(f'| Write error count | {write_errors} |\n')
+              f.write(f'| Recovery time (ms) | {recovery_time} |\n')
               f.write(f'| Baseline p99 (us) | {d.get("baseline_p99_us", "n/a")} |\n')
               f.write(f'| Impact p99 (us) | {d.get("impact_p99_us", "n/a")} |\n')
               f.write(f'| Tail latency factor | {d.get("tail_latency_factor", "n/a")}x |\n\n')
@@ -2099,6 +2127,12 @@ jobs:
             ])
             f.write('\n')
 
+            f.write('**Rehydration / Replay (50 k events)**\n\n')
+            f.write('| Phase | Duration (ms) | Throughput (ev/s) | Result |\n')
+            f.write('|-------|-------------:|------------------:|:------:|\n')
+            f.write(f'| Write — one insertOne() per event | {e("MDB_RH_WRITE_MS")} | {e("MDB_RH_WRITE_RATE")} | |\n')
+            f.write(f'| Replay — bulk cursor (16 MB batch) | {e("MDB_RH_REPLAY_MS")} | {e("MDB_RH_REPLAY_RATE")} | {result("MDB_RH_PASSED")} |\n\n')
+
             f.write('### PostgreSQL\n\n')
             f.write('**Sustained Write Benchmark**\n\n')
             f.write('| Environment | Mode | Rate (ev/s) | p50 (ms) | p95 (ms) | p99 (ms) | p99.9 (ms) |\n')
@@ -2110,6 +2144,12 @@ jobs:
               ('Kubernetes k3d (emptyDir Memory)', 'Durable', 'pg-k8s-durable'),
             ])
             f.write('\n')
+
+            f.write('**Rehydration / Replay (50 k events)**\n\n')
+            f.write('| Phase | Duration (ms) | Throughput (ev/s) | Result |\n')
+            f.write('|-------|-------------:|------------------:|:------:|\n')
+            f.write(f'| Write — one INSERT per event | {e("PG_RH_WRITE_MS")} | {e("PG_RH_WRITE_RATE")} | |\n')
+            f.write(f'| Replay — SELECT ... ORDER BY stream_version | {e("PG_RH_REPLAY_MS")} | {e("PG_RH_REPLAY_RATE")} | {result("PG_RH_PASSED")} |\n\n')
 
             f.write('### Rate Ramp — Knee-Point Analysis\n\n')
             if ramp_data:
@@ -2175,7 +2215,7 @@ jobs:
                 batch = shape.get('batch_size', 'n/a')
                 ranking = shape.get('ranking', [])
                 f.write(f'**Shape payload={payload}B, batch={batch}**\n\n')
-                f.write(f'- Ranking: {" > ".join(ranking) if ranking else "n/a"}\n')
+                f.write(f'- Ranking: {" > ".join(ranking) if ranking else "n/a"}\n\n')
                 f.write('| Backend | Rate (ev/s) | p99 (us) |\n')
                 f.write('|---------|------------:|---------:|\n')
                 for item in shape.get('results', []):
