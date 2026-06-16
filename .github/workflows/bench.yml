@@ -2146,20 +2146,19 @@ jobs:
               f"- Run {entry.get('run_number', 'n/a')}: {entry.get('generated_at', 'n/a')}"
             )
 
-          repo = "${{ github.repository }}"
-          readme = f"""# Benchmark History (Last 10 Runs)
-
-Public rolling benchmark data for regression tracking.
-
-**Latest URLs:**
-- Current: https://raw.githubusercontent.com/{repo}/bench-history/current.json
-- History: https://raw.githubusercontent.com/{repo}/bench-history/history.json
-
-## Recent Runs
-
-{chr(10).join(rows)}
-"""
-          Path('bench-repo/README.md').write_text(readme)
+          readme_lines = [
+            '# Benchmark History (Last 10 Runs)',
+            '',
+            'Public rolling benchmark data for regression tracking.',
+            '',
+            '**Latest URLs:**',
+            '- Current: https://raw.githubusercontent.com/MWild67/event-sourcing-testbed/bench-history/current.json',
+            '- History: https://raw.githubusercontent.com/MWild67/event-sourcing-testbed/bench-history/history.json',
+            '',
+            '## Recent Runs',
+            '',
+          ] + rows + ['']
+          Path('bench-repo/README.md').write_text('\n'.join(readme_lines))
           PYEOF
 
       - name: Commit and push
