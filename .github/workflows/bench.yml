@@ -2079,6 +2079,9 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
       - name: Download current benchmark bundle
         uses: actions/download-artifact@v6
         with:
