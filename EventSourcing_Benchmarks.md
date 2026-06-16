@@ -924,17 +924,24 @@ parallel; the `report` job waits for all of them and runs exactly once.
 
 ``` wf
 push/PR
-  ├─ kdb-memdb, kdb-docker, kdb-k8s, kdb-rehydrate, kdb-failover ──┐
-  ├─ mdb-docker, mdb-k8s, mdb-rehydrate                   ├─ parallel
-  ├─ pg-docker, pg-k8s, pg-rehydrate                    ──┘
-  └─ report  (needs all 11 jobs above)
+  ├─ KurrentDB jobs: kdb-memdb, kdb-docker, kdb-k8s, kdb-rehydrate,
+  │                 kdb-failover, kdb-failover-impact, kdb-rate-ramp,
+  │                 kdb-replay-under-write, kdb-hot-stream-contention ──┐
+  ├─ MongoDB jobs:  mdb-docker, mdb-k8s, mdb-rehydrate,
+  │                 mdb-rate-ramp, mdb-replay-under-write,
+  │                 mdb-hot-stream-contention                            ├─ parallel
+  ├─ PostgreSQL jobs: pg-docker, pg-k8s, pg-rehydrate,
+  │                   pg-rate-ramp, pg-replay-under-write,
+  │                   pg-hot-stream-contention                          ──┤
+  ├─ Cross-backend job: payload-batch-sensitivity                       ──┘
+  └─ report  (needs all benchmark jobs)
 ```
 
 ### Latest CI results (2026-06-16, ubuntu-22.04)
 
-**Artifacts discovered:** 26 JSON files in `bench-artifacts`
+**Artifacts discovered:** 27 JSON files in `bench-artifacts`
 
-**Parsed sections:** throughput=12, ramp=5, replay=5, hot_stream_contention=3, failover_impact=1
+**Parsed sections:** throughput=12, ramp=5, replay=5, payload_batch=1, hot_stream_contention=3, failover_impact=1
 
 **Conditions:** peak + durable modes · 10 k ev/s target · 30 s · 64 concurrent
 tasks · ubuntu-22.04
@@ -948,10 +955,10 @@ tasks · ubuntu-22.04
 | Environment | Rate (ev/s) | p50 (ms) | p95 (ms) | p99 (ms) | p99.9 (ms) |
 |---|---:|:---:|:---:|:---:|:---:|
 | In-memory (MEM_DB) | 8 348.1 | 4.39 | 8.89 | 12.06 | 21.38 |
-| Docker (tmpfs) — Peak | 8 371.9 | 4.12 | 8.43 | 10.62 | 38.02 |
-| Docker (tmpfs) — Durable | 8 398.2 | 4.21 | 8.36 | 10.73 | 21.36 |
-| Kubernetes k3d (emptyDir Memory) — Peak | 6 746.3 | 5.75 | 13.45 | 17.97 | 30.18 |
-| Kubernetes k3d (emptyDir Memory) — Durable | 6 874.1 | 6.34 | 15.02 | 20.16 | 44.73 |
+| Docker (tmpfs) — Peak | 8 661.2 | 3.98 | 7.74 | 9.88 | 20.66 |
+| Docker (tmpfs) — Durable | 8 739.6 | 3.90 | 7.64 | 9.56 | 37.38 |
+| Kubernetes k3d (emptyDir Memory) — Peak | 7 291.2 | 4.29 | 12.10 | 15.94 | 27.28 |
+| Kubernetes k3d (emptyDir Memory) — Durable | 6 684.5 | 6.61 | 15.85 | 21.12 | 33.89 |
 
 **Rehydration / Replay (50 000 events)**
 
@@ -979,18 +986,18 @@ tasks · ubuntu-22.04
 | Probe error spike | 0 |
 | Write error count | 0 |
 | Recovery time | 0 ms |
-| Baseline p99 | 43 487 us |
-| Impact p99 | 50 783 us |
-| Tail latency factor | 1.17x |
+| Baseline p99 | 40 447 us |
+| Impact p99 | 36 287 us |
+| Tail latency factor | 0.90x |
 
 #### MongoDB
 
 | Environment | Rate (ev/s) | p50 (ms) | p95 (ms) | p99 (ms) | p99.9 (ms) |
 |---|---:|:---:|:---:|:---:|:---:|
-| Docker (tmpfs · j:true) — Peak | 6 984.1 | 8.06 | 11.48 | 15.55 | 22.02 |
-| Docker (tmpfs · j:true) — Durable | 1 431.5 | 41.79 | 59.20 | 83.90 | 101.12 |
-| Kubernetes k3d (emptyDir Memory) — Peak | 2 568.8 | 22.11 | 35.65 | 48.83 | 67.90 |
-| Kubernetes k3d (emptyDir Memory) — Durable | 1 391.6 | 42.27 | 64.86 | 91.78 | 116.80 |
+| Docker (tmpfs · j:true) — Peak | 5 490.3 | 10.40 | 14.65 | 20.43 | 29.92 |
+| Docker (tmpfs · j:true) — Durable | 1 513.7 | 39.71 | 53.18 | 76.16 | 98.05 |
+| Kubernetes k3d (emptyDir Memory) — Peak | 1 645.4 | 35.45 | 52.83 | 72.64 | 93.50 |
+| Kubernetes k3d (emptyDir Memory) — Durable | 510.7 | 117.25 | 164.48 | 185.86 | 216.96 |
 
 **Rehydration / Replay (50 000 events)**
 
@@ -1003,10 +1010,10 @@ tasks · ubuntu-22.04
 
 | Environment | Rate (ev/s) | p50 (ms) | p95 (ms) | p99 (ms) | p99.9 (ms) |
 |---|---:|:---:|:---:|:---:|:---:|
-| Docker (tmpfs · fsync=off) — Peak | 9 995.3 | 0.49 | 1.11 | 1.95 | 6.61 |
-| Docker (tmpfs · fsync=off) — Durable | 9 891.4 | 0.79 | 3.23 | 9.45 | 27.61 |
-| Kubernetes k3d (emptyDir Memory) — Peak | 2 121.5 | 27.42 | 44.35 | 56.54 | 107.97 |
-| Kubernetes k3d (emptyDir Memory) — Durable | 4 032.9 | 13.63 | 24.98 | 32.93 | 49.05 |
+| Docker (tmpfs · fsync=off) — Peak | 9 999.6 | 0.20 | 0.47 | 0.79 | 2.10 |
+| Docker (tmpfs · fsync=off) — Durable | 9 596.5 | 1.65 | 11.28 | 24.10 | 45.57 |
+| Kubernetes k3d (emptyDir Memory) — Peak | 2 611.2 | 22.45 | 34.82 | 42.66 | 60.86 |
+| Kubernetes k3d (emptyDir Memory) — Durable | 2 653.2 | 21.81 | 36.00 | 46.81 | 80.19 |
 
 **Rehydration / Replay (50 000 events)**
 
@@ -1018,24 +1025,38 @@ tasks · ubuntu-22.04
 ### Rate Ramp — Knee-Point Analysis
 
 - **KurrentDB:** no knee detected in tested range
-- **MongoDB Peak:** knee 3 000 ev/s, p99 8 647 us, jump 8.395x
-- **MongoDB Durable:** knee 3 000 ev/s, p99 79 679 us, jump 2.438x
-- **PostgreSQL Peak:** no knee detected in tested range
-- **PostgreSQL Durable:** no knee detected in tested range
+- **MongoDB Peak:** knee 3 000 ev/s, p99 5 895 us, jump 3.673x
+- **MongoDB Durable:** knee 3 000 ev/s, p99 77 311 us, jump 2.522x
+- **PostgreSQL Peak:** knee 8 000 ev/s, p99 2 689 us, jump 2.258x
+- **PostgreSQL Durable:** knee 8 000 ev/s, p99 5 375 us, jump 2.693x
 
 ### Replay-Under-Write — Latency Regression
 
-- **KurrentDB:** baseline 10 063 us → concurrent 8 115 us (0.81x)
-- **MongoDB Peak:** baseline 21 663 us → concurrent 22 255 us (1.03x)
-- **MongoDB Durable:** baseline 63 391 us → concurrent 66 495 us (1.05x)
-- **PostgreSQL Peak:** baseline 3 577 us → concurrent 4 391 us (1.23x)
-- **PostgreSQL Durable:** baseline 14 431 us → concurrent 11 855 us (0.82x)
+- **KurrentDB:** baseline 11 111 us → concurrent 8 287 us (0.75x)
+- **MongoDB Peak:** baseline 22 367 us → concurrent 23 999 us (1.07x)
+- **MongoDB Durable:** baseline 78 975 us → concurrent 85 631 us (1.08x)
+- **PostgreSQL Peak:** baseline 8 575 us → concurrent 6 399 us (0.75x)
+- **PostgreSQL Durable:** baseline 28 415 us → concurrent 25 055 us (0.88x)
 
 ### Hot-Stream Contention — Conflict/Retry + Tail Impact
 
-- **KurrentDB:** baseline p99 15 991 us → contention p99 443 647 us (27.74x), conflicts 38 631, retry successes 923
-- **MongoDB:** baseline p99 57 503 us → contention p99 435 455 us (7.57x), conflicts 51 176, retry successes 1 309
-- **PostgreSQL:** baseline p99 6 643 us → contention p99 282 367 us (42.51x), conflicts 94 657, retry successes 6 260
+- **KurrentDB:** baseline p99 17 135 us → contention p99 419 839 us (24.50x), conflicts 61 560, retry successes 1 444
+- **MongoDB:** baseline p99 107 903 us → contention p99 651 775 us (6.04x), conflicts 29 127, retry successes 748
+- **PostgreSQL:** baseline p99 7 099 us → contention p99 305 919 us (43.09x), conflicts 85 271, retry successes 5 194
+
+### Payload + Batch-Shape Sensitivity
+
+- **Baseline ranking:** postgres > kurrentdb > mongodb
+- **Ranking changed across shapes:** true
+
+| Payload | Batch | 1st | 2nd | 3rd | Shift vs batch=1 |
+|---|---:|---|---|---|---|
+| 256B | 1 | postgres | kurrentdb | mongodb | baseline |
+| 256B | 8 | postgres | mongodb | kurrentdb | 2nd/3rd swapped |
+| 1024B | 1 | postgres | kurrentdb | mongodb | baseline |
+| 1024B | 8 | postgres | mongodb | kurrentdb | 2nd/3rd swapped |
+| 4096B | 1 | kurrentdb | postgres | mongodb | baseline |
+| 4096B | 8 | kurrentdb | postgres | mongodb | no change |
 
 ### Notes on CI numbers
 

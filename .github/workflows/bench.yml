@@ -23,7 +23,6 @@ name: Benchmarks
           - kdb-rate-ramp
           - kdb-replay-under-write
           - kdb-hot-stream-contention
-          - payload-batch-sensitivity
           - mdb-docker
           - mdb-k8s
           - mdb-rehydrate
@@ -36,6 +35,7 @@ name: Benchmarks
           - pg-rate-ramp
           - pg-replay-under-write
           - pg-hot-stream-contention
+          - payload-batch-sensitivity
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -1764,25 +1764,25 @@ jobs:
       - kdb-memdb
       - kdb-docker
       - kdb-k8s
-      - mdb-docker
-      - mdb-k8s
-      - pg-docker
-      - pg-k8s
       - kdb-rehydrate
-      - mdb-rehydrate
-      - pg-rehydrate
       - kdb-failover
       - kdb-failover-impact
       - kdb-rate-ramp
-      - mdb-rate-ramp
-      - pg-rate-ramp
       - kdb-replay-under-write
       - kdb-hot-stream-contention
-      - payload-batch-sensitivity
+      - mdb-docker
+      - mdb-k8s
+      - mdb-rehydrate
+      - mdb-rate-ramp
       - mdb-replay-under-write
       - mdb-hot-stream-contention
+      - pg-docker
+      - pg-k8s
+      - pg-rehydrate
+      - pg-rate-ramp
       - pg-replay-under-write
       - pg-hot-stream-contention
+      - payload-batch-sensitivity
     steps:
       - name: Download benchmark and ramp artifacts
         env:
