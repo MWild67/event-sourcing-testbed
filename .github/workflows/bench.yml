@@ -1883,6 +1883,33 @@ jobs:
             if missing:
               replay_errors.append(f'{label}: missing fields: {", ".join(missing)}')
 
+          from datetime import datetime, timezone
+
+          current_bundle = {
+            'schema_version': 1,
+            'generated_at': datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
+            'repository': os.getenv('GITHUB_REPOSITORY', 'unknown'),
+            'run_id': os.getenv('GITHUB_RUN_ID', 'unknown'),
+            'run_attempt': os.getenv('GITHUB_RUN_ATTEMPT', 'unknown'),
+            'run_number': os.getenv('GITHUB_RUN_NUMBER', 'unknown'),
+            'sha': os.getenv('GITHUB_SHA', ''),
+            'ref': os.getenv('GITHUB_REF', ''),
+            'artifact_json_count': artifact_json_count,
+            'sections': {
+              'throughput': mode_data,
+              'rate_ramp': ramp_data,
+              'replay_under_write': replay_data,
+              'hot_stream_contention': contention_data,
+              'failover_impact': failover_impact,
+            },
+          }
+
+          Path('public').mkdir(parents=True, exist_ok=True)
+          Path('public/bench-current.json').write_text(
+            json.dumps(current_bundle, ensure_ascii=False, indent=2),
+            encoding='utf-8'
+          )
+
           if replay_errors:
             print('Replay data validation warning:')
             for err in replay_errors:
@@ -2036,3 +2063,142 @@ jobs:
             f.write('_All backends use RAM (tmpfs/emptyDir). Numbers reflect protocol + semantic overhead, not production throughput._\n')
             f.write('_K8s latency is higher than Docker due to the port-forward loopback tunnel._\n')
           PYEOF
+
+      - name: Upload public benchmark bundle
+        uses: actions/upload-artifact@v6
+        with:
+          name: bench-report-bundle
+          path: public/bench-current.json
+          if-no-files-found: error
+
+  publish-pages:
+    name: Publish Bench History (Pages)
+    runs-on: ubuntu-22.04
+    needs: report
+    if: needs.report.result == 'success' && github.ref == 'refs/heads/main' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.job == ''))
+    permissions:
+      pages: write
+      id-token: write
+      contents: read
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - name: Download current benchmark bundle
+        uses: actions/download-artifact@v6
+        with:
+          name: bench-report-bundle
+          path: bundle
+
+      - name: Build rolling history (last 10 runs)
+        env:
+          REPOSITORY_OWNER: ${{ github.repository_owner }}
+          REPOSITORY_NAME: ${{ github.event.repository.name }}
+        run: |
+          python3 << 'PYEOF'
+          import html
+          import json
+          import os
+          import urllib.error
+          import urllib.request
+          from pathlib import Path
+
+          owner = os.getenv('REPOSITORY_OWNER', '')
+          repo = os.getenv('REPOSITORY_NAME', '')
+          history_url = f'https://{owner}.github.io/{repo}/bench/history.json'
+
+          current_path = Path('bundle/bench-current.json')
+          current = json.loads(current_path.read_text(encoding='utf-8'))
+          current_run_id = str(current.get('run_id', ''))
+
+          entries = []
+          try:
+            with urllib.request.urlopen(history_url, timeout=15) as resp:
+              payload = json.loads(resp.read().decode('utf-8'))
+              if isinstance(payload, dict) and isinstance(payload.get('entries'), list):
+                entries = payload['entries']
+              elif isinstance(payload, list):
+                entries = payload
+          except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, ValueError):
+            entries = []
+
+          merged = [current]
+          for item in entries:
+            item_run_id = str(item.get('run_id', ''))
+            if item_run_id and item_run_id == current_run_id:
+              continue
+            merged.append(item)
+
+          merged = merged[:10]
+
+          site_bench = Path('site/bench')
+          site_bench.mkdir(parents=True, exist_ok=True)
+
+          history_doc = {
+            'schema_version': 1,
+            'repository': current.get('repository', f'{owner}/{repo}'),
+            'max_entries': 10,
+            'entries': merged,
+          }
+          (site_bench / 'history.json').write_text(
+            json.dumps(history_doc, ensure_ascii=False, indent=2),
+            encoding='utf-8'
+          )
+          (site_bench / 'current.json').write_text(
+            json.dumps(current, ensure_ascii=False, indent=2),
+            encoding='utf-8'
+          )
+
+          rows = []
+          for item in merged:
+            run_number = html.escape(str(item.get('run_number', 'n/a')))
+            run_id = html.escape(str(item.get('run_id', 'n/a')))
+            generated_at = html.escape(str(item.get('generated_at', 'n/a')))
+            sha = html.escape(str(item.get('sha', ''))[:12])
+            rows.append(
+              f'<tr><td>{run_number}</td><td>{run_id}</td><td>{generated_at}</td><td>{sha}</td></tr>'
+            )
+
+          index_html = f'''<!doctype html>
+          <html lang="en">
+            <head>
+              <meta charset="utf-8" />
+              <meta name="viewport" content="width=device-width,initial-scale=1" />
+              <title>Benchmark History</title>
+              <style>
+                body {{ font-family: ui-sans-serif, system-ui, sans-serif; margin: 2rem; color: #111827; }}
+                h1 {{ margin-bottom: 0.5rem; }}
+                p {{ color: #4b5563; }}
+                table {{ border-collapse: collapse; width: 100%; margin-top: 1rem; }}
+                th, td {{ text-align: left; padding: 0.6rem; border-bottom: 1px solid #e5e7eb; }}
+                code {{ background: #f3f4f6; padding: 0.1rem 0.3rem; border-radius: 4px; }}
+              </style>
+            </head>
+            <body>
+              <h1>Benchmark History (Last 10 Runs)</h1>
+              <p>Public rolling bundle for doc/regression updates. Raw data: <a href="./history.json">history.json</a> · <a href="./current.json">current.json</a></p>
+              <table>
+                <thead>
+                  <tr><th>Run #</th><th>Run ID</th><th>Generated At (UTC)</th><th>SHA</th></tr>
+                </thead>
+                <tbody>
+                  {''.join(rows)}
+                </tbody>
+              </table>
+            </body>
+          </html>
+          '''
+          (site_bench / 'index.html').write_text(index_html, encoding='utf-8')
+          PYEOF
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: site
+
+      - name: Deploy to GitHub Pages
+        id: deploy
+        uses: actions/deploy-pages@v4
