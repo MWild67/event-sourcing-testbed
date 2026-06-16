@@ -1883,6 +1883,33 @@ jobs:
             if missing:
               replay_errors.append(f'{label}: missing fields: {", ".join(missing)}')
 
+          from datetime import datetime, timezone
+
+          current_bundle = {
+            'schema_version': 1,
+            'generated_at': datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
+            'repository': os.getenv('GITHUB_REPOSITORY', 'unknown'),
+            'run_id': os.getenv('GITHUB_RUN_ID', 'unknown'),
+            'run_attempt': os.getenv('GITHUB_RUN_ATTEMPT', 'unknown'),
+            'run_number': os.getenv('GITHUB_RUN_NUMBER', 'unknown'),
+            'sha': os.getenv('GITHUB_SHA', ''),
+            'ref': os.getenv('GITHUB_REF', ''),
+            'artifact_json_count': artifact_json_count,
+            'sections': {
+              'throughput': mode_data,
+              'rate_ramp': ramp_data,
+              'replay_under_write': replay_data,
+              'hot_stream_contention': contention_data,
+              'failover_impact': failover_impact,
+            },
+          }
+
+          Path('public').mkdir(parents=True, exist_ok=True)
+          Path('public/bench-current.json').write_text(
+            json.dumps(current_bundle, ensure_ascii=False, indent=2),
+            encoding='utf-8'
+          )
+
           if replay_errors:
             print('Replay data validation warning:')
             for err in replay_errors:
@@ -2036,3 +2063,109 @@ jobs:
             f.write('_All backends use RAM (tmpfs/emptyDir). Numbers reflect protocol + semantic overhead, not production throughput._\n')
             f.write('_K8s latency is higher than Docker due to the port-forward loopback tunnel._\n')
           PYEOF
+
+      - name: Upload public benchmark bundle
+        uses: actions/upload-artifact@v6
+        with:
+          name: bench-report-bundle
+          path: public/bench-current.json
+          if-no-files-found: error
+
+  publish-history:
+    name: Publish Bench History (Branch)
+    runs-on: ubuntu-22.04
+    needs: report
+    if: needs.report.result == 'success' && github.ref == 'refs/heads/main' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.job == ''))
+    permissions:
+      contents: write
+    steps:
+      - name: Download current benchmark bundle
+        uses: actions/download-artifact@v6
+        with:
+          name: bench-report-bundle
+          path: bundle
+
+      - name: Setup git
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Checkout bench-history branch
+        run: |
+          git clone --depth 1 --branch bench-history https://github.com/${{ github.repository }}.git bench-repo 2>/dev/null || {
+            mkdir -p bench-repo
+            cd bench-repo
+            git init
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git remote add origin https://github.com/${{ github.repository }}.git
+          }
+
+      - name: Build rolling history (last 10 runs)
+        run: |
+          python3 << 'PYEOF'
+          import json
+          from pathlib import Path
+          from datetime import datetime, timezone
+
+          current = json.loads(Path('bundle/bench-current.json').read_text())
+          current_run_id = str(current.get('run_id', ''))
+
+          history_file = Path('bench-repo/history.json')
+          entries = []
+
+          if history_file.exists():
+            try:
+              payload = json.loads(history_file.read_text())
+              if isinstance(payload, dict) and 'entries' in payload:
+                entries = payload['entries']
+              elif isinstance(payload, list):
+                entries = payload
+            except Exception:
+              pass
+
+          merged = [current]
+          for item in entries:
+            if str(item.get('run_id', '')) != current_run_id:
+              merged.append(item)
+
+          merged = merged[:10]
+
+          output = {
+            'schema_version': 1,
+            'updated_at': datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
+            'entries': merged,
+          }
+
+          Path('bench-repo/history.json').write_text(json.dumps(output, indent=2))
+          Path('bench-repo/current.json').write_text(json.dumps(current, indent=2))
+
+          rows = []
+          for entry in merged:
+            rows.append(
+              f"- Run {entry.get('run_number', 'n/a')}: {entry.get('generated_at', 'n/a')}"
+            )
+
+          readme = f'''# Benchmark History (Last 10 Runs)
+
+Public rolling benchmark data for regression tracking.
+
+**Latest URLs:**
+- Current: https://raw.githubusercontent.com/${{ github.repository }}/bench-history/current.json
+- History: https://raw.githubusercontent.com/${{ github.repository }}/bench-history/history.json
+
+## Recent Runs
+
+{chr(10).join(rows)}
+'''
+          Path('bench-repo/README.md').write_text(readme)
+          PYEOF
+
+      - name: Commit and push
+        run: |
+          cd bench-repo
+          git add history.json current.json README.md
+          git diff --quiet --cached || {
+            git commit -m "bench: update rolling history (run ${{ github.run_number }})"
+            git push -u origin bench-history 2>&1 | grep -v "GITHUB_TOKEN" || true
+          }
