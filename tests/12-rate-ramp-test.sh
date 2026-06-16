@@ -147,7 +147,8 @@ run_direct_step() {
     mode_flag="--event-store-mode"
   fi
 
-  "$TESTBED_BIN" \
+  local raw=""
+  raw=$("$TESTBED_BIN" \
     "$url_flag" "$url_value" \
     "$bench_cmd" \
     --target-rate "$rate" \
@@ -155,7 +156,16 @@ run_direct_step() {
     --batch-size "$BATCH_SIZE" \
     --duration-secs "$DURATION_SECS" \
     $mode_flag \
-    --json 2>&1 | tail -1
+    --json 2>&1 || true)
+
+  # Some backends may emit panic/backtrace lines after JSON. Keep the last JSON line.
+  local json_line
+  json_line=$(echo "$raw" | grep '^{' | tail -1 || true)
+  if [[ -n "$json_line" ]]; then
+    echo "$json_line"
+  else
+    echo "$raw" | tail -1
+  fi
 }
 
 run_k8s_step() {
@@ -258,7 +268,10 @@ for rate in $RATE_STEPS; do
   actual_rate=$(parse_json_field "$output" "actual_rate_eps")
   p99=$(parse_json_field "$output" "p99_us")
 
-  [[ -n "$actual_rate" && -n "$p99" ]] || fail "Could not parse benchmark output for rate=$rate: $output"
+  if [[ -z "$actual_rate" || -z "$p99" ]]; then
+    warn "Could not parse benchmark output for rate=$rate; stopping ramp early. Last line: $output"
+    break
+  fi
 
   rates+=("$rate")
   p99s+=("$p99")
@@ -266,6 +279,8 @@ for rate in $RATE_STEPS; do
 
   printf "| %-8s | %-12s | %-10s |\n" "$rate" "$actual_rate" "$p99"
 done
+
+[[ ${#rates[@]} -gt 0 ]] || fail "No valid benchmark JSON output parsed for any rate step"
 
 knee_rate=""
 knee_p99=""
