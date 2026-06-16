@@ -2076,13 +2076,32 @@ jobs:
     runs-on: ubuntu-22.04
     needs: report
     if: needs.report.result == 'success' && github.ref == 'refs/heads/main' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.job == ''))
-    continue-on-error: true
     timeout-minutes: 10
     permissions:
       contents: write
     steps:
-      - name: Checkout repo
+      - name: Checkout main repo (for scripts)
         uses: actions/checkout@v6
+
+      - name: Checkout bench-history branch
+        uses: actions/checkout@v6
+        with:
+          ref: bench-history
+          path: bench-repo
+          fetch-depth: 1
+        continue-on-error: true
+
+      - name: Init bench-repo if branch did not exist
+        run: |
+          if [ ! -d bench-repo/.git ]; then
+            mkdir -p bench-repo
+            cd bench-repo
+            git init
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git remote add origin "https://github.com/${{ github.repository }}.git"
+            git checkout -B bench-history
+          fi
 
       - name: Download current benchmark bundle
         uses: actions/download-artifact@v8
@@ -2090,37 +2109,10 @@ jobs:
           name: bench-report-bundle
           path: bundle
 
-      - name: Setup git
+      - name: Setup git identity
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
-
-      - name: Verify repository write access
-        run: |
-          REPO_URL="https://github.com/${{ github.repository }}.git"
-          for attempt in 1 2 3; do
-            if git -c http.https://github.com/.extraheader="AUTHORIZATION: bearer ${{ github.token }}" ls-remote "$REPO_URL" >/dev/null 2>&1; then
-              exit 0
-            fi
-            echo "ls-remote auth check failed (attempt ${attempt}/3), retrying..."
-            sleep $((attempt * 2))
-          done
-          echo "::warning::Repository auth preflight failed; skipping bench-history publish for this run."
-          exit 0
-
-      - name: Checkout bench-history branch
-        run: |
-          REPO_URL="https://github.com/${{ github.repository }}.git"
-          git -c http.https://github.com/.extraheader="AUTHORIZATION: bearer ${{ github.token }}" \
-            clone --depth 1 --branch bench-history "$REPO_URL" bench-repo 2>/dev/null || {
-            mkdir -p bench-repo
-            cd bench-repo
-            git init
-            git config user.name "github-actions[bot]"
-            git config user.email "github-actions[bot]@users.noreply.github.com"
-            git remote add origin "$REPO_URL"
-            git checkout -B bench-history
-          }
 
       - name: Build rolling history (last 10 runs)
         run: python3 .github/scripts/merge_bench_history.py
@@ -2133,25 +2125,5 @@ jobs:
             echo "No bench-history changes detected"
             exit 0
           fi
-
           git commit -m "bench: update rolling history (run ${{ github.run_number }})"
-
-          for attempt in 1 2 3; do
-            if git -c http.https://github.com/.extraheader="AUTHORIZATION: bearer ${{ github.token }}" push -u origin HEAD:bench-history; then
-              echo "bench-history push succeeded"
-              exit 0
-            fi
-
-            echo "push failed (attempt ${attempt}/3), reconciling and retrying..."
-            git -c http.https://github.com/.extraheader="AUTHORIZATION: bearer ${{ github.token }}" fetch origin bench-history || true
-            if git show-ref --quiet refs/remotes/origin/bench-history; then
-              git rebase origin/bench-history || {
-                git rebase --abort || true
-                echo "rebase conflict while retrying push"
-              }
-            fi
-            sleep $((attempt * 3))
-          done
-
-          echo "::warning::Failed to publish bench-history after retries; benchmark run stays green."
-          exit 0
+          git push origin HEAD:bench-history
