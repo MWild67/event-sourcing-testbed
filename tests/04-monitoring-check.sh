@@ -41,6 +41,9 @@ require_cmd() { command -v "$1" &>/dev/null || fail "'$1' not found in PATH"; }
 require_cmd kubectl
 require_cmd curl
 
+PROM_PF_PID=""
+GRAFANA_PF_PID=""
+
 # ── Port-forward Prometheus ───────────────────────────────────────────────────
 step "Port-forwarding Prometheus (localhost:${PROM_PORT})"
 kubectl port-forward svc/prometheus "$PROM_PORT:$PROM_PORT" -n "$NS" &
