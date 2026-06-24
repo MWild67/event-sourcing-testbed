@@ -22,6 +22,7 @@ name: Benchmarks
           - kdb-failover-impact
           - kdb-rate-ramp
           - kdb-replay-under-write
+          - kdb-hot-cold-view
           - kdb-hot-stream-contention
           - mdb-docker
           - mdb-k8s
@@ -52,7 +53,7 @@ jobs:
   #   - Core throughput (MEM_DB / Docker / Kubernetes)
   #   - Rehydration + scale
   #   - Reliability/failover
-  #   - Scenario tests (rate ramp, replay-under-write, hot-stream-contention)
+  #   - Scenario tests (rate ramp, replay-under-write, hot/cold-view, hot-stream-contention)
   # ════════════════════════════════════════════════════════════════════════════
 
   kdb-memdb:
@@ -807,6 +808,59 @@ jobs:
         with:
           name: kdb-hot-stream-contention-result
           path: kdb-hot-stream-contention.json
+          if-no-files-found: warn
+
+  # ── KurrentDB: Scenario — Hot/Cold Views (Onboard Features Only) ────────
+  kdb-hot-cold-view:
+    name: "KurrentDB: Hot/Cold Views (Onboard Features)"
+    runs-on: ubuntu-22.04
+    if: github.event_name != 'workflow_dispatch' || inputs.job == '' || inputs.job == 'kdb-hot-cold-view'
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install KurrentDB (MEM_DB)
+        run: |
+          curl -1sLf 'https://dl.cloudsmith.io/public/eventstore/kurrent-latest/setup.deb.sh' | sudo -E bash
+          sudo apt-get install -y kurrentdb
+          sudo systemctl stop kurrentdb || true
+          getent passwd kurrentdb > /dev/null || sudo useradd --system --no-create-home --shell /usr/sbin/nologin kurrentdb
+          sudo mkdir -p /tmp/esdb /tmp/esdb-log
+          sudo chown kurrentdb:kurrentdb /tmp/esdb /tmp/esdb-log
+          sudo mkdir -p /etc/systemd/system/kurrentdb.service.d
+          printf '[Service]\nEnvironment="KURRENTDB_DB=/tmp/esdb"\nEnvironment="KURRENTDB_LOG=/tmp/esdb-log"\nEnvironment="KURRENTDB_INSECURE=true"\nEnvironment="KURRENTDB_RUN_PROJECTIONS=None"\nEnvironment="KURRENTDB_UNSAFE_DISABLE_FLUSH_TO_DISK=true"\nEnvironment="KURRENTDB_CLUSTER_SIZE=1"\nEnvironment="KURRENTDB_MEM_DB=true"\n' \
+            | sudo tee /etc/systemd/system/kurrentdb.service.d/bench.conf
+          sudo systemctl daemon-reload
+          sudo systemctl start kurrentdb
+          for i in $(seq 1 30); do curl -sf http://localhost:2113/health/live && break || sleep 2; done
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            rust-app/target
+          key: bench-${{ runner.os }}-cargo-${{ hashFiles('rust-app/Cargo.lock') }}
+
+      - name: Build
+        run: cargo build --release --manifest-path rust-app/Cargo.toml
+
+      - name: Hot/cold view benchmark test
+        run: |
+          chmod +x tests/17-hot-cold-view-bench.sh
+          KURRENTDB_URL='kurrentdb://localhost:2113?tls=false' bash tests/17-hot-cold-view-bench.sh --json | tee hot-cold-output.log
+          if ! grep '^{' hot-cold-output.log > kdb-hot-cold-view.json; then
+            echo "ERROR: Hot/cold view test failed or produced no JSON output"
+            tail -50 hot-cold-output.log >&2
+            exit 1
+          fi
+
+      - name: Upload result
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: kdb-hot-cold-view-result
+          path: kdb-hot-cold-view.json
           if-no-files-found: warn
 
   # ════════════════════════════════════════════════════════════════════════════
@@ -2248,25 +2302,35 @@ jobs:
       - name: Checkout main repo (for scripts)
         uses: actions/checkout@v6
 
+      - name: Detect bench-history branch
+        id: bench_history_branch
+        env:
+          REPO_URL: https://github.com/${{ github.repository }}.git
+        run: |
+          if git ls-remote --exit-code --heads "$REPO_URL" bench-history >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Checkout bench-history branch
+        if: steps.bench_history_branch.outputs.exists == 'true'
         uses: actions/checkout@v6
         with:
           ref: bench-history
           path: bench-repo
           fetch-depth: 1
-        continue-on-error: true
 
       - name: Init bench-repo if branch did not exist
+        if: steps.bench_history_branch.outputs.exists != 'true'
         run: |
-          if [ ! -d bench-repo/.git ]; then
-            mkdir -p bench-repo
-            cd bench-repo
-            git init
-            git config user.name "github-actions[bot]"
-            git config user.email "github-actions[bot]@users.noreply.github.com"
-            git remote add origin "https://github.com/${{ github.repository }}.git"
-            git checkout -B bench-history
-          fi
+          mkdir -p bench-repo
+          cd bench-repo
+          git init
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git remote add origin "https://github.com/${{ github.repository }}.git"
+          git checkout -B bench-history
 
       - name: Download current benchmark bundle
         uses: actions/download-artifact@v8
