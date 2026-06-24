@@ -113,12 +113,12 @@ spec:
               command:
                 - /bin/sh
                 - -c
-                # Check if mongod is accepting connections. Replica set initialization
-                # is verified separately in the workflow, not by the readiness probe.
-                - "mongosh --quiet mongodb://127.0.0.1:27017/admin --eval \"if (!db.adminCommand('ping').ok) throw 'not ready'\""
-            initialDelaySeconds: 40
+                # Verify mongod is ready AND replica set is initialized.
+                # The exporter sidecar requires rs to be initialized to connect with replicaSet=rs0.
+                - "mongosh --quiet mongodb://127.0.0.1:27017/admin --eval \"if (!db.adminCommand('ping').ok) throw 'no ping'; if (rs.status().ok !== 1) throw 'rs not initialized'\""
+            initialDelaySeconds: 45
             periodSeconds: 5
-            failureThreshold: 8
+            failureThreshold: 12
           resources:
             requests:
               cpu: "250m"
