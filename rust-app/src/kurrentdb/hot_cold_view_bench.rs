@@ -405,7 +405,7 @@ pub async fn run(kurrentdb_url: &str, cfg: HotColdViewConfig) -> Result<HotColdV
     seq += 1; // continue from where the seed left off
 
     for _ in 0..cfg.live_writes {
-        let ev = BenchmarkEvent::new_with_timestamp(seq);
+        let ev = BenchmarkEvent::new(seq, 0); // task_id=0 for single-threaded benchmark
         seq += 1;
         let event_data = kurrentdb::EventData::json("BenchmarkEvent", &ev)
             .map_err(|e| anyhow::anyhow!("{e}"))?

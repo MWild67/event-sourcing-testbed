@@ -124,6 +124,9 @@ enum Commands {
     MongoHotStreamContentionBench(MongoHotStreamContentionBenchArgs),
     /// Hot-stream contention benchmark against `PostgreSQL`.
     PgHotStreamContentionBench(PgHotStreamContentionBenchArgs),
+    /// Hot/cold view benchmark against `KurrentDB`:
+    /// tests `$maxCount` sliding window and catch-up subscription modes.
+    KurrentdbHotColdViewBench(KurrentdbHotColdViewBenchArgs),
 }
 
 #[derive(Parser)]
@@ -215,6 +218,25 @@ struct PgHotStreamContentionBenchArgs {
     max_retries: u64,
     #[arg(long, default_value = "hot-stream")]
     stream_prefix: String,
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Parser)]
+struct KurrentdbHotColdViewBenchArgs {
+    /// Total events to write during the seed phase.
+    #[arg(long, default_value_t = 20_000)]
+    seed_events: usize,
+
+    /// Number of most-recent events the hot stream is capped at via `$maxCount`.
+    #[arg(long, default_value_t = 500)]
+    hot_window: usize,
+
+    /// Events written one-at-a-time in the live-subscription lag phase.
+    #[arg(long, default_value_t = 200)]
+    live_writes: usize,
+
+    /// Emit results as a single JSON line (for CI parsing).
     #[arg(long)]
     json: bool,
 }
@@ -825,6 +847,26 @@ async fn main() -> Result<()> {
 
             let result =
                 postgres::hot_stream_contention_bench::run(&cli.postgres_url, config).await?;
+
+            if args.json {
+                result.print_json();
+            } else {
+                result.print_report();
+            }
+            let _ = std::io::stdout().flush();
+            let _ = std::io::stderr().flush();
+        }
+
+        Commands::KurrentdbHotColdViewBench(args) => {
+            let config = kurrentdb::hot_cold_view_bench::HotColdViewConfig {
+                seed_events: args.seed_events,
+                hot_window: args.hot_window,
+                live_writes: args.live_writes,
+                seed_batch: 200, // Use default
+                stream_prefix: "hot-cold-view".to_string(),
+            };
+
+            let result = kurrentdb::hot_cold_view_bench::run(&cli.kurrentdb_url, config).await?;
 
             if args.json {
                 result.print_json();
