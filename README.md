@@ -177,9 +177,9 @@ summary table.
 
 ## CI Pipeline
 
-The GitHub Actions workflow (`.github/workflows/bench.yml`) runs **19 jobs** on every push
-to `main`: 18 benchmark/reliability jobs + 1 report job. All use `ubuntu-22.04`
-(2 vCPU, 7 GB RAM) runners.
+The GitHub Actions workflow (`.github/workflows/bench.yml`) runs **20 jobs** on pushes
+to `main`: 18 benchmark/reliability jobs + 1 report job + 1 publish-history job.
+All use `ubuntu-22.04` (2 vCPU, 7 GB RAM) runners.
 
 ### Running a single job manually
 

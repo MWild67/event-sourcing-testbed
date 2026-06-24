@@ -20,6 +20,10 @@ data:
     #!/bin/sh
     set -e
 
+    POD_NAME="${POD_NAME:-mongodb-0}"
+    POD_NAMESPACE="${POD_NAMESPACE:-event-store}"
+    RS_HOST="${POD_NAME}.mongodb-headless.${POD_NAMESPACE}.svc.cluster.local:27017"
+
     # Launch mongod in the background.
     # --wiredTigerCacheSizeGB: keep RAM footprint low inside k3d nodes.
     # --replSet rs0: required for transactions and change streams.
@@ -43,7 +47,7 @@ data:
       try {
         rs.initiate({
           _id: 'rs0',
-          members: [{ _id: 0, host: '127.0.0.1:27017' }]
+          members: [{ _id: 0, host: '${RS_HOST}' }]
         });
         print('Replica set rs0 initialized.');
       } catch (e) {
@@ -99,6 +103,14 @@ spec:
             # Disable the telemetry free-monitoring prompt — keeps logs clean.
             - name: MONGO_INITDB_DATABASE
               value: "eventbench"
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
           livenessProbe:
             exec:
               command:
@@ -133,11 +145,11 @@ spec:
               mountPath: /scripts
               readOnly: true
         - name: mongodb-exporter
-          image: bitnami/mongodb-exporter:0.40.0
+          image: percona/mongodb_exporter:0.43.1
           imagePullPolicy: IfNotPresent
           env:
             - name: MONGODB_URI
-              value: mongodb://127.0.0.1:27017/admin?replicaSet=rs0
+              value: mongodb://127.0.0.1:27017/admin?directConnection=true
           ports:
             - name: mongo-metrics
               containerPort: 9216
