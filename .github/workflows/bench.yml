@@ -654,13 +654,21 @@ jobs:
 
   # ── KurrentDB: Scenario — Rate Ramp (Knee-Point Discovery) ───────────────
   kdb-rate-ramp:
-    name: "KurrentDB: Rate Ramp (Knee Point)"
+    name: "KurrentDB: Rate Ramp (Knee Point) [${{ matrix.mode }}]"
     runs-on: ubuntu-22.04
     if: github.event_name != 'workflow_dispatch' || inputs.job == '' || inputs.job == 'kdb-rate-ramp'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - mode: peak
+            flush_to_disk_disable: "true"
+          - mode: durable
+            flush_to_disk_disable: "false"
     steps:
       - uses: actions/checkout@v6
 
-      - name: Install KurrentDB (MEM_DB)
+      - name: Install KurrentDB (${{ matrix.mode }})
         run: |
           curl -1sLf 'https://dl.cloudsmith.io/public/eventstore/kurrent-latest/setup.deb.sh' | sudo -E bash
           sudo apt-get install -y kurrentdb
@@ -669,7 +677,7 @@ jobs:
           sudo mkdir -p /tmp/esdb /tmp/esdb-log
           sudo chown kurrentdb:kurrentdb /tmp/esdb /tmp/esdb-log
           sudo mkdir -p /etc/systemd/system/kurrentdb.service.d
-          printf '[Service]\nEnvironment="KURRENTDB_DB=/tmp/esdb"\nEnvironment="KURRENTDB_LOG=/tmp/esdb-log"\nEnvironment="KURRENTDB_INSECURE=true"\nEnvironment="KURRENTDB_RUN_PROJECTIONS=None"\nEnvironment="KURRENTDB_UNSAFE_DISABLE_FLUSH_TO_DISK=true"\nEnvironment="KURRENTDB_CLUSTER_SIZE=1"\nEnvironment="KURRENTDB_MEM_DB=true"\n' \
+          printf '[Service]\nEnvironment="KURRENTDB_DB=/tmp/esdb"\nEnvironment="KURRENTDB_LOG=/tmp/esdb-log"\nEnvironment="KURRENTDB_INSECURE=true"\nEnvironment="KURRENTDB_RUN_PROJECTIONS=None"\nEnvironment="KURRENTDB_UNSAFE_DISABLE_FLUSH_TO_DISK=${{ matrix.flush_to_disk_disable }}"\nEnvironment="KURRENTDB_CLUSTER_SIZE=1"\nEnvironment="KURRENTDB_MEM_DB=true"\n' \
             | sudo tee /etc/systemd/system/kurrentdb.service.d/bench.conf
           sudo systemctl daemon-reload
           sudo systemctl start kurrentdb
@@ -690,7 +698,7 @@ jobs:
       - name: Rate ramp
         run: |
           DIRECT=1 BACKEND=kurrentdb KURRENT_URL_DIRECT='kurrentdb://localhost:2113?tls=false' bash tests/12-rate-ramp-test.sh | tee ramp-output.log
-          if ! grep '^{' ramp-output.log > kdb-rate-ramp.json; then
+          if ! grep '^{' ramp-output.log > kdb-rate-ramp-${{ matrix.mode }}.json; then
             echo "ERROR: Rate ramp test failed or produced no JSON output"
             tail -50 ramp-output.log >&2
             exit 1
@@ -700,19 +708,27 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: kdb-rate-ramp-result
-          path: kdb-rate-ramp.json
+          name: kdb-rate-ramp-${{ matrix.mode }}
+          path: kdb-rate-ramp-*.json
           if-no-files-found: warn
 
   # ── KurrentDB: Scenario — Replay-Under-Write (Latency Regression) ────────
   kdb-replay-under-write:
-    name: "KurrentDB: Replay-Under-Write"
+    name: "KurrentDB: Replay-Under-Write [${{ matrix.mode }}]"
     runs-on: ubuntu-22.04
     if: github.event_name != 'workflow_dispatch' || inputs.job == '' || inputs.job == 'kdb-replay-under-write'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - mode: peak
+            flush_to_disk_disable: "true"
+          - mode: durable
+            flush_to_disk_disable: "false"
     steps:
       - uses: actions/checkout@v6
 
-      - name: Install KurrentDB (MEM_DB)
+      - name: Install KurrentDB (${{ matrix.mode }})
         run: |
           curl -1sLf 'https://dl.cloudsmith.io/public/eventstore/kurrent-latest/setup.deb.sh' | sudo -E bash
           sudo apt-get install -y kurrentdb
@@ -721,7 +737,7 @@ jobs:
           sudo mkdir -p /tmp/esdb /tmp/esdb-log
           sudo chown kurrentdb:kurrentdb /tmp/esdb /tmp/esdb-log
           sudo mkdir -p /etc/systemd/system/kurrentdb.service.d
-          printf '[Service]\nEnvironment="KURRENTDB_DB=/tmp/esdb"\nEnvironment="KURRENTDB_LOG=/tmp/esdb-log"\nEnvironment="KURRENTDB_INSECURE=true"\nEnvironment="KURRENTDB_RUN_PROJECTIONS=None"\nEnvironment="KURRENTDB_UNSAFE_DISABLE_FLUSH_TO_DISK=true"\nEnvironment="KURRENTDB_CLUSTER_SIZE=1"\nEnvironment="KURRENTDB_MEM_DB=true"\n' \
+          printf '[Service]\nEnvironment="KURRENTDB_DB=/tmp/esdb"\nEnvironment="KURRENTDB_LOG=/tmp/esdb-log"\nEnvironment="KURRENTDB_INSECURE=true"\nEnvironment="KURRENTDB_RUN_PROJECTIONS=None"\nEnvironment="KURRENTDB_UNSAFE_DISABLE_FLUSH_TO_DISK=${{ matrix.flush_to_disk_disable }}"\nEnvironment="KURRENTDB_CLUSTER_SIZE=1"\nEnvironment="KURRENTDB_MEM_DB=true"\n' \
             | sudo tee /etc/systemd/system/kurrentdb.service.d/bench.conf
           sudo systemctl daemon-reload
           sudo systemctl start kurrentdb
@@ -742,7 +758,7 @@ jobs:
       - name: Replay-under-write test
         run: |
           DIRECT=1 BACKEND=kurrentdb KURRENT_URL_DIRECT='kurrentdb://localhost:2113?tls=false' bash tests/13-replay-under-write-test.sh | tee replay-output.log
-          if ! grep '^{' replay-output.log > kdb-replay-under-write.json; then
+          if ! grep '^{' replay-output.log > kdb-replay-under-write-${{ matrix.mode }}.json; then
             echo "ERROR: Replay-under-write test failed or produced no JSON output"
             tail -50 replay-output.log >&2
             exit 1
@@ -752,8 +768,8 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: kdb-replay-under-write-result
-          path: kdb-replay-under-write.json
+          name: kdb-replay-under-write-${{ matrix.mode }}
+          path: kdb-replay-under-write-*.json
           if-no-files-found: warn
 
   # ── KurrentDB: Scenario — Hot-Stream Contention ──────────────────────────
