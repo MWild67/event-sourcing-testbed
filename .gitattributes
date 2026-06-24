@@ -1,0 +1,6 @@
+# Keep cross-platform infra/config files on LF to avoid CI and Git warning churn.
+*.yml text eol=lf
+*.yaml text eol=lf
+*.sh text eol=lf
+Makefile text eol=lf
+Dockerfile text eol=lf
