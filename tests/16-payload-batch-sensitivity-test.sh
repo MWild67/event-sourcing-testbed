@@ -19,7 +19,7 @@ DURATION_SECS="${DURATION_SECS:-12}"
 EVENT_STORE_MODE="${EVENT_STORE_MODE:-0}"
 
 KURRENT_URL_DIRECT="${KURRENT_URL_DIRECT:-kurrentdb://localhost:2113?tls=false}"
-MONGO_URL_DIRECT="${MONGO_URL_DIRECT:-mongodb://localhost:27017}"
+MONGO_URL_DIRECT="${MONGO_URL_DIRECT:-mongodb://localhost:27017/?directConnection=true}"
 POSTGRES_URL_DIRECT="${POSTGRES_URL_DIRECT:-postgres://postgres:postgres@localhost:5432/eventbench}"
 
 pass() { echo "  ✓ $*"; }

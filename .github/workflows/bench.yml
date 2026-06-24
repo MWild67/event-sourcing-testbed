@@ -36,6 +36,7 @@ name: Benchmarks
           - pg-rate-ramp
           - pg-replay-under-write
           - pg-hot-stream-contention
+          - monitoring-check
           - payload-batch-sensitivity
 
 env:
@@ -908,7 +909,7 @@ jobs:
       - name: Hot-stream contention test
         run: |
           chmod +x tests/15-hot-stream-contention-test.sh
-          DIRECT=1 BACKEND=mongodb MONGO_URL_DIRECT='mongodb://localhost:27017' bash tests/15-hot-stream-contention-test.sh | tee hot-stream-output.log
+          DIRECT=1 BACKEND=mongodb MONGO_URL_DIRECT='mongodb://localhost:27017/?directConnection=true' bash tests/15-hot-stream-contention-test.sh | tee hot-stream-output.log
           if ! grep '^{' hot-stream-output.log > mdb-hot-stream-contention.json; then
             echo "ERROR: Hot-stream contention test failed or produced no JSON output"
             tail -50 hot-stream-output.log >&2
@@ -978,7 +979,7 @@ jobs:
           fi
 
           RESULT=$(rust-app/target/release/testbed \
-            --mongodb-url "mongodb://localhost:27017" \
+            --mongodb-url "mongodb://localhost:27017/?directConnection=true" \
             mongo-bench --target-rate 10000 --concurrency 64 --batch-size 1 --duration-secs 30 ${MODE_FLAG} --json)
           echo "$RESULT"
           echo "$RESULT" > "mdb-docker-${{ matrix.mode }}.json"
@@ -992,7 +993,7 @@ jobs:
         if: ${{ matrix.mode == 'durable' }}
         run: |
           rust-app/target/release/testbed \
-            --mongodb-url "mongodb://localhost:27017/?replicaSet=rs0" \
+            --mongodb-url "mongodb://localhost:27017/?directConnection=true&replicaSet=rs0" \
             mongo-event-store-demo --database eventstoredemo --events 5
 
       - name: Upload benchmark artifact
@@ -1071,7 +1072,7 @@ jobs:
           fi
 
           RESULT=$(rust-app/target/release/testbed \
-            --mongodb-url "mongodb://localhost:27017" \
+            --mongodb-url "mongodb://localhost:27017/?directConnection=true" \
             mongo-bench --target-rate 10000 --concurrency 64 --batch-size 1 --duration-secs 30 ${MODE_FLAG} --json)
           echo "$RESULT"
           echo "$RESULT" > "mdb-k8s-${{ matrix.mode }}.json"
@@ -1085,7 +1086,7 @@ jobs:
         if: ${{ matrix.mode == 'durable' }}
         run: |
           rust-app/target/release/testbed \
-            --mongodb-url "mongodb://localhost:27017/?replicaSet=rs0" \
+            --mongodb-url "mongodb://localhost:27017/?directConnection=true&replicaSet=rs0" \
             mongo-event-store-demo --database eventstoredemo --events 5
 
       - name: Upload benchmark artifact
@@ -1155,7 +1156,7 @@ jobs:
         id: demo
         run: |
           RESULT=$(rust-app/target/release/testbed \
-            --mongodb-url "mongodb://localhost:27017/?replicaSet=rs0" \
+            --mongodb-url "mongodb://localhost:27017/?directConnection=true&replicaSet=rs0" \
             mongo-rehydrate-demo --database rehydrate-ci --json)
           echo "$RESULT"
           JSON=$(echo "$RESULT" | tail -n 1)
@@ -1427,7 +1428,7 @@ jobs:
           TESTBED_BIN='rust-app/target/release/testbed' \
           BACKENDS='kurrentdb mongodb postgres' \
           KURRENT_URL_DIRECT='kurrentdb://localhost:2113?tls=false' \
-          MONGO_URL_DIRECT='mongodb://localhost:27017' \
+          MONGO_URL_DIRECT='mongodb://localhost:27017/?directConnection=true' \
           POSTGRES_URL_DIRECT='postgres://postgres:postgres@localhost:5432/eventbench' \
           PAYLOAD_SIZES='256 1024 4096' \
           BATCH_SIZES='1 8' \
@@ -1804,6 +1805,223 @@ jobs:
         run: docker stop pg && docker rm pg || true
 
   # ════════════════════════════════════════════════════════════════════════════
+  # Monitoring Integration — AC-4
+  #   Deploys all three backends (KurrentDB, MongoDB, PostgreSQL) plus the full
+  #   monitoring stack (Prometheus, Grafana, node-exporter, exporters) into a
+  #   k3d cluster and runs tests/04-monitoring-check.sh to assert that:
+  #     • Prometheus has active scrape targets for all five jobs
+  #     • All nine metric families return data
+  #     • Grafana serves the Event Store dashboard
+  # ════════════════════════════════════════════════════════════════════════════
+
+  monitoring-check:
+    name: "Monitoring Integration — AC-4 (KurrentDB + MongoDB + PostgreSQL)"
+    runs-on: ubuntu-22.04
+    if: github.event_name != 'workflow_dispatch' || inputs.job == '' || inputs.job == 'monitoring-check'
+    timeout-minutes: 25
+    outputs:
+      passed: ${{ steps.check.outputs.passed }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install k3d
+        run: curl -s https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | TAG=v5.8.3 bash
+
+      - name: Create k3d cluster (1 server + 2 agents — DaemonSet needs ≥2 worker nodes)
+        run: |
+          k3d cluster create monitoring-check --servers 1 --agents 2 --wait --timeout 120s
+          kubectl get nodes -o wide
+
+      - name: Pre-pull KurrentDB image
+        run: |
+          docker pull kurrentplatform/kurrentdb:latest
+          k3d image import kurrentplatform/kurrentdb:latest -c monitoring-check
+
+      - name: Deploy namespace
+        run: kubectl apply -f k8s/00-namespace.yaml
+
+      - name: Deploy KurrentDB (single-node, MEM_DB)
+        run: |
+          kubectl apply -f k8s/02-kurrentdb/01-services.yaml
+          kubectl apply -f - <<'EOF'
+          apiVersion: apps/v1
+          kind: StatefulSet
+          metadata:
+            name: kurrentdb
+            namespace: event-store
+          spec:
+            serviceName: kurrentdb-headless
+            replicas: 1
+            selector:
+              matchLabels:
+                app: kurrentdb
+            template:
+              metadata:
+                labels:
+                  app: kurrentdb
+              spec:
+                enableServiceLinks: false
+                terminationGracePeriodSeconds: 10
+                containers:
+                  - name: kurrentdb
+                    image: kurrentplatform/kurrentdb:latest
+                    imagePullPolicy: IfNotPresent
+                    ports:
+                      - {name: http, containerPort: 2113}
+                      - {name: grpc, containerPort: 2114}
+                    env:
+                      - {name: KURRENTDB_CLUSTER_SIZE,                 value: "1"}
+                      - {name: KURRENTDB_INSECURE,                     value: "true"}
+                      - {name: KURRENTDB_RUN_PROJECTIONS,              value: "None"}
+                      - {name: KURRENTDB_UNSAFE_DISABLE_FLUSH_TO_DISK, value: "true"}
+                      - {name: KURRENTDB_MEM_DB,                       value: "true"}
+                    readinessProbe:
+                      httpGet: {path: /health/live, port: 2113}
+                      initialDelaySeconds: 10
+                      periodSeconds: 5
+                      failureThreshold: 6
+                    resources:
+                      requests: {cpu: "200m", memory: "256Mi"}
+                      limits:   {cpu: "1",    memory: "1Gi"}
+                    volumeMounts:
+                      - {name: data, mountPath: /data}
+                volumes:
+                  - name: data
+                    emptyDir: {medium: Memory, sizeLimit: 256Mi}
+          EOF
+
+      - name: Deploy RabbitMQ (single-node, prometheus plugin enabled)
+        run: |
+          kubectl apply -f - <<'EOF'
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: rabbitmq-plugins
+            namespace: event-store
+          data:
+            enabled_plugins: "[rabbitmq_management,rabbitmq_prometheus]."
+          ---
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: rabbitmq
+            namespace: event-store
+            labels:
+              app: rabbitmq
+          spec:
+            selector:
+              app: rabbitmq
+            ports:
+              - {name: amqp,       port: 5672,  targetPort: 5672}
+              - {name: management, port: 15672, targetPort: 15672}
+              - {name: metrics,    port: 15692, targetPort: 15692}
+          ---
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: rabbitmq
+            namespace: event-store
+          spec:
+            replicas: 1
+            selector:
+              matchLabels:
+                app: rabbitmq
+            template:
+              metadata:
+                labels:
+                  app: rabbitmq
+                annotations:
+                  prometheus.io/scrape: "true"
+                  prometheus.io/port: "15692"
+                  prometheus.io/path: "/metrics"
+              spec:
+                containers:
+                  - name: rabbitmq
+                    image: rabbitmq:3.13-management
+                    imagePullPolicy: IfNotPresent
+                    ports:
+                      - {name: amqp,       containerPort: 5672}
+                      - {name: management, containerPort: 15672}
+                      - {name: metrics,    containerPort: 15692}
+                    env:
+                      - name: RABBITMQ_ENABLED_PLUGINS_FILE
+                        value: /etc/rabbitmq-plugins/enabled_plugins
+                    volumeMounts:
+                      - name: plugins
+                        mountPath: /etc/rabbitmq-plugins
+                    readinessProbe:
+                      exec:
+                        command: [rabbitmq-diagnostics, -q, ping]
+                      initialDelaySeconds: 30
+                      periodSeconds: 5
+                      failureThreshold: 12
+                    resources:
+                      requests: {cpu: "100m", memory: "256Mi"}
+                      limits:   {cpu: "1",    memory: "512Mi"}
+                volumes:
+                  - name: plugins
+                    configMap:
+                      name: rabbitmq-plugins
+          EOF
+
+      - name: Deploy monitoring stack (Prometheus, Grafana, node-exporter)
+        run: kubectl apply -f k8s/04-monitoring/
+
+      - name: Deploy MongoDB with exporter sidecar
+        run: kubectl apply -f k8s/05-mongodb/
+
+      - name: Deploy PostgreSQL with exporter sidecar
+        run: kubectl apply -f k8s/06-postgres/
+
+      - name: Wait for all components ready
+        run: |
+          kubectl rollout status statefulset/kurrentdb  -n event-store --timeout=180s
+          kubectl rollout status deployment/rabbitmq    -n event-store --timeout=180s
+          kubectl rollout status statefulset/mongodb    -n event-store --timeout=180s
+          kubectl rollout status statefulset/postgres   -n event-store --timeout=180s
+          kubectl rollout status deployment/prometheus  -n event-store --timeout=120s
+          kubectl rollout status deployment/grafana     -n event-store --timeout=120s
+          kubectl get pods -n event-store -o wide
+
+      - name: Wait for Prometheus to complete two scrape intervals (30 s each)
+        run: sleep 65
+
+      - name: Run monitoring integration check
+        id: check
+        run: |
+          chmod +x tests/04-monitoring-check.sh
+          if bash tests/04-monitoring-check.sh | tee monitoring-check.log; then
+            echo "passed=True" >> "$GITHUB_OUTPUT"
+            printf '{"passed":true,"targets_checked":["node-exporter","kurrentdb","rabbitmq","mongodb","postgres"],"grafana_ok":true}\n' \
+              > monitoring-check.json
+          else
+            echo "passed=False" >> "$GITHUB_OUTPUT"
+            printf '{"passed":false,"targets_checked":[],"grafana_ok":false}\n' \
+              > monitoring-check.json
+            exit 1
+          fi
+
+      - name: Upload result artifact
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: monitoring-check-result
+          path: monitoring-check.json
+          if-no-files-found: warn
+
+      - name: Dump diagnostics on failure
+        if: failure()
+        run: |
+          kubectl get nodes -o wide || true
+          kubectl get pods -n event-store -o wide || true
+          kubectl get events -n event-store --sort-by='.lastTimestamp' 2>/dev/null | tail -60 || true
+          kubectl describe pods -n event-store || true
+          for pod in $(kubectl get pods -n event-store -o name 2>/dev/null); do
+            echo "=== logs: $pod ==="
+            kubectl logs "$pod" -n event-store --tail=40 --all-containers 2>&1 || true
+          done
+
+  # ════════════════════════════════════════════════════════════════════════════
   # Combined Report — runs once, after all bench jobs complete
   # ════════════════════════════════════════════════════════════════════════════
 
@@ -1836,6 +2054,7 @@ jobs:
       - pg-rate-ramp
       - pg-replay-under-write
       - pg-hot-stream-contention
+      - monitoring-check
       - payload-batch-sensitivity
     steps:
       - name: Download benchmark and ramp artifacts
@@ -1928,6 +2147,7 @@ jobs:
           PG_RH_WRITE_RATE:  ${{ needs.pg-rehydrate.outputs.write_rate }}
           PG_RH_REPLAY_RATE: ${{ needs.pg-rehydrate.outputs.replay_rate }}
           PG_RH_PASSED:      ${{ needs.pg-rehydrate.outputs.passed }}
+          MONITORING_PASSED: ${{ needs.monitoring-check.outputs.passed }}
         run: |
           python3 << 'PYEOF'
           import json
@@ -2204,6 +2424,13 @@ jobs:
             f.write('|-------|-------------:|------------------:|:------:|\n')
             f.write(f'| Write — one INSERT per event | {e("PG_RH_WRITE_MS")} | {e("PG_RH_WRITE_RATE")} | |\n')
             f.write(f'| Replay — SELECT ... ORDER BY stream_version | {e("PG_RH_REPLAY_MS")} | {e("PG_RH_REPLAY_RATE")} | {result("PG_RH_PASSED")} |\n\n')
+
+            f.write('### Monitoring Integration (AC-4)\n\n')
+            f.write('> Checks: Prometheus active scrape targets for all 5 jobs · 9 metric families · Grafana dashboard present\n')
+            f.write('> Backends: KurrentDB (MEM_DB) + RabbitMQ + MongoDB (exporter sidecar :9216) + PostgreSQL (exporter sidecar :9187)\n\n')
+            f.write('| Check | Result |\n')
+            f.write('|-------|:------:|\n')
+            f.write(f'| All targets + metrics + Grafana dashboard | {result("MONITORING_PASSED")} |\n\n')
 
             f.write('### Rate Ramp — Knee-Point Analysis\n\n')
             if ramp_data:

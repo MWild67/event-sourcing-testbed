@@ -22,7 +22,7 @@ MAX_RETRIES="${MAX_RETRIES:-10}"
 
 KURRENT_URL_DIRECT_DEFAULT="${KURRENT_URL_DIRECT:-kurrentdb://localhost:2116?tls=false}"
 KURRENT_URL_DIRECT="$KURRENT_URL_DIRECT_DEFAULT"
-MONGO_URL_DIRECT="${MONGO_URL_DIRECT:-mongodb://localhost:27017}"
+MONGO_URL_DIRECT="${MONGO_URL_DIRECT:-mongodb://localhost:27017/?directConnection=true}"
 POSTGRES_URL_DIRECT="${POSTGRES_URL_DIRECT:-postgres://postgres:postgres@localhost:5432/eventbench}"
 
 pass() { echo "  ✓ $*"; }
