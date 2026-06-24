@@ -33,8 +33,7 @@ data:
 
     # Wait until mongod is ready to accept connections.
     echo "Waiting for mongod to be ready..."
-    until mongosh --quiet --eval "db.adminCommand('ping').ok" \
-        mongodb://127.0.0.1:27017/admin 2>/dev/null; do
+    until mongosh --quiet mongodb://127.0.0.1:27017/admin --eval "if (!db.adminCommand('ping').ok) throw 'not ready'" 2>/dev/null; do
       sleep 1
     done
     echo "mongod is ready."
@@ -105,7 +104,7 @@ spec:
               command:
                 - /bin/sh
                 - -c
-                - "mongosh --quiet mongodb://127.0.0.1:27017/admin --eval \"db.adminCommand('ping').ok\""
+                - "mongosh --quiet mongodb://127.0.0.1:27017/admin --eval \"if (!db.adminCommand('ping').ok) throw 'dead'\""
             initialDelaySeconds: 30
             periodSeconds: 10
             failureThreshold: 6
@@ -114,12 +113,12 @@ spec:
               command:
                 - /bin/sh
                 - -c
-                # rs.isMaster().ismaster is true only when this node is the primary.
-                # Throws (exits non-zero) when RS is uninitialised or has no primary.
-                - "mongosh --quiet mongodb://127.0.0.1:27017/admin --eval \"if (rs.isMaster().ismaster !== true) { throw 'no primary yet'; }\""
-            initialDelaySeconds: 20
+                # Check if mongod is accepting connections. Replica set initialization
+                # is verified separately in the workflow, not by the readiness probe.
+                - "mongosh --quiet mongodb://127.0.0.1:27017/admin --eval \"if (!db.adminCommand('ping').ok) throw 'not ready'\""
+            initialDelaySeconds: 40
             periodSeconds: 5
-            failureThreshold: 12
+            failureThreshold: 8
           resources:
             requests:
               cpu: "250m"

@@ -217,8 +217,8 @@ skipped automatically, so only the chosen job consumes runner minutes.
 | `kdb-rehydrate` | KurrentDB | Rehydration/scale | Replay + 100k scale metrics |
 | `kdb-failover` | KurrentDB | Reliability | 3-node failover recovery |
 | `kdb-failover-impact` | KurrentDB | Reliability under load | Pause/error/recovery/tail impact |
-| `kdb-rate-ramp` | KurrentDB | Scenario | Knee-point discovery |
-| `kdb-replay-under-write` | KurrentDB | Scenario | Write p99 regression under replay |
+| `kdb-rate-ramp` | KurrentDB | Scenario | Peak+durable ramp in one job |
+| `kdb-replay-under-write` | KurrentDB | Scenario | Peak+durable regression in one job |
 | `kdb-hot-cold-view` | KurrentDB | Scenario | Onboard `$maxCount` and cold-vs-hot subscription behavior |
 | `mdb-docker` | MongoDB | Throughput | Docker tmpfs, peak+durable modes |
 | `mdb-k8s` | MongoDB | Throughput | k3d single-node, peak+durable modes |

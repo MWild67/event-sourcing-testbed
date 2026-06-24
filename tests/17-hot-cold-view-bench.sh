@@ -39,7 +39,7 @@ echo "  Test 17 — KurrentDB hot/cold view (onboard features)"
 echo "========================================================"
 echo "  KurrentDB : $KURRENTDB_URL"
 echo "  Seed      : $SEED_EVENTS events"
-echo "  Hot window: $HOT_WINDOW events ($maxCount metadata)"
+echo "  Hot window: $HOT_WINDOW events (\$maxCount metadata)"
 echo "  Live writes (lag phase): $LIVE_WRITES"
 echo "========================================================"
 
