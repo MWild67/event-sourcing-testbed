@@ -72,6 +72,46 @@ data:
           - source_labels: [__meta_kubernetes_pod_name]
             target_label: pod
 
+      # ── MongoDB exporter ────────────────────────────────────────────────────
+      - job_name: mongodb
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names: [event-store]
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_label_app]
+            action: keep
+            regex: mongodb
+          - source_labels: [__address__]
+            action: replace
+            regex: ([^:]+):.*
+            replacement: $1:9216
+            target_label: __address__
+          - target_label: __metrics_path__
+            replacement: /metrics
+          - source_labels: [__meta_kubernetes_pod_name]
+            target_label: pod
+
+      # ── PostgreSQL exporter ─────────────────────────────────────────────────
+      - job_name: postgres
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names: [event-store]
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_label_app]
+            action: keep
+            regex: postgres
+          - source_labels: [__address__]
+            action: replace
+            regex: ([^:]+):.*
+            replacement: $1:9187
+            target_label: __address__
+          - target_label: __metrics_path__
+            replacement: /metrics
+          - source_labels: [__meta_kubernetes_pod_name]
+            target_label: pod
+
       # ── Benchmark app ──────────────────────────────────────────────────────
       - job_name: testbed-app
         kubernetes_sd_configs:

@@ -5,7 +5,7 @@
 	test-all-extended \
         test-storage test-bench test-failover test-monitoring \
 	test-mongodb test-postgres test-rehydration \
-	test-hot-cache test-projection test-search test-scale \
+	test-hot-cache test-hot-cold-view test-projection test-search test-scale \
 	test-rate-ramp test-replay-under-write test-replay-preflight test-failover-impact \
 	test-hot-stream-contention test-payload-batch-sensitivity \
 	test-failover-impact-local \
@@ -105,7 +105,7 @@ test-all: test-storage test-bench test-failover test-monitoring test-mongodb tes
 	@echo "  Core test suite completed."
 	@echo "════════════════════════════════════════"
 
-test-all-extended: test-all test-hot-cache test-projection test-search test-scale test-rate-ramp test-replay-under-write test-hot-stream-contention test-payload-batch-sensitivity test-failover-impact ## Run core + advanced tests (long)
+test-all-extended: test-all test-hot-cache test-hot-cold-view test-projection test-search test-scale test-rate-ramp test-replay-under-write test-hot-stream-contention test-payload-batch-sensitivity test-failover-impact ## Run core + advanced tests (long)
 	@echo ""
 	@echo "════════════════════════════════════════"
 	@echo "  Extended test suite completed."
@@ -143,6 +143,9 @@ test-rehydration: ## Test 06: Event rehydration/replay (KurrentDB, MongoDB, Post
 
 test-hot-cache: ## Test 08: Hot-tail-cache benchmark
 	bash tests/08-hot-cache-bench.sh
+
+test-hot-cold-view: ## Test 17: KurrentDB hot/cold views via onboard features
+	bash tests/17-hot-cold-view-bench.sh --json
 
 test-projection: ## Test 09: Projection/subscription-lag benchmark
 	bash tests/09-projection-bench.sh

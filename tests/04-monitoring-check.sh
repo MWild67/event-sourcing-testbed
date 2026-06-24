@@ -3,12 +3,16 @@
 # Test 04 — Monitoring Integration Check
 #
 # Verifies:
-#   1. Prometheus is scraping node-exporter, KurrentDB, and RabbitMQ targets.
-#   2. The four key metric families are present:
+#   1. Prometheus is scraping node-exporter, KurrentDB, RabbitMQ, MongoDB, and PostgreSQL targets.
+#   2. The key metric families are present:
 #        • node_cpu_seconds_total{mode="iowait"}   — Disk I/O Wait
 #        • node_disk_reads_completed_total          — Read IOPS
 #        • node_disk_writes_completed_total         — Write IOPS
 #        • up{job="kurrentdb"}                     — Storage cluster health
+#        • up{job="mongodb"}                       — MongoDB exporter target health
+#        • up{job="postgres"}                      — PostgreSQL exporter target health
+#        • mongodb_up                                — MongoDB exporter DB health
+#        • pg_up                                     — PostgreSQL exporter DB health
 #   3. Grafana is running and the "Event Store Namespace" dashboard is loaded.
 #
 # Usage: ./tests/04-monitoring-check.sh
@@ -64,7 +68,7 @@ TARGETS=$(curl -sf "${PROM_BASE}/api/v1/targets" | grep -oP '"job":"[^"]+"' | so
 echo "  Active jobs:"
 echo "$TARGETS" | sed 's/^/    /'
 
-for JOB in node-exporter kurrentdb rabbitmq; do
+for JOB in node-exporter kurrentdb rabbitmq mongodb postgres; do
     echo "$TARGETS" | grep -q "\"job\":\"$JOB\"" \
       || fail "Prometheus target '$JOB' not found — check annotations and scrape config"
     pass "Target '$JOB' is present"
@@ -89,6 +93,10 @@ check_metric 'node_disk_reads_completed_total'         "Read IOPS"
 check_metric 'node_disk_writes_completed_total'        "Write IOPS"
 check_metric 'up{job="kurrentdb"}'                    "KurrentDB cluster health"
 check_metric 'up{job="rabbitmq"}'                      "RabbitMQ health"
+check_metric 'up{job="mongodb"}'                      "MongoDB exporter target health"
+check_metric 'up{job="postgres"}'                     "PostgreSQL exporter target health"
+check_metric 'mongodb_up'                              "MongoDB exporter DB health"
+check_metric 'pg_up'                                   "PostgreSQL exporter DB health"
 
 # ── Check Grafana dashboard ───────────────────────────────────────────────────
 step "Port-forwarding Grafana (localhost:${GRAFANA_PORT})"

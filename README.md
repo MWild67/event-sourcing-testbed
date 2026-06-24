@@ -45,7 +45,7 @@ Each scenario runs one backend in isolation on a fresh ubuntu-22.04 runner (2 vC
 
 | Backend | Scenarios |
 |---|---|
-| KurrentDB | `kdb-memdb`, `kdb-docker`, `kdb-k8s`, `kdb-rehydrate`, `kdb-failover`, `kdb-failover-impact`, `kdb-rate-ramp`, `kdb-replay-under-write` |
+| KurrentDB | `kdb-memdb`, `kdb-docker`, `kdb-k8s`, `kdb-rehydrate`, `kdb-failover`, `kdb-failover-impact`, `kdb-rate-ramp`, `kdb-replay-under-write`, `kdb-hot-cold-view` |
 | MongoDB | `mdb-docker`, `mdb-k8s`, `mdb-rehydrate`, `mdb-rate-ramp`, `mdb-replay-under-write` |
 | PostgreSQL | `pg-docker`, `pg-k8s`, `pg-rehydrate`, `pg-rate-ramp`, `pg-replay-under-write` |
 
@@ -201,6 +201,7 @@ skipped automatically, so only the chosen job consumes runner minutes.
 | `kdb-failover-impact` | Only the failover-under-load test |
 | `kdb-rate-ramp` | Only the rate-ramp knee-point test |
 | `kdb-replay-under-write` | Only the replay regression test |
+| `kdb-hot-cold-view` | Only the KurrentDB onboard hot/cold-view benchmark |
 | `kdb-failover` | Only the 3-node failover reliability test |
 | … any other job name | Only that one job |
 
@@ -218,6 +219,7 @@ skipped automatically, so only the chosen job consumes runner minutes.
 | `kdb-failover-impact` | KurrentDB | Reliability under load | Pause/error/recovery/tail impact |
 | `kdb-rate-ramp` | KurrentDB | Scenario | Knee-point discovery |
 | `kdb-replay-under-write` | KurrentDB | Scenario | Write p99 regression under replay |
+| `kdb-hot-cold-view` | KurrentDB | Scenario | Onboard `$maxCount` and cold-vs-hot subscription behavior |
 | `mdb-docker` | MongoDB | Throughput | Docker tmpfs, peak+durable modes |
 | `mdb-k8s` | MongoDB | Throughput | k3d single-node, peak+durable modes |
 | `mdb-rehydrate` | MongoDB | Rehydration | Replay metrics |
@@ -658,11 +660,15 @@ bash tests/04-monitoring-check.sh
 | `node_disk_writes_completed_total`  | Write IOPS                  |
 | `up{job="kurrentdb"}`              | KurrentDB cluster health |
 | `up{job="rabbitmq"}`                | RabbitMQ health             |
+| `up{job="mongodb"}`                | MongoDB exporter target health |
+| `up{job="postgres"}`               | PostgreSQL exporter target health |
+| `mongodb_up`                         | MongoDB exporter DB health |
+| `pg_up`                              | PostgreSQL exporter DB health |
 
 **Pass criteria:**
 
-- Prometheus has active scrape targets for `node-exporter`, `kurrentdb`, `rabbitmq`
-- All five metric families return data
+- Prometheus has active scrape targets for `node-exporter`, `kurrentdb`, `rabbitmq`, `mongodb`, `postgres`
+- All nine metric families return data
 - Grafana API returns the "Event Store Namespace" dashboard
 
 ---

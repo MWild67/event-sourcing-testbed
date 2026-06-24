@@ -66,6 +66,34 @@ spec:
           volumeMounts:
             - name: postgres-data
               mountPath: /var/lib/postgresql/data
+        - name: postgres-exporter
+          image: quay.io/prometheuscommunity/postgres-exporter:v0.15.0
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: DATA_SOURCE_NAME
+              value: postgresql://postgres:postgres@127.0.0.1:5432/eventbench?sslmode=disable
+          ports:
+            - name: pg-metrics
+              containerPort: 9187
+          readinessProbe:
+            httpGet:
+              path: /metrics
+              port: 9187
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /metrics
+              port: 9187
+            initialDelaySeconds: 20
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "250m"
+              memory: "256Mi"
       volumes:
         # emptyDir Memory (tmpfs) keeps durability at the same OS-buffer level
         # as the Docker benchmark job (--tmpfs + fsync=off).

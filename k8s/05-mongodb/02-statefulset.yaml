@@ -133,6 +133,34 @@ spec:
             - name: scripts
               mountPath: /scripts
               readOnly: true
+        - name: mongodb-exporter
+          image: bitnami/mongodb-exporter:0.40.0
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: MONGODB_URI
+              value: mongodb://127.0.0.1:27017/admin?replicaSet=rs0
+          ports:
+            - name: mongo-metrics
+              containerPort: 9216
+          readinessProbe:
+            httpGet:
+              path: /metrics
+              port: 9216
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /metrics
+              port: 9216
+            initialDelaySeconds: 20
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "250m"
+              memory: "256Mi"
       volumes:
         - name: scripts
           configMap:
