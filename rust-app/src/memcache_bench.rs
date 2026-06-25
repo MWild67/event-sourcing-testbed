@@ -39,7 +39,7 @@ async fn mc_get_tail(mc: &memcache::Client, key: &str) -> Result<Option<Vec<Benc
     })
     .await??;
     match bytes {
-        Some(b) => Ok(Some(serde_json::from_slice(&b)?)),
+        Some(b) => Ok(Some(bincode::deserialize(&b)?)),
         None => Ok(None),
     }
 }
@@ -47,7 +47,7 @@ async fn mc_get_tail(mc: &memcache::Client, key: &str) -> Result<Option<Vec<Benc
 async fn mc_set_tail(mc: &memcache::Client, key: &str, tail: &[BenchmarkEvent]) -> Result<()> {
     let mc = mc.clone();
     let key = key.to_owned();
-    let bytes = serde_json::to_vec(tail)?;
+    let bytes = bincode::serialize(tail)?;
     tokio::task::spawn_blocking(move || {
         mc.set(&key, bytes.as_slice(), 3600)
             .map_err(|e| anyhow::anyhow!("mc set: {e}"))
