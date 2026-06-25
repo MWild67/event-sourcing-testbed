@@ -1,6 +1,7 @@
 mod events;
 mod hot_cache_bench;
 mod kurrentdb;
+mod memcache_bench;
 mod mongodb;
 mod postgres;
 mod projection_bench;
@@ -51,6 +52,14 @@ struct Cli {
         default_value = "postgres://postgres:postgres@localhost:5432/eventbench"
     )]
     postgres_url: String,
+
+    /// Memcached URL (used by `*-memcached-bench` subcommands).
+    #[arg(
+        long,
+        env = "MEMCACHED_URL",
+        default_value = "memcache://localhost:11211"
+    )]
+    memcached_url: String,
 
     #[command(subcommand)]
     command: Commands,
@@ -127,6 +136,14 @@ enum Commands {
     /// Hot/cold view benchmark against `KurrentDB`:
     /// tests `$maxCount` sliding window and catch-up subscription modes.
     KurrentdbHotColdViewBench(KurrentdbHotColdViewBenchArgs),
+    /// Memcached write-through hot-tail-cache benchmark against `KurrentDB`:
+    /// seeds 50 000 events, loads last 500 into Memcached at startup, then
+    /// measures Memcached GET latency and write-through (DB + MC SET) latency.
+    KurrentdbMemcachedBench(MemcachedBenchArgs),
+    /// Memcached write-through hot-tail-cache benchmark against `MongoDB`.
+    MongoMemcachedBench(MongoMemcachedBenchArgs),
+    /// Memcached write-through hot-tail-cache benchmark against `PostgreSQL`.
+    PgMemcachedBench(MemcachedBenchArgs),
 }
 
 #[derive(Parser)]
@@ -218,6 +235,46 @@ struct PgHotStreamContentionBenchArgs {
     max_retries: u64,
     #[arg(long, default_value = "hot-stream")]
     stream_prefix: String,
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Parser)]
+struct MemcachedBenchArgs {
+    /// Total events to write during the seed phase.
+    #[arg(long, default_value_t = 50_000)]
+    seed_events: u64,
+    /// Number of most-recent events held in Memcached.
+    #[arg(long, default_value_t = 500)]
+    cache_size: usize,
+    /// Events written one-at-a-time in the live-write phase.
+    #[arg(long, default_value_t = 500)]
+    live_writes: u64,
+    /// Events per batch during seeding.
+    #[arg(long, default_value_t = 100)]
+    seed_batch_size: u64,
+    /// Stream / table name.
+    #[arg(long, default_value = "mc-bench")]
+    stream_name: String,
+    /// Emit results as a single JSON line.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Parser)]
+struct MongoMemcachedBenchArgs {
+    #[arg(long, default_value_t = 50_000)]
+    seed_events: u64,
+    #[arg(long, default_value_t = 500)]
+    cache_size: usize,
+    #[arg(long, default_value_t = 500)]
+    live_writes: u64,
+    #[arg(long, default_value_t = 100)]
+    seed_batch_size: u64,
+    #[arg(long, default_value = "mc-bench")]
+    stream_name: String,
+    #[arg(long, default_value = "mcbench")]
+    database: String,
     #[arg(long)]
     json: bool,
 }
@@ -873,6 +930,67 @@ async fn main() -> Result<()> {
 
             let result = kurrentdb::hot_cold_view_bench::run(&cli.kurrentdb_url, config).await?;
 
+            if args.json {
+                result.print_json();
+            } else {
+                result.print_report();
+            }
+            let _ = std::io::stdout().flush();
+            let _ = std::io::stderr().flush();
+        }
+
+        Commands::KurrentdbMemcachedBench(args) => {
+            let config = memcache_bench::MemcachedCacheConfig {
+                seed_events: args.seed_events,
+                cache_size: args.cache_size,
+                live_writes: args.live_writes,
+                seed_batch_size: args.seed_batch_size,
+                stream_name: args.stream_name,
+                database: String::new(),
+            };
+            let result =
+                memcache_bench::run_kurrentdb(&cli.kurrentdb_url, &cli.memcached_url, config)
+                    .await?;
+            if args.json {
+                result.print_json();
+            } else {
+                result.print_report();
+            }
+            let _ = std::io::stdout().flush();
+            let _ = std::io::stderr().flush();
+        }
+
+        Commands::MongoMemcachedBench(args) => {
+            let config = memcache_bench::MemcachedCacheConfig {
+                seed_events: args.seed_events,
+                cache_size: args.cache_size,
+                live_writes: args.live_writes,
+                seed_batch_size: args.seed_batch_size,
+                stream_name: args.stream_name,
+                database: args.database,
+            };
+            let result =
+                memcache_bench::run_mongo(&cli.mongodb_url, &cli.memcached_url, config).await?;
+            if args.json {
+                result.print_json();
+            } else {
+                result.print_report();
+            }
+            let _ = std::io::stdout().flush();
+            let _ = std::io::stderr().flush();
+        }
+
+        Commands::PgMemcachedBench(args) => {
+            let config = memcache_bench::MemcachedCacheConfig {
+                seed_events: args.seed_events,
+                cache_size: args.cache_size,
+                live_writes: args.live_writes,
+                seed_batch_size: args.seed_batch_size,
+                stream_name: args.stream_name,
+                database: String::new(),
+            };
+            let result =
+                memcache_bench::run_postgres(&cli.postgres_url, &cli.memcached_url, config).await?;
             if args.json {
                 result.print_json();
             } else {

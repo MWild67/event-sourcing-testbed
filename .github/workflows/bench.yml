@@ -25,18 +25,21 @@ name: Benchmarks
           - kdb-hot-cache
           - kdb-hot-cold-view
           - kdb-hot-stream-contention
+          - kdb-memcached-bench
           - mdb-docker
           - mdb-k8s
           - mdb-rehydrate
           - mdb-rate-ramp
           - mdb-replay-under-write
           - mdb-hot-stream-contention
+          - mdb-memcached-bench
           - pg-docker
           - pg-k8s
           - pg-rehydrate
           - pg-rate-ramp
           - pg-replay-under-write
           - pg-hot-stream-contention
+          - pg-memcached-bench
           - monitoring-check
           - payload-batch-sensitivity
 
@@ -939,6 +942,195 @@ jobs:
           name: kdb-hot-cache-result
           path: kdb-hot-cache.json
           if-no-files-found: warn
+
+  # ── KurrentDB: Memcached write-through hot-tail-cache ────────────────────
+  kdb-memcached-bench:
+    name: "KurrentDB: Memcached Write-Through Cache"
+    runs-on: ubuntu-22.04
+    if: github.event_name != 'workflow_dispatch' || inputs.job == '' || inputs.job == 'kdb-memcached-bench'
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Start Memcached
+        run: |
+          docker run -d --name memcached -p 11211:11211 memcached:1.6
+          for i in $(seq 1 10); do
+            echo -e "version\r" | nc -w1 localhost 11211 2>/dev/null | grep -q VERSION && break || sleep 1
+          done
+
+      - name: Install KurrentDB (MEM_DB)
+        run: |
+          curl -1sLf 'https://dl.cloudsmith.io/public/eventstore/kurrent-latest/setup.deb.sh' | sudo -E bash
+          sudo apt-get install -y kurrentdb
+          sudo systemctl stop kurrentdb || true
+          getent passwd kurrentdb > /dev/null || sudo useradd --system --no-create-home --shell /usr/sbin/nologin kurrentdb
+          sudo mkdir -p /tmp/esdb /tmp/esdb-log
+          sudo chown kurrentdb:kurrentdb /tmp/esdb /tmp/esdb-log
+          sudo mkdir -p /etc/systemd/system/kurrentdb.service.d
+          printf '[Service]\nEnvironment="KURRENTDB_DB=/tmp/esdb"\nEnvironment="KURRENTDB_LOG=/tmp/esdb-log"\nEnvironment="KURRENTDB_INSECURE=true"\nEnvironment="KURRENTDB_RUN_PROJECTIONS=None"\nEnvironment="KURRENTDB_UNSAFE_DISABLE_FLUSH_TO_DISK=true"\nEnvironment="KURRENTDB_CLUSTER_SIZE=1"\nEnvironment="KURRENTDB_MEM_DB=true"\n' \
+            | sudo tee /etc/systemd/system/kurrentdb.service.d/bench.conf
+          sudo systemctl daemon-reload
+          sudo systemctl start kurrentdb
+          for i in $(seq 1 30); do curl -sf http://localhost:2113/health/live && break || sleep 2; done
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            rust-app/target
+          key: bench-${{ runner.os }}-cargo-${{ hashFiles('rust-app/Cargo.lock') }}
+
+      - name: Build
+        run: cargo build --release --manifest-path rust-app/Cargo.toml
+
+      - name: Memcached bench (KurrentDB)
+        run: |
+          RESULT=$(rust-app/target/release/testbed \
+            --kurrentdb-url 'kurrentdb://localhost:2113?tls=false' \
+            --memcached-url 'memcache://localhost:11211' \
+            kurrentdb-memcached-bench \
+            --seed-events 50000 --cache-size 500 --live-writes 500 --json)
+          echo "$RESULT"
+          echo "$RESULT" > kdb-memcached-bench.json
+
+      - name: Upload result
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: kdb-memcached-bench-result
+          path: kdb-memcached-bench.json
+          if-no-files-found: warn
+
+      - name: Cleanup
+        if: always()
+        run: docker stop memcached && docker rm memcached || true
+
+  # ── MongoDB: Memcached write-through hot-tail-cache ───────────────────────
+  mdb-memcached-bench:
+    name: "MongoDB: Memcached Write-Through Cache"
+    runs-on: ubuntu-22.04
+    if: github.event_name != 'workflow_dispatch' || inputs.job == '' || inputs.job == 'mdb-memcached-bench'
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Start Memcached
+        run: |
+          docker run -d --name memcached -p 11211:11211 memcached:1.6
+          for i in $(seq 1 10); do
+            echo -e "version\r" | nc -w1 localhost 11211 2>/dev/null | grep -q VERSION && break || sleep 1
+          done
+
+      - name: Start MongoDB
+        run: |
+          docker run -d --name mongodb -p 27017:27017 --tmpfs /data/db \
+            mongo:7 mongod --quiet --bind_ip_all --replSet rs0 --wiredTigerCacheSizeGB 0.25
+          for i in $(seq 1 30); do
+            docker exec mongodb mongosh --quiet --eval "db.adminCommand('ping').ok" \
+              mongodb://localhost:27017/admin 2>/dev/null && break || sleep 2
+          done
+          docker exec mongodb mongosh --quiet --eval \
+            "rs.initiate({_id:'rs0',members:[{_id:0,host:'127.0.0.1:27017'}]})"
+          for i in $(seq 1 20); do
+            docker exec mongodb mongosh --quiet --eval \
+              "if (rs.isMaster().ismaster !== true) { throw 'no primary'; }" \
+              2>/dev/null && break || sleep 3
+          done
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            rust-app/target
+          key: bench-${{ runner.os }}-cargo-${{ hashFiles('rust-app/Cargo.lock') }}
+
+      - name: Build
+        run: cargo build --release --manifest-path rust-app/Cargo.toml
+
+      - name: Memcached bench (MongoDB)
+        run: |
+          RESULT=$(rust-app/target/release/testbed \
+            --mongodb-url 'mongodb://localhost:27017/?directConnection=true' \
+            --memcached-url 'memcache://localhost:11211' \
+            mongo-memcached-bench \
+            --seed-events 50000 --cache-size 500 --live-writes 500 \
+            --database mcbench --json)
+          echo "$RESULT"
+          echo "$RESULT" > mdb-memcached-bench.json
+
+      - name: Upload result
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: mdb-memcached-bench-result
+          path: mdb-memcached-bench.json
+          if-no-files-found: warn
+
+      - name: Cleanup
+        if: always()
+        run: docker stop memcached mongodb && docker rm memcached mongodb || true
+
+  # ── PostgreSQL: Memcached write-through hot-tail-cache ────────────────────
+  pg-memcached-bench:
+    name: "PostgreSQL: Memcached Write-Through Cache"
+    runs-on: ubuntu-22.04
+    if: github.event_name != 'workflow_dispatch' || inputs.job == '' || inputs.job == 'pg-memcached-bench'
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Start Memcached
+        run: |
+          docker run -d --name memcached -p 11211:11211 memcached:1.6
+          for i in $(seq 1 10); do
+            echo -e "version\r" | nc -w1 localhost 11211 2>/dev/null | grep -q VERSION && break || sleep 1
+          done
+
+      - name: Start PostgreSQL
+        run: |
+          docker run -d --name pg \
+            -e POSTGRES_DB=eventbench -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres \
+            -p 5432:5432 --tmpfs /var/lib/postgresql/data \
+            postgres:16 -c fsync=off -c full_page_writes=off -c max_connections=200
+          for i in $(seq 1 30); do
+            docker exec pg pg_isready -U postgres -d eventbench && break || sleep 2
+          done
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            rust-app/target
+          key: bench-${{ runner.os }}-cargo-${{ hashFiles('rust-app/Cargo.lock') }}
+
+      - name: Build
+        run: cargo build --release --manifest-path rust-app/Cargo.toml
+
+      - name: Memcached bench (PostgreSQL)
+        run: |
+          RESULT=$(rust-app/target/release/testbed \
+            --postgres-url 'postgres://postgres:postgres@localhost:5432/eventbench' \
+            --memcached-url 'memcache://localhost:11211' \
+            pg-memcached-bench \
+            --seed-events 50000 --cache-size 500 --live-writes 500 --json)
+          echo "$RESULT"
+          echo "$RESULT" > pg-memcached-bench.json
+
+      - name: Upload result
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: pg-memcached-bench-result
+          path: pg-memcached-bench.json
+          if-no-files-found: warn
+
+      - name: Cleanup
+        if: always()
+        run: docker stop memcached pg && docker rm memcached pg || true
 
   # ════════════════════════════════════════════════════════════════════════════
   # MongoDB
@@ -2120,18 +2312,21 @@ jobs:
       - kdb-hot-stream-contention
       - kdb-hot-cold-view
       - kdb-hot-cache
+      - kdb-memcached-bench
       - mdb-docker
       - mdb-k8s
       - mdb-rehydrate
       - mdb-rate-ramp
       - mdb-replay-under-write
       - mdb-hot-stream-contention
+      - mdb-memcached-bench
       - pg-docker
       - pg-k8s
       - pg-rehydrate
       - pg-rate-ramp
       - pg-replay-under-write
       - pg-hot-stream-contention
+      - pg-memcached-bench
       - monitoring-check
       - payload-batch-sensitivity
     steps:
@@ -2315,6 +2510,12 @@ jobs:
 
           hot_cache_data = load_jsons('bench-artifacts', {
             'kdb': 'kdb-hot-cache.json',
+          })
+
+          mc_data = load_jsons('bench-artifacts', {
+            'kdb': 'kdb-memcached-bench.json',
+            'mdb': 'mdb-memcached-bench.json',
+            'pg':  'pg-memcached-bench.json',
           })
 
           payload_batch_data = load_jsons('bench-artifacts', {
@@ -2642,6 +2843,22 @@ jobs:
               f.write(f'| Hot  (from End)   | Lag max | {hcv.get("hot_sub_lag_max_us", "n/a")} µs |\n\n')
             else:
               f.write('_Hot/cold view artifact missing._\n\n')
+
+            # Strategy C — Memcached write-through (all three backends)
+            f.write('#### Strategy C — Memcached Write-Through (external network cache, all backends)\n\n')
+            f.write('> **Backends:** KurrentDB · MongoDB · PostgreSQL · **Conditions:** Memcached 1.6 Docker · localhost loopback · 500 events in window · JSON serialisation\n')
+            f.write('> **Measures:** cold-miss startup latency (DB load + MC SET), Memcached GET read latency (p50/p99), write-through overhead (DB write + MC SET p50/p99)\n\n')
+            if mc_data:
+              f.write('| Backend | Startup DB load (µs) | Startup MC SET (µs) | Read p50 (µs) | Read p99 (µs) | DB write p99 (µs) | MC SET p99 (µs) |\n')
+              f.write('|---------|--------------------:|--------------------:|-------------:|-------------:|-------------------:|----------------:|\n')
+              for key, label in [('kdb', 'KurrentDB'), ('mdb', 'MongoDB'), ('pg', 'PostgreSQL')]:
+                if key not in mc_data:
+                  continue
+                d = mc_data[key]
+                f.write(f'| {label} | {d.get("startup_db_load_us", "n/a")} | {d.get("startup_mc_set_us", "n/a")} | {d.get("cache_read_p50_us", "n/a")} | {d.get("cache_read_p99_us", "n/a")} | {d.get("db_write_p99_us", "n/a")} | {d.get("mc_set_p99_us", "n/a")} |\n')
+              f.write('\n')
+            else:
+              f.write('_Memcached bench artifacts missing._\n\n')
 
             f.write('### Write Latency Sensitivity to Payload Size & Batch Shape (Cross-Backend)\n\n')
             f.write('> **Backends:** KurrentDB · MongoDB · PostgreSQL\n')

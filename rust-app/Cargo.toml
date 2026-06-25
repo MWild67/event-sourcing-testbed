@@ -54,7 +54,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 anyhow = "1"
 thiserror = "1"
 rand = "0.8"
-
+# ── Memcached client ──────────────────────────────────────────────────────────
+# default-features = false drops the TLS/openssl dep; plain TCP is all we need.
+memcache = { version = "0.17", default-features = false }
 # ── Async trait support ───────────────────────────────────────────────────────
 async-trait = "0.1"
 
