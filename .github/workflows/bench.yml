@@ -2612,6 +2612,12 @@ jobs:
             'mdb': 'mdb-hot-cache.json',
             'pg': 'pg-hot-cache.json',
           })
+          
+          # DEBUG: Print loaded hot-cache data
+          print(f"DEBUG: hot_cache_data keys: {list(hot_cache_data.keys())}", file=sys.stderr)
+          for backend, data in hot_cache_data.items():
+            print(f"DEBUG: {backend} hot-cache full JSON: {json.dumps(data, indent=2)}", file=sys.stderr)
+            print(f"DEBUG: {backend} hot-cache: startup_load_us={data.get('startup_load_us')}, cache_read_p50_us={data.get('cache_read_p50_us')}, db_write_p99_us={data.get('db_write_p99_us')}, cache_push_p99_us={data.get('cache_push_p99_us')}", file=sys.stderr)
 
           mc_data = load_jsons('bench-artifacts', {
             'kdb': 'kdb-memcached-bench.json',
@@ -2932,6 +2938,7 @@ jobs:
                   cache_push_p99 = hc.get('cache_push_p99_us', 0)
                   if isinstance(startup, int) and isinstance(read_p50, int) and isinstance(write_p99, int) and isinstance(cache_push_p99, int):
                     total_us = startup + (read_p50 * total_reads_1hr) + ((write_p99 + cache_push_p99) * total_writes_1hr)
+                    print(f"DEBUG: {backend} Strategy A @ {freq}reads/sec: startup={startup}us, read_p50={read_p50}us ({read_p50*total_reads_1hr}us total), write_p99+push={write_p99+cache_push_p99}us ({(write_p99+cache_push_p99)*total_writes_1hr}us total) = {total_us}us", file=sys.stderr)
                     total_ms = total_us / 1000
                     total_sec = total_ms / 1000
                     if total_sec >= 1:
