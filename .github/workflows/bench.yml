@@ -2941,6 +2941,76 @@ jobs:
             f.write('| Budget-conscious | Strategy A or B | No network latency or external services |\n')
             f.write('| High availability required | Strategy C (Memcached) | Can run redundant Memcached cluster |\n\n')
 
+            # ── Total Cost Comparison (usable decision table) ──────────────────────────
+            f.write('#### Total Cost for Different Read Frequencies (1-hour window)\n\n')
+            f.write('> **Setup:** Startup cost (one-time) + per-read cost × number of reads in 1 hour\n')
+            f.write('> Lower = better. Shows which DB+strategy is cheapest for your usage pattern.\n\n')
+
+            # Calculate costs for different frequencies
+            read_frequencies = [
+              (10, '10 reads/sec'),
+              (100, '100 reads/sec'),
+              (1_000, '1,000 reads/sec'),
+              (10_000, '10,000 reads/sec'),
+            ]
+            
+            for freq, freq_label in read_frequencies:
+              total_reads_1hr = freq * 3600
+              f.write(f'**Scenario: {freq_label} ({total_reads_1hr:,} reads in 1 hour)**\n\n')
+              f.write('| Backend | Strategy A | Strategy B | Strategy C |\n')
+              f.write('|---------|-----------|-----------|----------|\n')
+              
+              for backend, label in [('kdb', 'KurrentDB'), ('mdb', 'MongoDB'), ('pg', 'PostgreSQL')]:
+                costs = []
+                
+                # Strategy A cost
+                strat_a = 'N/A'
+                if hot_cache_data.get(backend):
+                  hc = hot_cache_data[backend]
+                  startup = hc.get('startup_load_us', 0)
+                  read_p50 = hc.get('cache_read_p50_us', 0)
+                  if isinstance(startup, int) and isinstance(read_p50, int):
+                    total_us = startup + (read_p50 * total_reads_1hr)
+                    total_ms = total_us / 1000
+                    total_sec = total_ms / 1000
+                    if total_sec >= 1:
+                      strat_a = f'{total_sec:.1f}s'
+                    else:
+                      strat_a = f'{total_ms:.0f}ms'
+                
+                # Strategy B cost (KurrentDB only)
+                strat_b = 'N/A'
+                if backend == 'kdb' and hot_cold_data.get('kdb'):
+                  hcv = hot_cold_data['kdb']
+                  read_p50 = hcv.get('hot_read_p50_us', 0)
+                  if isinstance(read_p50, int):
+                    total_us = read_p50 * total_reads_1hr
+                    total_ms = total_us / 1000
+                    total_sec = total_ms / 1000
+                    if total_sec >= 1:
+                      strat_b = f'{total_sec:.1f}s'
+                    else:
+                      strat_b = f'{total_ms:.0f}ms'
+                
+                # Strategy C cost
+                strat_c = 'N/A'
+                if mc_data and backend in mc_data:
+                  mc = mc_data[backend]
+                  startup = mc.get('startup_db_load_us', 0)
+                  startup_set = mc.get('startup_mc_set_us', 0)
+                  read_p50 = mc.get('cache_read_p50_us', 0)
+                  if all(isinstance(v, int) for v in [startup, startup_set, read_p50]):
+                    total_us = (startup + startup_set) + (read_p50 * total_reads_1hr)
+                    total_ms = total_us / 1000
+                    total_sec = total_ms / 1000
+                    if total_sec >= 1:
+                      strat_c = f'{total_sec:.1f}s'
+                    else:
+                      strat_c = f'{total_ms:.0f}ms'
+                
+                f.write(f'| {label} | {strat_a} | {strat_b} | {strat_c} |\n')
+              f.write('\n')
+
             f.write('### Write Latency Sensitivity to Payload Size & Batch Shape (Cross-Backend)\n\n')
             f.write('> **Backends:** KurrentDB · MongoDB · PostgreSQL\n')
             f.write('> **Conditions:** payload sizes 256 B / 1 KB / 4 KB · batch sizes 1 / 8 · 5 k ev/s target · 12 s per shape · 64 tasks\n')
