@@ -22,6 +22,7 @@ name: Benchmarks
           - kdb-failover-impact
           - kdb-rate-ramp
           - kdb-replay-under-write
+          - kdb-hot-cache
           - kdb-hot-cold-view
           - kdb-hot-stream-contention
           - mdb-docker
@@ -876,6 +877,67 @@ jobs:
         with:
           name: kdb-hot-cold-view-result
           path: kdb-hot-cold-view.json
+          if-no-files-found: warn
+
+  # ── KurrentDB: Scenario — Hot-Tail Cache (In-Memory Ring Buffer) ─────────
+  kdb-hot-cache:
+    name: "KurrentDB: Hot-Tail Cache (In-Memory Ring Buffer)"
+    runs-on: ubuntu-22.04
+    if: github.event_name != 'workflow_dispatch' || inputs.job == '' || inputs.job == 'kdb-hot-cache'
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install KurrentDB (MEM_DB)
+        run: |
+          curl -1sLf 'https://dl.cloudsmith.io/public/eventstore/kurrent-latest/setup.deb.sh' | sudo -E bash
+          sudo apt-get install -y kurrentdb
+          sudo systemctl stop kurrentdb || true
+          getent passwd kurrentdb > /dev/null || sudo useradd --system --no-create-home --shell /usr/sbin/nologin kurrentdb
+          sudo mkdir -p /tmp/esdb /tmp/esdb-log
+          sudo chown kurrentdb:kurrentdb /tmp/esdb /tmp/esdb-log
+          sudo mkdir -p /etc/systemd/system/kurrentdb.service.d
+          printf '[Service]\nEnvironment="KURRENTDB_DB=/tmp/esdb"\nEnvironment="KURRENTDB_LOG=/tmp/esdb-log"\nEnvironment="KURRENTDB_INSECURE=true"\nEnvironment="KURRENTDB_RUN_PROJECTIONS=None"\nEnvironment="KURRENTDB_UNSAFE_DISABLE_FLUSH_TO_DISK=true"\nEnvironment="KURRENTDB_CLUSTER_SIZE=1"\nEnvironment="KURRENTDB_MEM_DB=true"\n' \
+            | sudo tee /etc/systemd/system/kurrentdb.service.d/bench.conf
+          sudo systemctl daemon-reload
+          sudo systemctl start kurrentdb
+          for i in $(seq 1 30); do curl -sf http://localhost:2113/health/live && break || sleep 2; done
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            rust-app/target
+          key: bench-${{ runner.os }}-cargo-${{ hashFiles('rust-app/Cargo.lock') }}
+
+      - name: Build
+        run: cargo build --release --manifest-path rust-app/Cargo.toml
+
+      - name: Hot-tail cache benchmark
+        run: |
+          RESULT=$(rust-app/target/release/testbed \
+            --kurrentdb-url 'kurrentdb://localhost:2113?tls=false' \
+            kurrentdb-hot-cache-bench \
+            --seed-events 50000 \
+            --cache-size  500 \
+            --live-writes 500 \
+            --json)
+          echo "$RESULT"
+          echo "$RESULT" > kdb-hot-cache.json
+          # Sanity-check: startup load must be < 500 ms (500 000 µs)
+          STARTUP_US=$(echo "$RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['startup_load_us'])")
+          if [ "$STARTUP_US" -ge 500000 ]; then
+            echo "FAIL: startup_load_us=${STARTUP_US} >= 500 ms limit" >&2
+            exit 1
+          fi
+
+      - name: Upload result
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: kdb-hot-cache-result
+          path: kdb-hot-cache.json
           if-no-files-found: warn
 
   # ════════════════════════════════════════════════════════════════════════════
@@ -2056,6 +2118,8 @@ jobs:
       - kdb-rate-ramp
       - kdb-replay-under-write
       - kdb-hot-stream-contention
+      - kdb-hot-cold-view
+      - kdb-hot-cache
       - mdb-docker
       - mdb-k8s
       - mdb-rehydrate
@@ -2245,6 +2309,14 @@ jobs:
             'pg': 'pg-hot-stream-contention.json',
           })
 
+          hot_cold_data = load_jsons('bench-artifacts', {
+            'kdb': 'kdb-hot-cold-view.json',
+          })
+
+          hot_cache_data = load_jsons('bench-artifacts', {
+            'kdb': 'kdb-hot-cache.json',
+          })
+
           payload_batch_data = load_jsons('bench-artifacts', {
             'matrix': 'payload-batch-sensitivity.json',
           })
@@ -2256,7 +2328,8 @@ jobs:
           artifact_json_count = len(list(Path('bench-artifacts').rglob('*.json')))
 
           replay_expected = {
-            'kdb': 'KurrentDB',
+            'kdb-peak': 'KurrentDB Peak',
+            'kdb-durable': 'KurrentDB Durable',
             'mdb-peak': 'MongoDB Peak',
             'mdb-durable': 'MongoDB Durable',
             'pg-peak': 'PostgreSQL Peak',
@@ -2330,15 +2403,18 @@ jobs:
             f.write('> **Rehydration:** 50 000 events · sequential write then full replay\n')
             f.write('> **Scale:** 100 k events · CI loopback (no VM bridge)\n\n')
 
-            f.write('### Scenario Coverage Map\n\n')
-            f.write('- **Cross-backend (KurrentDB + MongoDB + PostgreSQL):** sustained write benchmark, rehydration/replay, rate ramp, replay-under-write, hot-stream contention, payload+batch sensitivity\n')
-            f.write('- **KurrentDB-only:** MEM_DB baseline, scale benchmark (100 k), node failover (AC-3), short failover-impact under load\n\n')
+            f.write('### Test Coverage Overview\n\n')
+            f.write('- **Cross-backend (KurrentDB + MongoDB + PostgreSQL):** write throughput, rehydration/replay, rate-ramp knee-point, write regression under replay, hot-stream contention, payload + batch sensitivity\n')
+            f.write('- **KurrentDB-only:** MEM_DB throughput ceiling, 100 k scale, 3-node leader-election failover, failover under write load, hot/cold read cache strategies\n\n')
             f.write('> Why KurrentDB-only here: these are HA/failover readiness checks, not just throughput checks.\n')
             f.write('> MongoDB/PostgreSQL failover parity needs dedicated HA control planes (Mongo replica-set election scenarios and PostgreSQL Patroni/repmgr-style promotion scenarios) to remain apples-to-apples.\n')
             f.write('> Next step: add MongoDB and PostgreSQL failover-impact jobs with the same output schema used by KurrentDB for full cross-backend reliability parity.\n\n')
 
-            f.write('### KurrentDB\n\n')
-            f.write('**Sustained Write Benchmark**\n\n')
+            f.write('### KurrentDB — Write Throughput, Rehydration & Reliability\n\n')
+            f.write('> **Backends:** KurrentDB · MEM_DB (no persistence) · Docker tmpfs · k3d emptyDir Memory\n')
+            f.write('> **Conditions:** 10 k ev/s target · 30 s · 64 concurrent tasks · peak (no fsync) and durable (OS-buffer) modes\n')
+            f.write('> **Measures:** write throughput + latency percentiles, rehydration round-trip, scale at 100 k events, failover recovery\n\n')
+            f.write('**Write Throughput (10 k ev/s target · 30 s · 64 tasks)**\n\n')
             f.write('| Environment | Mode | Rate (ev/s) | p50 (ms) | p95 (ms) | p99 (ms) | p99.9 (ms) |\n')
             f.write('|-------------|------|------------:|:--------:|:--------:|:--------:|:----------:|\n')
             f.write(f'| In-memory (MEM_DB) | Peak baseline | {e("KDB_MEMDB_RATE")} | {ms("KDB_MEMDB_P50")} | {ms("KDB_MEMDB_P95")} | {ms("KDB_MEMDB_P99")} | {ms("KDB_MEMDB_P999")} |\n')
@@ -2350,13 +2426,13 @@ jobs:
             ])
             f.write('\n')
 
-            f.write('**Rehydration / Replay (50 k events)**\n\n')
+            f.write('**Rehydration / Replay — Write then Full Sequential Replay (50 k events)**\n\n')
             f.write('| Phase | Duration (ms) | Throughput (ev/s) | Result |\n')
             f.write('|-------|-------------:|------------------:|:------:|\n')
             f.write(f'| Write — batched 500 ev/gRPC | {e("KDB_RH_WRITE_MS")} | {e("KDB_RH_WRITE_RATE")} | |\n')
             f.write(f'| Replay — gRPC server-stream | {e("KDB_RH_REPLAY_MS")} | {e("KDB_RH_REPLAY_RATE")} | {result("KDB_RH_PASSED")} |\n\n')
 
-            f.write('**Scale Benchmark — 100 k events (KurrentDB-only, CI loopback gRPC)**\n\n')
+            f.write('**Scale — Tail Read + Full Rehydration at 100 k Events (KurrentDB only)**\n\n')
             f.write('| Metric | Value |\n')
             f.write('|--------|------:|\n')
             f.write(f'| Write throughput (ev/s) | {e("KDB_SC_WRITE_EPS")} |\n')
@@ -2364,12 +2440,12 @@ jobs:
             f.write(f'| Full rehydration throughput (ev/s) | {e("KDB_SC_REHY_EPS")} |\n')
             f.write(f'| Full rehydration elapsed (ms) | {e("KDB_SC_REHY_MS")} |\n\n')
 
-            f.write('**Node Failover (AC-3, KurrentDB-only)**\n\n')
+            f.write('**Node Failover — 3-Node Cluster Leader Election (KurrentDB only)**\n\n')
             f.write('| Test | Result |\n')
             f.write('|------|:------:|\n')
-            f.write(f'| 3-node cluster · leader evicted · quorum ≤ 60 s | {result("KDB_FO_PASSED")} |\n\n')
+            f.write(f'| Leader evicted · new quorum elected · recovery ≤ 60 s | {result("KDB_FO_PASSED")} |\n\n')
 
-            f.write('**Short Failover Impact (Under Load, KurrentDB-only)**\n\n')
+            f.write('**Failover Under Write Load — Pause Window, Error Spike & Recovery (KurrentDB only)**\n\n')
             if 'kdb' in failover_impact:
               d = failover_impact['kdb']
               pause_window = d.get("pause_window_ms", "n/a")
@@ -2405,8 +2481,11 @@ jobs:
             else:
               f.write('_Failover-impact artifact missing._\n\n')
 
-            f.write('### MongoDB\n\n')
-            f.write('**Sustained Write Benchmark**\n\n')
+            f.write('### MongoDB — Write Throughput & Rehydration\n\n')
+            f.write('> **Backends:** MongoDB 7 · Docker tmpfs · k3d emptyDir Memory · replica-set rs0\n')
+            f.write('> **Conditions:** 10 k ev/s target · 30 s · 64 concurrent tasks · peak (j:false) and durable (j:true, fdatasync no-op on tmpfs) modes\n')
+            f.write('> **Measures:** write throughput + latency percentiles, rehydration round-trip\n\n')
+            f.write('**Write Throughput (10 k ev/s target · 30 s · 64 tasks)**\n\n')
             f.write('| Environment | Mode | Rate (ev/s) | p50 (ms) | p95 (ms) | p99 (ms) | p99.9 (ms) |\n')
             f.write('|-------------|------|------------:|:--------:|:--------:|:--------:|:----------:|\n')
             write_mode_rows(f, [
@@ -2417,14 +2496,17 @@ jobs:
             ])
             f.write('\n')
 
-            f.write('**Rehydration / Replay (50 k events)**\n\n')
+            f.write('**Rehydration / Replay — Write then Full Sequential Replay (50 k events)**\n\n')
             f.write('| Phase | Duration (ms) | Throughput (ev/s) | Result |\n')
             f.write('|-------|-------------:|------------------:|:------:|\n')
             f.write(f'| Write — one insertOne() per event | {e("MDB_RH_WRITE_MS")} | {e("MDB_RH_WRITE_RATE")} | |\n')
             f.write(f'| Replay — bulk cursor (16 MB batch) | {e("MDB_RH_REPLAY_MS")} | {e("MDB_RH_REPLAY_RATE")} | {result("MDB_RH_PASSED")} |\n\n')
 
-            f.write('### PostgreSQL\n\n')
-            f.write('**Sustained Write Benchmark**\n\n')
+            f.write('### PostgreSQL — Write Throughput & Rehydration\n\n')
+            f.write('> **Backends:** PostgreSQL 16 · Docker tmpfs · k3d emptyDir Memory\n')
+            f.write('> **Conditions:** 10 k ev/s target · 30 s · 64 concurrent tasks · peak (fsync=off) and durable (fsync=off + synchronous_commit=on) modes\n')
+            f.write('> **Measures:** write throughput + latency percentiles, rehydration round-trip\n\n')
+            f.write('**Write Throughput (10 k ev/s target · 30 s · 64 tasks)**\n\n')
             f.write('| Environment | Mode | Rate (ev/s) | p50 (ms) | p95 (ms) | p99 (ms) | p99.9 (ms) |\n')
             f.write('|-------------|------|------------:|:--------:|:--------:|:--------:|:----------:|\n')
             write_mode_rows(f, [
@@ -2435,20 +2517,24 @@ jobs:
             ])
             f.write('\n')
 
-            f.write('**Rehydration / Replay (50 k events)**\n\n')
+            f.write('**Rehydration / Replay — Write then Full Sequential Replay (50 k events)**\n\n')
             f.write('| Phase | Duration (ms) | Throughput (ev/s) | Result |\n')
             f.write('|-------|-------------:|------------------:|:------:|\n')
             f.write(f'| Write — one INSERT per event | {e("PG_RH_WRITE_MS")} | {e("PG_RH_WRITE_RATE")} | |\n')
             f.write(f'| Replay — SELECT ... ORDER BY stream_version | {e("PG_RH_REPLAY_MS")} | {e("PG_RH_REPLAY_RATE")} | {result("PG_RH_PASSED")} |\n\n')
 
-            f.write('### Monitoring Integration (AC-4)\n\n')
-            f.write('> Checks: Prometheus active scrape targets for all 5 jobs · 9 metric families · Grafana dashboard present\n')
-            f.write('> Backends: KurrentDB (MEM_DB) + RabbitMQ + MongoDB (exporter sidecar :9216) + PostgreSQL (exporter sidecar :9187)\n\n')
+            f.write('### Observability — Prometheus Scraping & Grafana Dashboard\n\n')
+            f.write('> **Backends:** KurrentDB (MEM_DB) · RabbitMQ · MongoDB (exporter :9216) · PostgreSQL (exporter :9187)\n')
+            f.write('> **Conditions:** single-node Docker compose · all exporters running · Grafana provisioned\n')
+            f.write('> **Measures:** Prometheus scrape targets active · 9 metric families return data · Grafana dashboard present\n\n')
             f.write('| Check | Result |\n')
             f.write('|-------|:------:|\n')
             f.write(f'| All targets + metrics + Grafana dashboard | {result("MONITORING_PASSED")} |\n\n')
 
-            f.write('### Rate Ramp — Knee-Point Analysis\n\n')
+            f.write('### Write Throughput Scaling — Rate Ramp Knee-Point (Cross-Backend)\n\n')
+            f.write('> **Backends:** KurrentDB · MongoDB · PostgreSQL\n')
+            f.write('> **Conditions:** rate steps 1 k → 3 k → 5 k → 8 k → 10 k ev/s · 20 s per step · 64 tasks · peak mode\n')
+            f.write('> **Measures:** rate at which p99 latency jumps ≥ 2× (the knee-point); no knee = linear scaling holds through 10 k\n\n')
             if ramp_data:
               for key, label in [('kdb-peak', 'KurrentDB Peak'), ('kdb-durable', 'KurrentDB Durable'), ('mdb-peak', 'MongoDB Peak'), ('mdb-durable', 'MongoDB Durable'), ('pg-peak', 'PostgreSQL Peak'), ('pg-durable', 'PostgreSQL Durable')]:
                 if key not in ramp_data:
@@ -2462,7 +2548,10 @@ jobs:
             else:
               f.write('_Rate ramp tests did not produce artifacts._\n\n')
 
-            f.write('### Replay-Under-Write — Latency Regression\n\n')
+            f.write('### Write Latency Under Concurrent Replay — Regression Check (Cross-Backend)\n\n')
+            f.write('> **Backends:** KurrentDB · MongoDB · PostgreSQL\n')
+            f.write('> **Conditions:** 100 k seeded events · full replay from position 0 concurrently with live writes at 10 k ev/s · 30 s\n')
+            f.write('> **Measures:** concurrent p99 ÷ baseline p99 (regression factor); pass = factor ≤ 3×\n\n')
             if replay_errors:
               f.write('> ⚠ Replay data validation warnings:\n')
               for err in replay_errors:
@@ -2478,7 +2567,10 @@ jobs:
             else:
               f.write('_Replay-under-write tests did not produce artifacts._\n\n')
 
-            f.write('### Hot-Stream Contention — Conflict/Retry + Tail Impact\n\n')
+            f.write('### Hot-Stream Contention — Optimistic Concurrency Conflicts, Retries & Tail Latency (Cross-Backend)\n\n')
+            f.write('> **Backends:** KurrentDB · MongoDB · PostgreSQL\n')
+            f.write('> **Conditions:** 90% of writes to 4 hot streams · 128 cold streams · 8 k ev/s · up to 8 retries per conflict\n')
+            f.write('> **Measures:** conflict count · retry success/exhaustion · tail latency factor (contention p99 ÷ baseline p99)\n\n')
             if contention_data:
               for key, label in [('kdb', 'KurrentDB'), ('mdb', 'MongoDB'), ('pg', 'PostgreSQL')]:
                 if key not in contention_data:
@@ -2500,7 +2592,61 @@ jobs:
             else:
               f.write('_Hot-stream contention artifact missing._\n\n')
 
-            f.write('### Payload + Batch-Shape Sensitivity\n\n')
+            # ── Hot/Cold Cache Comparison ──────────────────────────────────────
+            f.write('### Hot/Cold Read Views — Cache Strategy Comparison (KurrentDB)\n\n')
+            f.write('> Two ways to serve "most-recent N events" without a dedicated cache tier:\n')
+            f.write('> **Strategy A** — application-side in-memory ring buffer, seeded with a single tail-read at startup.\n')
+            f.write('> **Strategy B** — KurrentDB native `$maxCount` stream metadata + catch-up subscriptions; no application cache at all.\n\n')
+
+            # Strategy A — in-memory ring buffer (hot-cache bench)
+            f.write('#### Strategy A — Application Ring Buffer (one DB tail-read at startup, zero-latency reads thereafter)\n\n')
+            hc = hot_cache_data.get('kdb')
+            if isinstance(hc, dict):
+              f.write(f'> seed={hc.get("seed_events", "n/a")} events · cache_size={hc.get("cache_size_after_startup", "n/a")} · live_writes={hc.get("live_writes", "n/a")}\n\n')
+              f.write('| Phase | Metric | Value |\n')
+              f.write('|-------|--------|------:|\n')
+              f.write(f'| Startup | Load last N from DB (µs) | {hc.get("startup_load_us", "n/a")} |\n')
+              f.write(f'| Cache reads | p50 (ns) | {hc.get("cache_read_p50_ns", "n/a")} |\n')
+              f.write(f'| Cache reads | p99 (ns) | {hc.get("cache_read_p99_ns", "n/a")} |\n')
+              f.write(f'| Live DB write | p50 (µs) | {hc.get("db_write_p50_us", "n/a")} |\n')
+              f.write(f'| Live DB write | p95 (µs) | {hc.get("db_write_p95_us", "n/a")} |\n')
+              f.write(f'| Live DB write | p99 (µs) | {hc.get("db_write_p99_us", "n/a")} |\n')
+              f.write(f'| Cache push | p50 (ns) | {hc.get("cache_push_p50_ns", "n/a")} |\n')
+              f.write(f'| Cache push | p99 (ns) | {hc.get("cache_push_p99_ns", "n/a")} |\n\n')
+            else:
+              f.write('_Hot-cache artifact missing._\n\n')
+
+            # Strategy B — KurrentDB onboard features
+            f.write('#### Strategy B — KurrentDB Native Features ($maxCount sliding window + catch-up subscriptions, no application cache)\n\n')
+            hcv = hot_cold_data.get('kdb')
+            if isinstance(hcv, dict):
+              seed   = hcv.get('seed_events', 'n/a')
+              hw     = hcv.get('hot_window', 'n/a')
+              cold_n = hcv.get('cold_stream_event_count', 'n/a')
+              hot_n  = hcv.get('hot_stream_event_count', 'n/a')
+              scavd  = cold_n - hot_n if isinstance(cold_n, int) and isinstance(hot_n, int) else 'n/a'
+              f.write(f'> seed={seed} events · hot_window={hw} (`$maxCount`) · live_writes={hcv.get("live_writes", "n/a")}\n\n')
+              f.write('**`$maxCount` stream metadata — server-enforced sliding window**\n\n')
+              f.write('| Stream | Events returned | Read time (µs) | µs / event |\n')
+              f.write('|--------|----------------:|---------------:|-----------:|\n')
+              f.write(f'| Cold (no limit) | {cold_n} | {hcv.get("cold_read_elapsed_us", "n/a")} | {hcv.get("cold_read_per_event_us", "n/a")} |\n')
+              f.write(f'| Hot (`$maxCount`) | {hot_n} | {hcv.get("hot_read_elapsed_us", "n/a")} | {hcv.get("hot_read_per_event_us", "n/a")} |\n')
+              f.write(f'| Scavenged by DB | {scavd} | — | — |\n\n')
+              f.write('**Catch-up subscriptions — cold start vs live-only hot start**\n\n')
+              f.write('| View | Metric | Value |\n')
+              f.write('|------|--------|------:|\n')
+              f.write(f'| Cold (from Start) | Replay {seed} events | {hcv.get("cold_sub_replay_ms", "n/a")} ms ({hcv.get("cold_sub_replay_rate_eps", "n/a")} ev/s) |\n')
+              f.write(f'| Hot  (from End)   | Lag p50 | {hcv.get("hot_sub_lag_p50_us", "n/a")} µs |\n')
+              f.write(f'| Hot  (from End)   | Lag p95 | {hcv.get("hot_sub_lag_p95_us", "n/a")} µs |\n')
+              f.write(f'| Hot  (from End)   | Lag p99 | {hcv.get("hot_sub_lag_p99_us", "n/a")} µs |\n')
+              f.write(f'| Hot  (from End)   | Lag max | {hcv.get("hot_sub_lag_max_us", "n/a")} µs |\n\n')
+            else:
+              f.write('_Hot/cold view artifact missing._\n\n')
+
+            f.write('### Write Latency Sensitivity to Payload Size & Batch Shape (Cross-Backend)\n\n')
+            f.write('> **Backends:** KurrentDB · MongoDB · PostgreSQL\n')
+            f.write('> **Conditions:** payload sizes 256 B / 1 KB / 4 KB · batch sizes 1 / 8 · 5 k ev/s target · 12 s per shape · 64 tasks\n')
+            f.write('> **Measures:** whether backend throughput ranking changes as payload size or batch size increases\n\n')
             matrix = payload_batch_data.get('matrix')
             if isinstance(matrix, dict):
               baseline = matrix.get('baseline_ranking', [])

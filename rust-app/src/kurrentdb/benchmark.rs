@@ -232,10 +232,15 @@ pub async fn run(kurrent_url: &str, config: BenchmarkConfig) -> Result<Benchmark
                 let versions = stream_versions.lock().await;
                 let expected_version = versions.get(&stream_idx).copied().unwrap_or(0);
                 drop(versions); // Release lock before I/O
-                
+
                 // Try to append with expected version for optimistic concurrency
                 match client
-                    .append_batch_with_stream_revision(&stream_name, "BenchmarkEvent", &events, expected_version)
+                    .append_batch_with_stream_revision(
+                        &stream_name,
+                        "BenchmarkEvent",
+                        &events,
+                        expected_version,
+                    )
                     .await
                 {
                     Ok(next_version) => {
@@ -252,7 +257,7 @@ pub async fn run(kurrent_url: &str, config: BenchmarkConfig) -> Result<Benchmark
                     .append_batch(&stream_name, "BenchmarkEvent", &events)
                     .await
             };
-            
+
             match result {
                 Ok(_) => {
                     let lat_us = u64::try_from(t0.elapsed().as_micros()).unwrap_or(u64::MAX);
