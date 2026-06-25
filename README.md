@@ -8,6 +8,7 @@ Public rolling benchmark data for regression tracking.
 
 ## Recent Runs
 
+- Run 152: 2026-06-25T14:29:33.565395Z
 - Run 150: 2026-06-25T13:33:28.601491Z
 - Run 147: 2026-06-25T12:43:03.208791Z
 - Run 146: 2026-06-25T11:59:48.672546Z
@@ -17,4 +18,3 @@ Public rolling benchmark data for regression tracking.
 - Run 140: 2026-06-25T06:55:15.678402Z
 - Run 138: 2026-06-25T05:57:35.177245Z
 - Run 137: 2026-06-25T05:31:42.848013Z
-- Run 136: 2026-06-24T15:25:38.049926Z
