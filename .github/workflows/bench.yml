@@ -2524,6 +2524,7 @@ jobs:
           python3 << 'PYEOF'
           import json
           import os
+          import sys
           from pathlib import Path
 
           def e(v):
@@ -2905,6 +2906,56 @@ jobs:
             f.write('> **Goal:** Decide which database + strategy combination for your product.\n')
             f.write('> **Strategies:** **A** = in-process ring buffer · **B** = KurrentDB native `$maxCount` (KDB only) · **C** = Memcached network cache\n')
             f.write('> **Setup:** 50k seed events, 500-event hot window, localhost loopback\n\n')
+
+            # ── Strategy A Detailed Metrics ────────────────────────────────────
+            f.write('#### Strategy A — Application In-Memory Ring Buffer (all backends)\n\n')
+            f.write('| Metric | KurrentDB | MongoDB | PostgreSQL |\n')
+            f.write('|--------|-----------|---------|------------|\n')
+            if hot_cache_data.get('kdb'):
+              hc = hot_cache_data['kdb']
+              f.write(f'| Startup load (µs) | {hc.get("startup_load_us", "n/a")} | ')
+            else:
+              f.write(f'| Startup load (µs) | n/a | ')
+            if hot_cache_data.get('mdb'):
+              hc = hot_cache_data['mdb']
+              f.write(f'{hc.get("startup_load_us", "n/a")} | ')
+            else:
+              f.write(f'n/a | ')
+            if hot_cache_data.get('pg'):
+              hc = hot_cache_data['pg']
+              f.write(f'{hc.get("startup_load_us", "n/a")} |\n')
+            else:
+              f.write(f'n/a |\n')
+            
+            f.write(f'| Cache read p50 (µs) | {hot_cache_data.get("kdb", {}).get("cache_read_p50_us", "n/a")} | {hot_cache_data.get("mdb", {}).get("cache_read_p50_us", "n/a")} | {hot_cache_data.get("pg", {}).get("cache_read_p50_us", "n/a")} |\n')
+            f.write(f'| Cache read p99 (µs) | {hot_cache_data.get("kdb", {}).get("cache_read_p99_us", "n/a")} | {hot_cache_data.get("mdb", {}).get("cache_read_p99_us", "n/a")} | {hot_cache_data.get("pg", {}).get("cache_read_p99_us", "n/a")} |\n')
+            f.write(f'| DB write p50 (µs) | {hot_cache_data.get("kdb", {}).get("db_write_p50_us", "n/a")} | {hot_cache_data.get("mdb", {}).get("db_write_p50_us", "n/a")} | {hot_cache_data.get("pg", {}).get("db_write_p50_us", "n/a")} |\n')
+            f.write(f'| DB write p99 (µs) | {hot_cache_data.get("kdb", {}).get("db_write_p99_us", "n/a")} | {hot_cache_data.get("mdb", {}).get("db_write_p99_us", "n/a")} | {hot_cache_data.get("pg", {}).get("db_write_p99_us", "n/a")} |\n')
+            f.write(f'| Cache push p50 (µs) | {hot_cache_data.get("kdb", {}).get("cache_push_p50_us", "n/a")} | {hot_cache_data.get("mdb", {}).get("cache_push_p50_us", "n/a")} | {hot_cache_data.get("pg", {}).get("cache_push_p50_us", "n/a")} |\n')
+            f.write(f'| Cache push p99 (µs) | {hot_cache_data.get("kdb", {}).get("cache_push_p99_us", "n/a")} | {hot_cache_data.get("mdb", {}).get("cache_push_p99_us", "n/a")} | {hot_cache_data.get("pg", {}).get("cache_push_p99_us", "n/a")} |\n\n')
+
+            # ── Strategy B Detailed Metrics ────────────────────────────────────
+            f.write('#### Strategy B — KurrentDB Native `$maxCount` (KurrentDB only)\n\n')
+            f.write('| Metric | Value |\n')
+            f.write('|--------|------:|\n')
+            if hot_cold_data.get('kdb'):
+              hcv = hot_cold_data['kdb']
+              f.write(f'| Hot read p50 (µs) | {hcv.get("hot_read_p50_us", "n/a")} |\n')
+              f.write(f'| Hot read p99 (µs) | {hcv.get("hot_read_p99_us", "n/a")} |\n')
+              f.write(f'| Hot write p99 (µs) | {hcv.get("hot_write_p99_us", "n/a")} |\n\n')
+            else:
+              f.write('_Strategy B artifact missing._\n\n')
+
+            # ── Strategy C Detailed Metrics ────────────────────────────────────
+            f.write('#### Strategy C — Memcached Write-Through Cache (all backends)\n\n')
+            f.write('| Metric | KurrentDB | MongoDB | PostgreSQL |\n')
+            f.write('|--------|-----------|---------|------------|\n')
+            f.write(f'| Startup DB load (µs) | {mc_data.get("kdb", {}).get("startup_db_load_us", "n/a")} | {mc_data.get("mdb", {}).get("startup_db_load_us", "n/a")} | {mc_data.get("pg", {}).get("startup_db_load_us", "n/a")} |\n')
+            f.write(f'| Startup MC SET (µs) | {mc_data.get("kdb", {}).get("startup_mc_set_us", "n/a")} | {mc_data.get("mdb", {}).get("startup_mc_set_us", "n/a")} | {mc_data.get("pg", {}).get("startup_mc_set_us", "n/a")} |\n')
+            f.write(f'| Cache read p50 (µs) | {mc_data.get("kdb", {}).get("cache_read_p50_us", "n/a")} | {mc_data.get("mdb", {}).get("cache_read_p50_us", "n/a")} | {mc_data.get("pg", {}).get("cache_read_p50_us", "n/a")} |\n')
+            f.write(f'| Cache read p99 (µs) | {mc_data.get("kdb", {}).get("cache_read_p99_us", "n/a")} | {mc_data.get("mdb", {}).get("cache_read_p99_us", "n/a")} | {mc_data.get("pg", {}).get("cache_read_p99_us", "n/a")} |\n')
+            f.write(f'| DB write p99 (µs) | {mc_data.get("kdb", {}).get("db_write_p99_us", "n/a")} | {mc_data.get("mdb", {}).get("db_write_p99_us", "n/a")} | {mc_data.get("pg", {}).get("db_write_p99_us", "n/a")} |\n')
+            f.write(f'| MC SET p99 (µs) | {mc_data.get("kdb", {}).get("mc_set_p99_us", "n/a")} | {mc_data.get("mdb", {}).get("mc_set_p99_us", "n/a")} | {mc_data.get("pg", {}).get("mc_set_p99_us", "n/a")} |\n\n')
 
             # ── Total Cost Comparison (usable decision table) ──────────────────────────
             f.write('#### Total Cost for Different Usage Patterns (1-hour window)\n\n')
