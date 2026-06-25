@@ -990,7 +990,7 @@ jobs:
           RESULT=$(rust-app/target/release/testbed \
             --kurrentdb-url 'kurrentdb://localhost:2113?tls=false' \
             --memcached-url 'memcache://localhost:11211' \
-            kurrentdb-memcached-bench \
+            kurrentdb-memcached \
             --seed-events 50000 --cache-size 500 --live-writes 500 --json)
           echo "$RESULT"
           echo "$RESULT" > kdb-memcached-bench.json
@@ -1055,7 +1055,7 @@ jobs:
           RESULT=$(rust-app/target/release/testbed \
             --mongodb-url 'mongodb://localhost:27017/?directConnection=true' \
             --memcached-url 'memcache://localhost:11211' \
-            mongo-memcached-bench \
+            mongo-memcached \
             --seed-events 50000 --cache-size 500 --live-writes 500 \
             --database mcbench --json)
           echo "$RESULT"

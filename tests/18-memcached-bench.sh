@@ -91,9 +91,9 @@ echo "========================================================"
 
 FAILURES=0
 
-run_backend "kurrentdb-memcached-bench" "KurrentDB"
-run_backend "mongo-memcached-bench"     "MongoDB"     --database mcbench
-run_backend "pg-memcached-bench"        "PostgreSQL"
+run_backend "kurrentdb-memcached" "KurrentDB"
+run_backend "mongo-memcached"     "MongoDB"     --database mcbench
+run_backend "pg-memcached"        "PostgreSQL"
 
 echo ""
 if [[ "$FAILURES" -eq 0 ]]; then

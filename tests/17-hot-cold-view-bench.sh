@@ -20,9 +20,9 @@
 set -euo pipefail
 
 KURRENTDB_URL="${KURRENTDB_URL:-kurrentdb://localhost:2113,localhost:2114,localhost:2115?tls=false}"
-SEED_EVENTS="${SEED_EVENTS:-20000}"
+SEED_EVENTS="${SEED_EVENTS:-50000}"
 HOT_WINDOW="${HOT_WINDOW:-500}"
-LIVE_WRITES="${LIVE_WRITES:-200}"
+LIVE_WRITES="${LIVE_WRITES:-500}"
 JSON_FLAG="${1:-}"
 
 BINARY="${BINARY:-./rust-app/target/release/testbed}"

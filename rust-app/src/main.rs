@@ -139,11 +139,11 @@ enum Commands {
     /// Memcached write-through hot-tail-cache benchmark against `KurrentDB`:
     /// seeds 50 000 events, loads last 500 into Memcached at startup, then
     /// measures Memcached GET latency and write-through (DB + MC SET) latency.
-    KurrentdbMemcachedBench(MemcachedBenchArgs),
+    KurrentdbMemcached(MemcachedBenchArgs),
     /// Memcached write-through hot-tail-cache benchmark against `MongoDB`.
-    MongoMemcachedBench(MongoMemcachedBenchArgs),
+    MongoMemcached(MongoMemcachedBenchArgs),
     /// Memcached write-through hot-tail-cache benchmark against `PostgreSQL`.
-    PgMemcachedBench(MemcachedBenchArgs),
+    PgMemcached(MemcachedBenchArgs),
 }
 
 #[derive(Parser)]
@@ -282,7 +282,7 @@ struct MongoMemcachedBenchArgs {
 #[derive(Parser)]
 struct KurrentdbHotColdViewBenchArgs {
     /// Total events to write during the seed phase.
-    #[arg(long, default_value_t = 20_000)]
+    #[arg(long, default_value_t = 50_000)]
     seed_events: usize,
 
     /// Number of most-recent events the hot stream is capped at via `$maxCount`.
@@ -290,7 +290,7 @@ struct KurrentdbHotColdViewBenchArgs {
     hot_window: usize,
 
     /// Events written one-at-a-time in the live-subscription lag phase.
-    #[arg(long, default_value_t = 200)]
+    #[arg(long, default_value_t = 500)]
     live_writes: usize,
 
     /// Emit results as a single JSON line (for CI parsing).
@@ -939,7 +939,7 @@ async fn main() -> Result<()> {
             let _ = std::io::stderr().flush();
         }
 
-        Commands::KurrentdbMemcachedBench(args) => {
+        Commands::KurrentdbMemcached(args) => {
             let config = memcache_bench::MemcachedCacheConfig {
                 seed_events: args.seed_events,
                 cache_size: args.cache_size,
@@ -960,7 +960,7 @@ async fn main() -> Result<()> {
             let _ = std::io::stderr().flush();
         }
 
-        Commands::MongoMemcachedBench(args) => {
+        Commands::MongoMemcached(args) => {
             let config = memcache_bench::MemcachedCacheConfig {
                 seed_events: args.seed_events,
                 cache_size: args.cache_size,
@@ -980,7 +980,7 @@ async fn main() -> Result<()> {
             let _ = std::io::stderr().flush();
         }
 
-        Commands::PgMemcachedBench(args) => {
+        Commands::PgMemcached(args) => {
             let config = memcache_bench::MemcachedCacheConfig {
                 seed_events: args.seed_events,
                 cache_size: args.cache_size,

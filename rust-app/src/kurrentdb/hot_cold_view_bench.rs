@@ -64,9 +64,9 @@ pub struct HotColdViewConfig {
 impl Default for HotColdViewConfig {
     fn default() -> Self {
         Self {
-            seed_events: 20_000,
+            seed_events: 50_000,
             hot_window: 500,
-            live_writes: 200,
+            live_writes: 500,
             seed_batch: 200,
             stream_prefix: "hot-cold-view".to_string(),
         }
