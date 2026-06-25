@@ -2907,55 +2907,183 @@ jobs:
             f.write('> **Strategies:** **A** = in-process ring buffer · **B** = KurrentDB native `$maxCount` (KDB only) · **C** = Memcached network cache\n')
             f.write('> **Setup:** 50k seed events, 500-event hot window, localhost loopback\n\n')
 
-            # ── Strategy A Detailed Metrics ────────────────────────────────────
-            f.write('#### Strategy A — Application In-Memory Ring Buffer (all backends)\n\n')
-            f.write('| Metric | KurrentDB | MongoDB | PostgreSQL |\n')
-            f.write('|--------|-----------|---------|------------|\n')
-            if hot_cache_data.get('kdb'):
-              hc = hot_cache_data['kdb']
-              f.write(f'| Startup load (µs) | {hc.get("startup_load_us", "n/a")} | ')
-            else:
-              f.write(f'| Startup load (µs) | n/a | ')
-            if hot_cache_data.get('mdb'):
-              hc = hot_cache_data['mdb']
-              f.write(f'{hc.get("startup_load_us", "n/a")} | ')
-            else:
-              f.write(f'n/a | ')
-            if hot_cache_data.get('pg'):
-              hc = hot_cache_data['pg']
-              f.write(f'{hc.get("startup_load_us", "n/a")} |\n')
-            else:
-              f.write(f'n/a |\n')
-            
-            f.write(f'| Cache read p50 (µs) | {hot_cache_data.get("kdb", {}).get("cache_read_p50_us", "n/a")} | {hot_cache_data.get("mdb", {}).get("cache_read_p50_us", "n/a")} | {hot_cache_data.get("pg", {}).get("cache_read_p50_us", "n/a")} |\n')
-            f.write(f'| Cache read p99 (µs) | {hot_cache_data.get("kdb", {}).get("cache_read_p99_us", "n/a")} | {hot_cache_data.get("mdb", {}).get("cache_read_p99_us", "n/a")} | {hot_cache_data.get("pg", {}).get("cache_read_p99_us", "n/a")} |\n')
-            f.write(f'| DB write p50 (µs) | {hot_cache_data.get("kdb", {}).get("db_write_p50_us", "n/a")} | {hot_cache_data.get("mdb", {}).get("db_write_p50_us", "n/a")} | {hot_cache_data.get("pg", {}).get("db_write_p50_us", "n/a")} |\n')
-            f.write(f'| DB write p99 (µs) | {hot_cache_data.get("kdb", {}).get("db_write_p99_us", "n/a")} | {hot_cache_data.get("mdb", {}).get("db_write_p99_us", "n/a")} | {hot_cache_data.get("pg", {}).get("db_write_p99_us", "n/a")} |\n')
-            f.write(f'| Cache push p50 (µs) | {hot_cache_data.get("kdb", {}).get("cache_push_p50_us", "n/a")} | {hot_cache_data.get("mdb", {}).get("cache_push_p50_us", "n/a")} | {hot_cache_data.get("pg", {}).get("cache_push_p50_us", "n/a")} |\n')
-            f.write(f'| Cache push p99 (µs) | {hot_cache_data.get("kdb", {}).get("cache_push_p99_us", "n/a")} | {hot_cache_data.get("mdb", {}).get("cache_push_p99_us", "n/a")} | {hot_cache_data.get("pg", {}).get("cache_push_p99_us", "n/a")} |\n\n')
+            # ── Decision table — what to pick and why ─────────────────────────
+            def _v(d, *keys):
+              for k in keys:
+                v = d.get(k, 'n/a')
+                if v != 'n/a':
+                  return v
+              return 'n/a'
 
-            # ── Strategy B Detailed Metrics ────────────────────────────────────
-            f.write('#### Strategy B — KurrentDB Native `$maxCount` (KurrentDB only)\n\n')
-            f.write('| Metric | Value |\n')
-            f.write('|--------|------:|\n')
-            if hot_cold_data.get('kdb'):
-              hcv = hot_cold_data['kdb']
-              f.write(f'| Hot read p50 (µs) | {hcv.get("hot_read_p50_us", "n/a")} |\n')
-              f.write(f'| Hot read p99 (µs) | {hcv.get("hot_read_p99_us", "n/a")} |\n')
-              f.write(f'| Hot write p99 (µs) | {hcv.get("hot_write_p99_us", "n/a")} |\n\n')
-            else:
-              f.write('_Strategy B artifact missing._\n\n')
+            kdb_a = hot_cache_data.get('kdb', {})
+            mdb_a = hot_cache_data.get('mdb', {})
+            pg_a  = hot_cache_data.get('pg',  {})
+            kdb_b = hot_cold_data.get('kdb', {})
+            kdb_c = mc_data.get('kdb', {})
+            mdb_c = mc_data.get('mdb', {})
+            pg_c  = mc_data.get('pg',  {})
 
-            # ── Strategy C Detailed Metrics ────────────────────────────────────
-            f.write('#### Strategy C — Memcached Write-Through Cache (all backends)\n\n')
+            # ── Single unified comparison table ────────────────────────────────
+            # Every row measures the same thing across all columns so numbers
+            # are directly comparable.  Strategy B is KurrentDB-only (— elsewhere).
+            #
+            # Row definitions:
+            #   Startup       — wall-clock µs from cold start until hot window is ready
+            #   Read p50/p99  — per-request latency to retrieve the hot window (warm)
+            #                   A/B: in-memory clone; C: Memcached GET + deserialize
+            #   Write→view p50/p99 — µs from write-start until the view reflects the
+            #                   new event.  A/C: synchronous (write blocks until done).
+            #                   B: DB write + async subscription delivery (write returns
+            #                   after DB ack; view updates hot_sub_lag_us later).
+            #   Extra infra   — additional infrastructure required beyond the DB
+
+            f.write('#### Strategy Comparison\n\n')
+            f.write('| Metric | KDB · A | KDB · B | KDB · C | MDB · A | MDB · C | PG · A | PG · C |\n')
+            f.write('|--------|--------:|--------:|--------:|--------:|--------:|-------:|-------:|\n')
+
+            # ── Startup ────────────────────────────────────────────────────────
+            def _int(d, k):
+              v = d.get(k)
+              return v if isinstance(v, int) else None
+
+            kdb_b_startup = _int(kdb_b, 'hot_read_elapsed_us')
+            kdb_c_startup = (_int(kdb_c,'startup_db_load_us') or 0) + (_int(kdb_c,'startup_mc_set_us') or 0) or None
+            mdb_c_startup = (_int(mdb_c,'startup_db_load_us') or 0) + (_int(mdb_c,'startup_mc_set_us') or 0) or None
+            pg_c_startup  = (_int(pg_c, 'startup_db_load_us') or 0) + (_int(pg_c, 'startup_mc_set_us') or 0) or None
+
+            def fmt(v): return str(v) if v is not None else 'n/a'
+
+            f.write(f'| **Startup (µs)** ¹'
+                    f' | {fmt(_int(kdb_a,"startup_load_us"))}'
+                    f' | {fmt(kdb_b_startup)}'
+                    f' | {fmt(kdb_c_startup)}'
+                    f' | {fmt(_int(mdb_a,"startup_load_us"))}'
+                    f' | {fmt(mdb_c_startup)}'
+                    f' | {fmt(_int(pg_a,"startup_load_us"))}'
+                    f' | {fmt(pg_c_startup)} |\n')
+
+            # ── Read p50 ───────────────────────────────────────────────────────
+            # B uses the same in-memory buffer as A after the subscription warms up
+            kdb_b_read_p50 = _int(kdb_a, 'cache_read_p50_us')
+            f.write(f'| **Read p50 (µs)** ²'
+                    f' | {fmt(_int(kdb_a,"cache_read_p50_us"))}'
+                    f' | {fmt(kdb_b_read_p50)}'
+                    f' | {fmt(_int(kdb_c,"cache_read_p50_us"))}'
+                    f' | {fmt(_int(mdb_a,"cache_read_p50_us"))}'
+                    f' | {fmt(_int(mdb_c,"cache_read_p50_us"))}'
+                    f' | {fmt(_int(pg_a,"cache_read_p50_us"))}'
+                    f' | {fmt(_int(pg_c,"cache_read_p50_us"))} |\n')
+
+            # ── Read p99 ───────────────────────────────────────────────────────
+            kdb_b_read_p99 = _int(kdb_a, 'cache_read_p99_us')
+            f.write(f'| **Read p99 (µs)** ²'
+                    f' | {fmt(_int(kdb_a,"cache_read_p99_us"))}'
+                    f' | {fmt(kdb_b_read_p99)}'
+                    f' | {fmt(_int(kdb_c,"cache_read_p99_us"))}'
+                    f' | {fmt(_int(mdb_a,"cache_read_p99_us"))}'
+                    f' | {fmt(_int(mdb_c,"cache_read_p99_us"))}'
+                    f' | {fmt(_int(pg_a,"cache_read_p99_us"))}'
+                    f' | {fmt(_int(pg_c,"cache_read_p99_us"))} |\n')
+
+            # ── Write→view p50 ─────────────────────────────────────────────────
+            # A: db_write_p50 (synchronous, view updated in same call)
+            # B: db_write_p50 (from A's kdb numbers) + subscription lag p50
+            # C: db_write_p50 + mc_set_p50
+            kdb_b_w2v_p50 = None
+            if _int(kdb_a,'db_write_p50_us') is not None and _int(kdb_b,'hot_sub_lag_p50_us') is not None:
+              kdb_b_w2v_p50 = kdb_a['db_write_p50_us'] + kdb_b['hot_sub_lag_p50_us']
+            kdb_c_w2v_p50 = None
+            if _int(kdb_c,'db_write_p50_us') is not None and _int(kdb_c,'mc_set_p50_us') is not None:
+              kdb_c_w2v_p50 = kdb_c['db_write_p50_us'] + kdb_c['mc_set_p50_us']
+            mdb_c_w2v_p50 = None
+            if _int(mdb_c,'db_write_p50_us') is not None and _int(mdb_c,'mc_set_p50_us') is not None:
+              mdb_c_w2v_p50 = mdb_c['db_write_p50_us'] + mdb_c['mc_set_p50_us']
+            pg_c_w2v_p50 = None
+            if _int(pg_c,'db_write_p50_us') is not None and _int(pg_c,'mc_set_p50_us') is not None:
+              pg_c_w2v_p50 = pg_c['db_write_p50_us'] + pg_c['mc_set_p50_us']
+
+            f.write(f'| **Write→view p50 (µs)** ³'
+                    f' | {fmt(_int(kdb_a,"db_write_p50_us"))}'
+                    f' | {fmt(kdb_b_w2v_p50)}'
+                    f' | {fmt(kdb_c_w2v_p50)}'
+                    f' | {fmt(_int(mdb_a,"db_write_p50_us"))}'
+                    f' | {fmt(mdb_c_w2v_p50)}'
+                    f' | {fmt(_int(pg_a,"db_write_p50_us"))}'
+                    f' | {fmt(pg_c_w2v_p50)} |\n')
+
+            # ── Write→view p99 ─────────────────────────────────────────────────
+            kdb_b_w2v_p99 = None
+            if _int(kdb_a,'db_write_p99_us') is not None and _int(kdb_b,'hot_sub_lag_p99_us') is not None:
+              kdb_b_w2v_p99 = kdb_a['db_write_p99_us'] + kdb_b['hot_sub_lag_p99_us']
+            kdb_c_w2v_p99 = None
+            if _int(kdb_c,'db_write_p99_us') is not None and _int(kdb_c,'mc_set_p99_us') is not None:
+              kdb_c_w2v_p99 = kdb_c['db_write_p99_us'] + kdb_c['mc_set_p99_us']
+            mdb_c_w2v_p99 = None
+            if _int(mdb_c,'db_write_p99_us') is not None and _int(mdb_c,'mc_set_p99_us') is not None:
+              mdb_c_w2v_p99 = mdb_c['db_write_p99_us'] + mdb_c['mc_set_p99_us']
+            pg_c_w2v_p99 = None
+            if _int(pg_c,'db_write_p99_us') is not None and _int(pg_c,'mc_set_p99_us') is not None:
+              pg_c_w2v_p99 = pg_c['db_write_p99_us'] + pg_c['mc_set_p99_us']
+
+            f.write(f'| **Write→view p99 (µs)** ³'
+                    f' | {fmt(_int(kdb_a,"db_write_p99_us"))}'
+                    f' | {fmt(kdb_b_w2v_p99)}'
+                    f' | {fmt(kdb_c_w2v_p99)}'
+                    f' | {fmt(_int(mdb_a,"db_write_p99_us"))}'
+                    f' | {fmt(mdb_c_w2v_p99)}'
+                    f' | {fmt(_int(pg_a,"db_write_p99_us"))}'
+                    f' | {fmt(pg_c_w2v_p99)} |\n')
+
+            f.write('| **Extra infra** | — | — | Memcached | — | Memcached | — | Memcached |\n\n')
+
+            f.write('**Why is KurrentDB startup higher for Strategy A and C?**\n\n')
+            f.write('`read_last_n` reads events via a gRPC streaming cursor — one `next()` call per event, so 500 events = 500 iterations. MongoDB and PostgreSQL issue a single `find`/`SELECT … ORDER BY … LIMIT N` that the server resolves in one batch. This is a **one-time boot cost** and does not affect per-request latency. Strategy B avoids it entirely: `$maxCount` enforces the window server-side, so the startup read fetches only the hot-window events with no full-history traversal.\n\n')
+            f.write('> ¹ **Startup** — one-time cost at boot; does not affect per-request latency.\n')
+            f.write('> ² **Read latency** — A and B are pure in-memory (`RwLock<VecDeque>` clone); B feeds its buffer via push subscription, same read path as A. C is a Memcached network round-trip.\n')
+            f.write('> ³ **Write→view** — A and C are synchronous (write blocks until DB + cache updated). B shows `db_write + sub_lag`: the write call returns after DB ack; view updates asynchronously.\n\n')
+
+            # ── Detail tables ──────────────────────────────────────────────────
+            f.write('<details>\n<summary>Raw measurements per strategy</summary>\n\n')
+
+            # Strategy A
+            f.write('##### Strategy A — Application In-Memory Ring Buffer\n\n')
             f.write('| Metric | KurrentDB | MongoDB | PostgreSQL |\n')
-            f.write('|--------|-----------|---------|------------|\n')
-            f.write(f'| Startup DB load (µs) | {mc_data.get("kdb", {}).get("startup_db_load_us", "n/a")} | {mc_data.get("mdb", {}).get("startup_db_load_us", "n/a")} | {mc_data.get("pg", {}).get("startup_db_load_us", "n/a")} |\n')
-            f.write(f'| Startup MC SET (µs) | {mc_data.get("kdb", {}).get("startup_mc_set_us", "n/a")} | {mc_data.get("mdb", {}).get("startup_mc_set_us", "n/a")} | {mc_data.get("pg", {}).get("startup_mc_set_us", "n/a")} |\n')
-            f.write(f'| Cache read p50 (µs) | {mc_data.get("kdb", {}).get("cache_read_p50_us", "n/a")} | {mc_data.get("mdb", {}).get("cache_read_p50_us", "n/a")} | {mc_data.get("pg", {}).get("cache_read_p50_us", "n/a")} |\n')
-            f.write(f'| Cache read p99 (µs) | {mc_data.get("kdb", {}).get("cache_read_p99_us", "n/a")} | {mc_data.get("mdb", {}).get("cache_read_p99_us", "n/a")} | {mc_data.get("pg", {}).get("cache_read_p99_us", "n/a")} |\n')
-            f.write(f'| DB write p99 (µs) | {mc_data.get("kdb", {}).get("db_write_p99_us", "n/a")} | {mc_data.get("mdb", {}).get("db_write_p99_us", "n/a")} | {mc_data.get("pg", {}).get("db_write_p99_us", "n/a")} |\n')
-            f.write(f'| MC SET p99 (µs) | {mc_data.get("kdb", {}).get("mc_set_p99_us", "n/a")} | {mc_data.get("mdb", {}).get("mc_set_p99_us", "n/a")} | {mc_data.get("pg", {}).get("mc_set_p99_us", "n/a")} |\n\n')
+            f.write('|--------|----------:|--------:|-----------:|\n')
+            f.write(f'| Startup load (µs) | {fmt(_int(kdb_a,"startup_load_us"))} | {fmt(_int(mdb_a,"startup_load_us"))} | {fmt(_int(pg_a,"startup_load_us"))} |\n')
+            f.write(f'| Cache read p50 (µs) | {fmt(_int(kdb_a,"cache_read_p50_us"))} | {fmt(_int(mdb_a,"cache_read_p50_us"))} | {fmt(_int(pg_a,"cache_read_p50_us"))} |\n')
+            f.write(f'| Cache read p99 (µs) | {fmt(_int(kdb_a,"cache_read_p99_us"))} | {fmt(_int(mdb_a,"cache_read_p99_us"))} | {fmt(_int(pg_a,"cache_read_p99_us"))} |\n')
+            f.write(f'| DB write p50 (µs) | {fmt(_int(kdb_a,"db_write_p50_us"))} | {fmt(_int(mdb_a,"db_write_p50_us"))} | {fmt(_int(pg_a,"db_write_p50_us"))} |\n')
+            f.write(f'| DB write p95 (µs) | {fmt(_int(kdb_a,"db_write_p95_us"))} | {fmt(_int(mdb_a,"db_write_p95_us"))} | {fmt(_int(pg_a,"db_write_p95_us"))} |\n')
+            f.write(f'| DB write p99 (µs) | {fmt(_int(kdb_a,"db_write_p99_us"))} | {fmt(_int(mdb_a,"db_write_p99_us"))} | {fmt(_int(pg_a,"db_write_p99_us"))} |\n')
+            f.write(f'| Cache push p50 (µs) | {fmt(_int(kdb_a,"cache_push_p50_us"))} | {fmt(_int(mdb_a,"cache_push_p50_us"))} | {fmt(_int(pg_a,"cache_push_p50_us"))} |\n')
+            f.write(f'| Cache push p99 (µs) | {fmt(_int(kdb_a,"cache_push_p99_us"))} | {fmt(_int(mdb_a,"cache_push_p99_us"))} | {fmt(_int(pg_a,"cache_push_p99_us"))} |\n\n')
+
+            # Strategy B
+            f.write('##### Strategy B — KurrentDB Native `$maxCount` (KurrentDB only)\n\n')
+            f.write('| Metric | KurrentDB |\n')
+            f.write('|--------|----------:|\n')
+            f.write(f'| Startup — hot stream read (µs) | {fmt(_int(kdb_b,"hot_read_elapsed_us"))} |\n')
+            f.write(f'| Cold stream read (µs) | {fmt(_int(kdb_b,"cold_read_elapsed_us"))} |\n')
+            f.write(f'| Subscription lag p50 (µs) | {fmt(_int(kdb_b,"hot_sub_lag_p50_us"))} |\n')
+            f.write(f'| Subscription lag p95 (µs) | {fmt(_int(kdb_b,"hot_sub_lag_p95_us"))} |\n')
+            f.write(f'| Subscription lag p99 (µs) | {fmt(_int(kdb_b,"hot_sub_lag_p99_us"))} |\n')
+            f.write(f'| Cold catch-up replay (ms) | {fmt(kdb_b.get("cold_sub_replay_ms"))} |\n\n')
+
+            # Strategy C
+            f.write('##### Strategy C — Memcached Write-Through Cache\n\n')
+            f.write('| Metric | KurrentDB | MongoDB | PostgreSQL |\n')
+            f.write('|--------|----------:|--------:|-----------:|\n')
+            f.write(f'| Startup DB load (µs) | {fmt(_int(kdb_c,"startup_db_load_us"))} | {fmt(_int(mdb_c,"startup_db_load_us"))} | {fmt(_int(pg_c,"startup_db_load_us"))} |\n')
+            f.write(f'| Startup MC SET (µs) | {fmt(_int(kdb_c,"startup_mc_set_us"))} | {fmt(_int(mdb_c,"startup_mc_set_us"))} | {fmt(_int(pg_c,"startup_mc_set_us"))} |\n')
+            f.write(f'| Cache read p50 (µs) | {fmt(_int(kdb_c,"cache_read_p50_us"))} | {fmt(_int(mdb_c,"cache_read_p50_us"))} | {fmt(_int(pg_c,"cache_read_p50_us"))} |\n')
+            f.write(f'| Cache read p99 (µs) | {fmt(_int(kdb_c,"cache_read_p99_us"))} | {fmt(_int(mdb_c,"cache_read_p99_us"))} | {fmt(_int(pg_c,"cache_read_p99_us"))} |\n')
+            f.write(f'| DB write p50 (µs) | {fmt(_int(kdb_c,"db_write_p50_us"))} | {fmt(_int(mdb_c,"db_write_p50_us"))} | {fmt(_int(pg_c,"db_write_p50_us"))} |\n')
+            f.write(f'| DB write p95 (µs) | {fmt(_int(kdb_c,"db_write_p95_us"))} | {fmt(_int(mdb_c,"db_write_p95_us"))} | {fmt(_int(pg_c,"db_write_p95_us"))} |\n')
+            f.write(f'| DB write p99 (µs) | {fmt(_int(kdb_c,"db_write_p99_us"))} | {fmt(_int(mdb_c,"db_write_p99_us"))} | {fmt(_int(pg_c,"db_write_p99_us"))} |\n')
+            f.write(f'| MC SET p50 (µs) | {fmt(_int(kdb_c,"mc_set_p50_us"))} | {fmt(_int(mdb_c,"mc_set_p50_us"))} | {fmt(_int(pg_c,"mc_set_p50_us"))} |\n')
+            f.write(f'| MC SET p99 (µs) | {fmt(_int(kdb_c,"mc_set_p99_us"))} | {fmt(_int(mdb_c,"mc_set_p99_us"))} | {fmt(_int(pg_c,"mc_set_p99_us"))} |\n\n')
+
+            f.write('</details>\n\n')
 
             # ── Total Cost Comparison (usable decision table) ──────────────────────────
             f.write('#### Total Cost for Different Usage Patterns (1-hour window)\n\n')
@@ -2997,14 +3125,17 @@ jobs:
                     else:
                       strat_a = f'{total_ms:.0f}ms'
                 
-                # Strategy B cost (KurrentDB only, read + write)
+                # Strategy B cost (KurrentDB only)
+                # Reads are in-memory after startup (same ~1 µs as Strategy A).
+                # Write cost = subscription delivery lag (write-ack → view updated).
                 strat_b = 'N/A'
                 if backend == 'kdb' and hot_cold_data.get('kdb'):
                   hcv = hot_cold_data['kdb']
-                  read_p50 = hcv.get('hot_read_p50_us', 0)
-                  write_p99 = hcv.get('hot_write_p99_us', 0)
-                  if isinstance(read_p50, int) and isinstance(write_p99, int):
-                    total_us = (read_p50 * total_reads_1hr) + (write_p99 * total_writes_1hr)
+                  startup = hcv.get('hot_read_elapsed_us', 0)
+                  read_cost_us = 1  # in-memory projection, same as Strategy A
+                  sub_lag_p50 = hcv.get('hot_sub_lag_p50_us', 0)
+                  if isinstance(startup, int) and isinstance(sub_lag_p50, int):
+                    total_us = startup + (read_cost_us * total_reads_1hr) + (sub_lag_p50 * total_writes_1hr)
                     total_ms = total_us / 1000
                     total_sec = total_ms / 1000
                     if total_sec >= 1:
