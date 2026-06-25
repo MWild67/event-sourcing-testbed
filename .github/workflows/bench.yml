@@ -2794,71 +2794,152 @@ jobs:
               f.write('_Hot-stream contention artifact missing._\n\n')
 
             # ── Hot/Cold Cache Comparison ──────────────────────────────────────
-            f.write('### Hot/Cold Read Views — Cache Strategy Comparison (KurrentDB)\n\n')
-            f.write('> Two ways to serve "most-recent N events" without a dedicated cache tier:\n')
-            f.write('> **Strategy A** — application-side in-memory ring buffer, seeded with a single tail-read at startup.\n')
-            f.write('> **Strategy B** — KurrentDB native `$maxCount` stream metadata + catch-up subscriptions; no application cache at all.\n\n')
+            f.write('### Cache Strategy Comparison — Choose Your Caching Approach\n\n')
+            f.write('> **Goal:** Decide which database + strategy combination for your product.\n')
+            f.write('> **Strategies:** **A** = in-process ring buffer · **B** = KurrentDB native `$maxCount` (KDB only) · **C** = Memcached network cache\n')
+            f.write('> **Setup:** 50k seed events, 500-event hot window, localhost loopback\n\n')
 
-            # Strategy A — in-memory ring buffer (hot-cache bench)
-            f.write('#### Strategy A — Application Ring Buffer (one DB tail-read at startup, zero-latency reads thereafter)\n\n')
-            hc = hot_cache_data.get('kdb')
-            if isinstance(hc, dict):
-              f.write(f'> seed={hc.get("seed_events", "n/a")} events · cache_size={hc.get("cache_size_after_startup", "n/a")} · live_writes={hc.get("live_writes", "n/a")}\n\n')
-              f.write('| Phase | Metric | Value |\n')
-              f.write('|-------|--------|------:|\n')
-              f.write(f'| Startup | Load last N from DB (µs) | {hc.get("startup_load_us", "n/a")} |\n')
-              f.write(f'| Cache reads | p50 (ns) | {hc.get("cache_read_p50_ns", "n/a")} |\n')
-              f.write(f'| Cache reads | p99 (ns) | {hc.get("cache_read_p99_ns", "n/a")} |\n')
-              f.write(f'| Live DB write | p50 (µs) | {hc.get("db_write_p50_us", "n/a")} |\n')
-              f.write(f'| Live DB write | p95 (µs) | {hc.get("db_write_p95_us", "n/a")} |\n')
-              f.write(f'| Live DB write | p99 (µs) | {hc.get("db_write_p99_us", "n/a")} |\n')
-              f.write(f'| Cache push | p50 (ns) | {hc.get("cache_push_p50_ns", "n/a")} |\n')
-              f.write(f'| Cache push | p99 (ns) | {hc.get("cache_push_p99_ns", "n/a")} |\n\n')
-            else:
-              f.write('_Hot-cache artifact missing._\n\n')
+            # Unified comparison table: startup latency
+            f.write('#### Startup Latency (first read after cold start)\n\n')
+            f.write('| Backend | Strategy A (µs) | Strategy B (µs) | Strategy C (µs) |\n')
+            f.write('|---------|----------------:|----------------:|----------------:|\n')
+            
+            for backend, label in [('kdb', 'KurrentDB'), ('mdb', 'MongoDB'), ('pg', 'PostgreSQL')]:
+              strat_a_startup = 'n/a'
+              strat_b_startup = 'n/a'
+              strat_c_startup = 'n/a'
+              
+              # Strategy A
+              if backend == 'kdb' and hot_cache_data.get('kdb'):
+                strat_a_startup = hot_cache_data['kdb'].get('startup_load_us', 'n/a')
+              elif backend == 'mdb' and hot_cache_data.get('mdb'):
+                strat_a_startup = hot_cache_data['mdb'].get('startup_load_us', 'n/a')
+              elif backend == 'pg' and hot_cache_data.get('pg'):
+                strat_a_startup = hot_cache_data['pg'].get('startup_load_us', 'n/a')
+              
+              # Strategy B (KurrentDB only)
+              if backend == 'kdb' and hot_cold_data.get('kdb'):
+                strat_b_startup = hot_cold_data['kdb'].get('hot_read_elapsed_us', 'n/a')
+              
+              # Strategy C
+              if mc_data and backend in mc_data:
+                strat_c_startup = mc_data[backend].get('startup_db_load_us', 'n/a')
+                if isinstance(strat_c_startup, int):
+                  mc_set_us = mc_data[backend].get('startup_mc_set_us', 0)
+                  if isinstance(mc_set_us, int):
+                    strat_c_startup = strat_c_startup + mc_set_us
+              
+              f.write(f'| {label} | {strat_a_startup} | {strat_b_startup} | {strat_c_startup} |\n')
+            f.write('\n')
 
-            # Strategy B — KurrentDB onboard features
-            f.write('#### Strategy B — KurrentDB Native Features ($maxCount sliding window + catch-up subscriptions, no application cache)\n\n')
-            hcv = hot_cold_data.get('kdb')
-            if isinstance(hcv, dict):
-              seed   = hcv.get('seed_events', 'n/a')
-              hw     = hcv.get('hot_window', 'n/a')
-              cold_n = hcv.get('cold_stream_event_count', 'n/a')
-              hot_n  = hcv.get('hot_stream_event_count', 'n/a')
-              scavd  = cold_n - hot_n if isinstance(cold_n, int) and isinstance(hot_n, int) else 'n/a'
-              f.write(f'> seed={seed} events · hot_window={hw} (`$maxCount`) · live_writes={hcv.get("live_writes", "n/a")}\n\n')
-              f.write('**`$maxCount` stream metadata — server-enforced sliding window**\n\n')
-              f.write('| Stream | Events returned | Read time (µs) | µs / event |\n')
-              f.write('|--------|----------------:|---------------:|-----------:|\n')
-              f.write(f'| Cold (no limit) | {cold_n} | {hcv.get("cold_read_elapsed_us", "n/a")} | {hcv.get("cold_read_per_event_us", "n/a")} |\n')
-              f.write(f'| Hot (`$maxCount`) | {hot_n} | {hcv.get("hot_read_elapsed_us", "n/a")} | {hcv.get("hot_read_per_event_us", "n/a")} |\n')
-              f.write(f'| Scavenged by DB | {scavd} | — | — |\n\n')
-              f.write('**Catch-up subscriptions — cold start vs live-only hot start**\n\n')
-              f.write('| View | Metric | Value |\n')
-              f.write('|------|--------|------:|\n')
-              f.write(f'| Cold (from Start) | Replay {seed} events | {hcv.get("cold_sub_replay_ms", "n/a")} ms ({hcv.get("cold_sub_replay_rate_eps", "n/a")} ev/s) |\n')
-              f.write(f'| Hot  (from End)   | Lag p50 | {hcv.get("hot_sub_lag_p50_us", "n/a")} µs |\n')
-              f.write(f'| Hot  (from End)   | Lag p95 | {hcv.get("hot_sub_lag_p95_us", "n/a")} µs |\n')
-              f.write(f'| Hot  (from End)   | Lag p99 | {hcv.get("hot_sub_lag_p99_us", "n/a")} µs |\n')
-              f.write(f'| Hot  (from End)   | Lag max | {hcv.get("hot_sub_lag_max_us", "n/a")} µs |\n\n')
-            else:
-              f.write('_Hot/cold view artifact missing._\n\n')
+            # Unified comparison table: read latency p50
+            f.write('#### Read Latency (p50) — How fast is a typical read?\n\n')
+            f.write('| Backend | Strategy A (µs) | Strategy B (µs) | Strategy C (µs) |\n')
+            f.write('|---------|----------------:|----------------:|----------------:|\n')
+            
+            for backend, label in [('kdb', 'KurrentDB'), ('mdb', 'MongoDB'), ('pg', 'PostgreSQL')]:
+              strat_a_read = 'n/a'
+              strat_b_read = 'n/a'
+              strat_c_read = 'n/a'
+              
+              # Strategy A
+              if backend == 'kdb' and hot_cache_data.get('kdb'):
+                strat_a_read = hot_cache_data['kdb'].get('cache_read_p50_us', 'n/a')
+              elif backend == 'mdb' and hot_cache_data.get('mdb'):
+                strat_a_read = hot_cache_data['mdb'].get('cache_read_p50_us', 'n/a')
+              elif backend == 'pg' and hot_cache_data.get('pg'):
+                strat_a_read = hot_cache_data['pg'].get('cache_read_p50_us', 'n/a')
+              
+              # Strategy B (KurrentDB only)
+              if backend == 'kdb' and hot_cold_data.get('kdb'):
+                strat_b_read = hot_cold_data['kdb'].get('hot_read_p50_us', 'n/a')
+              
+              # Strategy C
+              if mc_data and backend in mc_data:
+                strat_c_read = mc_data[backend].get('cache_read_p50_us', 'n/a')
+              
+              f.write(f'| {label} | {strat_a_read} | {strat_b_read} | {strat_c_read} |\n')
+            f.write('\n')
 
-            # Strategy C — Memcached write-through (all three backends)
-            f.write('#### Strategy C — Memcached Write-Through (external network cache, all backends)\n\n')
-            f.write('> **Backends:** KurrentDB · MongoDB · PostgreSQL · **Conditions:** Memcached 1.6 Docker · localhost loopback · 500 events in window · JSON serialisation\n')
-            f.write('> **Measures:** cold-miss startup latency (DB load + MC SET), Memcached GET read latency (p50/p99), write-through overhead (DB write + MC SET p50/p99)\n\n')
-            if mc_data:
-              f.write('| Backend | Startup DB load (µs) | Startup MC SET (µs) | Read p50 (µs) | Read p99 (µs) | DB write p99 (µs) | MC SET p99 (µs) |\n')
-              f.write('|---------|--------------------:|--------------------:|-------------:|-------------:|-------------------:|----------------:|\n')
-              for key, label in [('kdb', 'KurrentDB'), ('mdb', 'MongoDB'), ('pg', 'PostgreSQL')]:
-                if key not in mc_data:
-                  continue
-                d = mc_data[key]
-                f.write(f'| {label} | {d.get("startup_db_load_us", "n/a")} | {d.get("startup_mc_set_us", "n/a")} | {d.get("cache_read_p50_us", "n/a")} | {d.get("cache_read_p99_us", "n/a")} | {d.get("db_write_p99_us", "n/a")} | {d.get("mc_set_p99_us", "n/a")} |\n')
-              f.write('\n')
-            else:
-              f.write('_Memcached bench artifacts missing._\n\n')
+            # Unified comparison table: read latency p99
+            f.write('#### Read Latency (p99) — Tail latency matters for consistency\n\n')
+            f.write('| Backend | Strategy A (µs) | Strategy B (µs) | Strategy C (µs) |\n')
+            f.write('|---------|----------------:|----------------:|----------------:|\n')
+            
+            for backend, label in [('kdb', 'KurrentDB'), ('mdb', 'MongoDB'), ('pg', 'PostgreSQL')]:
+              strat_a_read = 'n/a'
+              strat_b_read = 'n/a'
+              strat_c_read = 'n/a'
+              
+              # Strategy A
+              if backend == 'kdb' and hot_cache_data.get('kdb'):
+                strat_a_read = hot_cache_data['kdb'].get('cache_read_p99_us', 'n/a')
+              elif backend == 'mdb' and hot_cache_data.get('mdb'):
+                strat_a_read = hot_cache_data['mdb'].get('cache_read_p99_us', 'n/a')
+              elif backend == 'pg' and hot_cache_data.get('pg'):
+                strat_a_read = hot_cache_data['pg'].get('cache_read_p99_us', 'n/a')
+              
+              # Strategy B (KurrentDB only)
+              if backend == 'kdb' and hot_cold_data.get('kdb'):
+                strat_b_read = hot_cold_data['kdb'].get('hot_read_p99_us', 'n/a')
+              
+              # Strategy C
+              if mc_data and backend in mc_data:
+                strat_c_read = mc_data[backend].get('cache_read_p99_us', 'n/a')
+              
+              f.write(f'| {label} | {strat_a_read} | {strat_b_read} | {strat_c_read} |\n')
+            f.write('\n')
+
+            # Unified comparison table: write-through latency
+            f.write('#### Write-Through Latency (p99) — How fast is an update (DB write + cache update)?\n\n')
+            f.write('| Backend | Strategy A (µs) | Strategy B (µs) | Strategy C (µs) |\n')
+            f.write('|---------|----------------:|----------------:|----------------:|\n')
+            
+            for backend, label in [('kdb', 'KurrentDB'), ('mdb', 'MongoDB'), ('pg', 'PostgreSQL')]:
+              strat_a_write = 'n/a'
+              strat_b_write = 'n/a'
+              strat_c_write = 'n/a'
+              
+              # Strategy A (DB write + cache push)
+              if backend == 'kdb' and hot_cache_data.get('kdb'):
+                db_write = hot_cache_data['kdb'].get('db_write_p99_us')
+                cache_push = hot_cache_data['kdb'].get('cache_push_p99_us')
+                if isinstance(db_write, int) and isinstance(cache_push, int):
+                  strat_a_write = db_write + cache_push
+              elif backend == 'mdb' and hot_cache_data.get('mdb'):
+                db_write = hot_cache_data['mdb'].get('db_write_p99_us')
+                cache_push = hot_cache_data['mdb'].get('cache_push_p99_us')
+                if isinstance(db_write, int) and isinstance(cache_push, int):
+                  strat_a_write = db_write + cache_push
+              elif backend == 'pg' and hot_cache_data.get('pg'):
+                db_write = hot_cache_data['pg'].get('db_write_p99_us')
+                cache_push = hot_cache_data['pg'].get('cache_push_p99_us')
+                if isinstance(db_write, int) and isinstance(cache_push, int):
+                  strat_a_write = db_write + cache_push
+              
+              # Strategy B (KurrentDB write)
+              if backend == 'kdb' and hot_cold_data.get('kdb'):
+                strat_b_write = hot_cold_data['kdb'].get('hot_write_p99_us', 'n/a')
+              
+              # Strategy C (DB write + MC set)
+              if mc_data and backend in mc_data:
+                db_write = mc_data[backend].get('db_write_p99_us')
+                mc_set = mc_data[backend].get('mc_set_p99_us')
+                if isinstance(db_write, int) and isinstance(mc_set, int):
+                  strat_c_write = db_write + mc_set
+              
+              f.write(f'| {label} | {strat_a_write} | {strat_b_write} | {strat_c_write} |\n')
+            f.write('\n')
+
+            # Decision guidance
+            f.write('#### Decision Matrix\n\n')
+            f.write('| Scenario | Best Choice | Reason |\n')
+            f.write('|----------|-------------|--------|\n')
+            f.write('| Lowest read latency | Strategy A (in-process) | Sub-microsecond (same machine, RAM) |\n')
+            f.write('| No external dependencies | Strategy B (KurrentDB) | Uses native DB features, no cache tier |\n')
+            f.write('| Multi-backend consistency | Strategy C (Memcached) | Unified approach across all databases |\n')
+            f.write('| Budget-conscious | Strategy A or B | No network latency or external services |\n')
+            f.write('| High availability required | Strategy C (Memcached) | Can run redundant Memcached cluster |\n\n')
 
             f.write('### Write Latency Sensitivity to Payload Size & Batch Shape (Cross-Backend)\n\n')
             f.write('> **Backends:** KurrentDB · MongoDB · PostgreSQL\n')
