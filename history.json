@@ -1,7 +1,439 @@
 {
   "schema_version": 1,
-  "updated_at": "2026-06-25T09:08:41.785932Z",
+  "updated_at": "2026-06-25T11:46:29.805466Z",
   "entries": [
+    {
+      "schema_version": 1,
+      "generated_at": "2026-06-25T11:46:18.714506Z",
+      "repository": "MWild67/event-sourcing-testbed",
+      "run_id": "28167242583",
+      "run_attempt": "1",
+      "run_number": "145",
+      "sha": "c4b6eb39e1b4030057505321d1a98a9796518858",
+      "ref": "refs/heads/main",
+      "artifact_json_count": 35,
+      "sections": {
+        "throughput": {
+          "kdb-docker-peak": {
+            "total_events": 253039,
+            "actual_rate_eps": 8434.0,
+            "p50_us": 4223,
+            "p95_us": 8311,
+            "p99_us": 10447,
+            "p999_us": 36479
+          },
+          "kdb-docker-durable": {
+            "total_events": 252749,
+            "actual_rate_eps": 8424.8,
+            "p50_us": 4259,
+            "p95_us": 8287,
+            "p99_us": 10231,
+            "p999_us": 26367
+          },
+          "kdb-k8s-peak": {
+            "total_events": 218738,
+            "actual_rate_eps": 6810.3,
+            "p50_us": 5455,
+            "p95_us": 13543,
+            "p99_us": 17343,
+            "p999_us": 35007
+          },
+          "kdb-k8s-durable": {
+            "total_events": 218738,
+            "actual_rate_eps": 6762.6,
+            "p50_us": 5623,
+            "p95_us": 13999,
+            "p99_us": 18575,
+            "p999_us": 42495
+          },
+          "mdb-docker-peak": {
+            "total_events": 166566,
+            "actual_rate_eps": 5550.2,
+            "p50_us": 10303,
+            "p95_us": 14391,
+            "p99_us": 19967,
+            "p999_us": 29871
+          },
+          "mdb-docker-durable": {
+            "total_events": 46837,
+            "actual_rate_eps": 1559.8,
+            "p50_us": 37727,
+            "p95_us": 54911,
+            "p99_us": 73535,
+            "p999_us": 99903
+          },
+          "mdb-k8s-peak": {
+            "total_events": 75587,
+            "actual_rate_eps": 1329.1,
+            "p50_us": 19135,
+            "p95_us": 31807,
+            "p99_us": 56863,
+            "p999_us": 80447
+          },
+          "mdb-k8s-durable": {
+            "total_events": 17095,
+            "actual_rate_eps": 568.5,
+            "p50_us": 102975,
+            "p95_us": 159615,
+            "p99_us": 197119,
+            "p999_us": 251135
+          },
+          "pg-docker-peak": {
+            "total_events": 298354,
+            "actual_rate_eps": 9945.1,
+            "p50_us": 653,
+            "p95_us": 1743,
+            "p99_us": 4731,
+            "p999_us": 12487
+          },
+          "pg-docker-durable": {
+            "total_events": 296116,
+            "actual_rate_eps": 9870.3,
+            "p50_us": 902,
+            "p95_us": 3547,
+            "p99_us": 10639,
+            "p999_us": 30255
+          },
+          "pg-k8s-peak": {
+            "total_events": 90888,
+            "actual_rate_eps": 3028.1,
+            "p50_us": 19103,
+            "p95_us": 29295,
+            "p99_us": 35807,
+            "p999_us": 62591
+          },
+          "pg-k8s-durable": {
+            "total_events": 91240,
+            "actual_rate_eps": 3039.6,
+            "p50_us": 19215,
+            "p95_us": 29039,
+            "p99_us": 36927,
+            "p999_us": 76415
+          }
+        },
+        "rate_ramp": {
+          "kdb-peak": {
+            "backend": "kurrentdb",
+            "knee_detected": false,
+            "rates": "1000 3000 5000 8000 10000"
+          },
+          "kdb-durable": {
+            "backend": "kurrentdb",
+            "knee_detected": false,
+            "rates": "1000 3000 5000 8000 10000"
+          },
+          "mdb-peak": {
+            "backend": "mongodb",
+            "knee_detected": true,
+            "knee_rate_eps": 3000,
+            "knee_p99_us": 6807,
+            "knee_jump": 4.734,
+            "rates": "1000 3000 5000 8000 10000"
+          },
+          "mdb-durable": {
+            "backend": "mongodb",
+            "knee_detected": true,
+            "knee_rate_eps": 3000,
+            "knee_p99_us": 79743,
+            "knee_jump": 2.462,
+            "rates": "1000 3000 5000 8000 10000"
+          },
+          "pg-peak": {
+            "backend": "postgres",
+            "knee_detected": true,
+            "knee_rate_eps": 8000,
+            "knee_p99_us": 2183,
+            "knee_jump": 2.347,
+            "rates": "1000 3000 5000 8000 10000"
+          },
+          "pg-durable": {
+            "backend": "postgres",
+            "knee_detected": true,
+            "knee_rate_eps": 8000,
+            "knee_p99_us": 2251,
+            "knee_jump": 2.108,
+            "rates": "1000 3000 5000 8000 10000"
+          }
+        },
+        "replay_under_write": {
+          "kdb-peak": {
+            "backend": "kurrentdb",
+            "seed_events": 100000,
+            "baseline_p99_us": 11847,
+            "concurrent_p99_us": 8399,
+            "regression_factor": 0.71
+          },
+          "kdb-durable": {
+            "backend": "kurrentdb",
+            "seed_events": 100000,
+            "baseline_p99_us": 11191,
+            "concurrent_p99_us": 8167,
+            "regression_factor": 0.73
+          },
+          "mdb-peak": {
+            "backend": "mongodb",
+            "seed_events": 100000,
+            "baseline_p99_us": 20767,
+            "concurrent_p99_us": 23183,
+            "regression_factor": 1.12
+          },
+          "mdb-durable": {
+            "backend": "mongodb",
+            "seed_events": 100000,
+            "baseline_p99_us": 73151,
+            "concurrent_p99_us": 75327,
+            "regression_factor": 1.03
+          },
+          "pg-peak": {
+            "backend": "postgres",
+            "seed_events": 100000,
+            "baseline_p99_us": 4419,
+            "concurrent_p99_us": 3115,
+            "regression_factor": 0.7
+          },
+          "pg-durable": {
+            "backend": "postgres",
+            "seed_events": 100000,
+            "baseline_p99_us": 15775,
+            "concurrent_p99_us": 13223,
+            "regression_factor": 0.84
+          }
+        },
+        "hot_stream_contention": {
+          "kdb": {
+            "backend": "kurrentdb",
+            "baseline_total_events": 71332,
+            "baseline_rate_eps": 5925.4,
+            "baseline_p99_us": 17743,
+            "contention_total_events": 2268,
+            "contention_rate_eps": 120.6,
+            "contention_p99_us": 425727,
+            "tail_latency_factor": 23.99,
+            "hot_events": 6642,
+            "cold_events": 341,
+            "conflict_count": 59041,
+            "retry_count": 66217,
+            "retry_success_count": 1391,
+            "retry_exhausted_count": 4715,
+            "failed_writes": 4715
+          },
+          "mdb": {
+            "backend": "mongodb",
+            "baseline_total_events": 23138,
+            "baseline_rate_eps": 1919.7,
+            "baseline_p99_us": 87679,
+            "contention_total_events": 1440,
+            "contention_rate_eps": 78.8,
+            "contention_p99_us": 504319,
+            "tail_latency_factor": 5.75,
+            "hot_events": 4193,
+            "cold_events": 234,
+            "conflict_count": 37621,
+            "retry_count": 42385,
+            "retry_success_count": 930,
+            "retry_exhausted_count": 2987,
+            "failed_writes": 2987
+          },
+          "pg": {
+            "backend": "postgres",
+            "baseline_total_events": 71918,
+            "baseline_rate_eps": 5993.0,
+            "baseline_p99_us": 2461,
+            "contention_total_events": 14769,
+            "contention_rate_eps": 818.1,
+            "contention_p99_us": 209791,
+            "tail_latency_factor": 85.25,
+            "hot_events": 20960,
+            "cold_events": 1036,
+            "conflict_count": 129922,
+            "retry_count": 180347,
+            "retry_success_count": 10872,
+            "retry_exhausted_count": 7227,
+            "failed_writes": 7227
+          }
+        },
+        "payload_batch_sensitivity": {
+          "matrix": {
+            "ranking_changed": true,
+            "baseline_ranking": [
+              "postgres",
+              "mongodb",
+              "kurrentdb"
+            ],
+            "shapes": [
+              {
+                "payload_bytes": 256,
+                "batch_size": 1,
+                "ranking": [
+                  "postgres",
+                  "mongodb",
+                  "kurrentdb"
+                ],
+                "results": [
+                  {
+                    "backend": "postgres",
+                    "actual_rate_eps": 4998.8,
+                    "p99_us": 1165
+                  },
+                  {
+                    "backend": "mongodb",
+                    "actual_rate_eps": 4901.5,
+                    "p99_us": 16799
+                  },
+                  {
+                    "backend": "kurrentdb",
+                    "actual_rate_eps": 4847.6,
+                    "p99_us": 15607
+                  }
+                ]
+              },
+              {
+                "payload_bytes": 256,
+                "batch_size": 8,
+                "ranking": [
+                  "mongodb",
+                  "postgres",
+                  "kurrentdb"
+                ],
+                "results": [
+                  {
+                    "backend": "mongodb",
+                    "actual_rate_eps": 4999.5,
+                    "p99_us": 1701
+                  },
+                  {
+                    "backend": "postgres",
+                    "actual_rate_eps": 4999.3,
+                    "p99_us": 928
+                  },
+                  {
+                    "backend": "kurrentdb",
+                    "actual_rate_eps": 4983.2,
+                    "p99_us": 11847
+                  }
+                ]
+              },
+              {
+                "payload_bytes": 1024,
+                "batch_size": 1,
+                "ranking": [
+                  "postgres",
+                  "kurrentdb",
+                  "mongodb"
+                ],
+                "results": [
+                  {
+                    "backend": "postgres",
+                    "actual_rate_eps": 4999.2,
+                    "p99_us": 1324
+                  },
+                  {
+                    "backend": "kurrentdb",
+                    "actual_rate_eps": 4983.0,
+                    "p99_us": 5659
+                  },
+                  {
+                    "backend": "mongodb",
+                    "actual_rate_eps": 4443.0,
+                    "p99_us": 24927
+                  }
+                ]
+              },
+              {
+                "payload_bytes": 1024,
+                "batch_size": 8,
+                "ranking": [
+                  "mongodb",
+                  "postgres",
+                  "kurrentdb"
+                ],
+                "results": [
+                  {
+                    "backend": "mongodb",
+                    "actual_rate_eps": 4999.7,
+                    "p99_us": 4455
+                  },
+                  {
+                    "backend": "postgres",
+                    "actual_rate_eps": 4999.2,
+                    "p99_us": 1285
+                  },
+                  {
+                    "backend": "kurrentdb",
+                    "actual_rate_eps": 4983.0,
+                    "p99_us": 3653
+                  }
+                ]
+              },
+              {
+                "payload_bytes": 4096,
+                "batch_size": 1,
+                "ranking": [
+                  "kurrentdb",
+                  "postgres",
+                  "mongodb"
+                ],
+                "results": [
+                  {
+                    "backend": "kurrentdb",
+                    "actual_rate_eps": 4997.2,
+                    "p99_us": 5843
+                  },
+                  {
+                    "backend": "postgres",
+                    "actual_rate_eps": 4996.4,
+                    "p99_us": 3203
+                  },
+                  {
+                    "backend": "mongodb",
+                    "actual_rate_eps": 2597.1,
+                    "p99_us": 40831
+                  }
+                ]
+              },
+              {
+                "payload_bytes": 4096,
+                "batch_size": 8,
+                "ranking": [
+                  "kurrentdb",
+                  "postgres",
+                  "mongodb"
+                ],
+                "results": [
+                  {
+                    "backend": "kurrentdb",
+                    "actual_rate_eps": 4999.5,
+                    "p99_us": 4355
+                  },
+                  {
+                    "backend": "postgres",
+                    "actual_rate_eps": 4999.5,
+                    "p99_us": 2515
+                  },
+                  {
+                    "backend": "mongodb",
+                    "actual_rate_eps": 4401.7,
+                    "p99_us": 126463
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        "failover_impact": {
+          "kdb": {
+            "backend": "kurrentdb",
+            "pause_window_ms": 0,
+            "error_spike_count": 0,
+            "write_error_count": 0,
+            "recovery_time_ms": 0,
+            "baseline_p99_us": 49183,
+            "impact_p99_us": 48127,
+            "tail_latency_factor": 0.98
+          }
+        }
+      }
+    },
     {
       "schema_version": 1,
       "generated_at": "2026-06-25T09:08:29.266554Z",
