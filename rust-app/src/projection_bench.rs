@@ -100,8 +100,8 @@ pub struct ProjectionBenchResult {
     pub lag_p95_us: u64,
     pub lag_p99_us: u64,
     pub lag_max_us: u64,
-    pub view_read_p50_ns: u64,
-    pub view_read_p99_ns: u64,
+    pub view_read_p50_us: u64,
+    pub view_read_p99_us: u64,
 }
 
 // ── Shared materialised view ──────────────────────────────────────────────────
@@ -294,8 +294,8 @@ pub async fn run_kurrentdb(
         lag_p95_us: lag_hist.value_at_quantile(0.95),
         lag_p99_us: lag_hist.value_at_quantile(0.99),
         lag_max_us: lag_hist.max(),
-        view_read_p50_ns: view_hist.value_at_quantile(0.5),
-        view_read_p99_ns: view_hist.value_at_quantile(0.99),
+        view_read_p50_us: view_hist.value_at_quantile(0.5) / 1000,
+        view_read_p99_us: view_hist.value_at_quantile(0.99) / 1000,
     })
 }
 
@@ -480,8 +480,8 @@ pub async fn run_mongo(
         lag_p95_us: lag_hist.value_at_quantile(0.95),
         lag_p99_us: lag_hist.value_at_quantile(0.99),
         lag_max_us: lag_hist.max(),
-        view_read_p50_ns: view_hist.value_at_quantile(0.5),
-        view_read_p99_ns: view_hist.value_at_quantile(0.99),
+        view_read_p50_us: view_hist.value_at_quantile(0.5) / 1000,
+        view_read_p99_us: view_hist.value_at_quantile(0.99) / 1000,
     })
 }
 
@@ -655,8 +655,8 @@ pub async fn run_postgres(
         lag_p95_us: lag_hist.value_at_quantile(0.95),
         lag_p99_us: lag_hist.value_at_quantile(0.99),
         lag_max_us: lag_hist.max(),
-        view_read_p50_ns: view_hist.value_at_quantile(0.5),
-        view_read_p99_ns: view_hist.value_at_quantile(0.99),
+        view_read_p50_us: view_hist.value_at_quantile(0.5) / 1000,
+        view_read_p99_us: view_hist.value_at_quantile(0.99) / 1000,
     })
 }
 
@@ -693,8 +693,8 @@ impl ProjectionBenchResult {
         println!();
         println!("  VIEW READ  — 1 000 × read materialised view, zero DB queries");
         println!("  ──────────────────────────────────────────────────────────");
-        println!("  p50            : {} ns", self.view_read_p50_ns);
-        println!("  p99            : {} ns", self.view_read_p99_ns);
+        println!("  p50            : {} µs", self.view_read_p50_us);
+        println!("  p99            : {} µs", self.view_read_p99_us);
         println!("══════════════════════════════════════════════════════════════");
         println!();
     }
@@ -709,8 +709,8 @@ impl ProjectionBenchResult {
             "lag_p95_us": self.lag_p95_us,
             "lag_p99_us": self.lag_p99_us,
             "lag_max_us": self.lag_max_us,
-            "view_read_p50_ns": self.view_read_p50_ns,
-            "view_read_p99_ns": self.view_read_p99_ns,
+            "view_read_p50_us": self.view_read_p50_us,
+            "view_read_p99_us": self.view_read_p99_us,
         });
         println!("{v}");
     }

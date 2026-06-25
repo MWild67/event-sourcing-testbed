@@ -52,14 +52,14 @@ run_backend() {
     --json "$@" 2>/dev/null)
   echo "$out"
 
-  local cold_ms lag_p99 view_p99_ns
+  local cold_ms lag_p99 view_p99_us
   cold_ms=$(echo "$out"    | python3 -c "import sys,json; d=json.load(sys.stdin); print(int(d['cold_start_ms']))")
   lag_p99=$(echo "$out"    | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['lag_p99_us'])")
-  view_p99_ns=$(echo "$out" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['view_read_p99_ns'])")
+  view_p99_us=$(echo "$out" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['view_read_p99_us'])")
 
   check "$name cold-start ms" "$cold_ms"    5000
   check "$name lag p99 µs"    "$lag_p99"   100000
-  check "$name view-read p99 ns" "$view_p99_ns" 1000000
+  check "$name view-read p99 µs" "$view_p99_us" 1000
 }
 
 run_backend "KurrentDB" "kurrentdb-projection-bench" \

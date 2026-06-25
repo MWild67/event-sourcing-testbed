@@ -55,33 +55,33 @@ parse_json_field() {
 check_thresholds() {
     local backend="$1" json="$2"
 
-    local startup_us cache_p99_ns db_p99_us
+    local startup_us cache_p99_us db_p99_us
     startup_us=$(parse_json_field "$json" "startup_load_us")
-    cache_p99_ns=$(parse_json_field "$json" "cache_read_p99_ns")
+    cache_p99_us=$(parse_json_field "$json" "cache_read_p99_us")
     db_p99_us=$(parse_json_field "$json" "db_write_p99_us")
 
-    # Convert to comparable units
-    local startup_ms cache_p99_us db_p99_ms
+    # Convert to display units
+    local startup_ms cache_p99_display db_p99_ms
     startup_ms=$(echo "$startup_us" | awk '{printf "%.1f", $1/1000}')
-    cache_p99_us=$(echo "$cache_p99_ns" | awk '{printf "%.1f", $1/1000}')
+    cache_p99_display=$(echo "$cache_p99_us" | awk '{printf "%.1f", $1}')
     db_p99_ms=$(echo "$db_p99_us" | awk '{printf "%.1f", $1/1000}')
 
     echo
     echo "  ── $backend thresholds ──"
     echo "  Startup load   : ${startup_ms} ms  (limit ${STARTUP_LIMIT_MS} ms)"
-    echo "  Cache-read p99 : ${cache_p99_us} µs  (limit ${CACHE_P99_LIMIT_US} µs)"
+    echo "  Cache-read p99 : ${cache_p99_display} µs  (limit ${CACHE_P99_LIMIT_US} µs)"
     echo "  DB-write p99   : ${db_p99_ms} ms  (limit ${DB_WRITE_P99_LIMIT_MS} ms)"
 
-    # Integer comparisons (µs / ns)
+    # Integer comparisons (all in µs)
     local startup_limit_us=$(( STARTUP_LIMIT_MS * 1000 ))
-    local cache_limit_ns=$(( CACHE_P99_LIMIT_US * 1000 ))
+    local cache_limit_us=$(( CACHE_P99_LIMIT_US ))
     local db_limit_us=$(( DB_WRITE_P99_LIMIT_MS * 1000 ))
 
     [[ "$startup_us" -le "$startup_limit_us" ]] \
         || fail "$backend startup load ${startup_ms} ms exceeds ${STARTUP_LIMIT_MS} ms limit"
 
-    [[ "$cache_p99_ns" -le "$cache_limit_ns" ]] \
-        || fail "$backend cache-read p99 ${cache_p99_us} µs exceeds ${CACHE_P99_LIMIT_US} µs limit"
+    [[ "$cache_p99_us" -le "$cache_limit_us" ]] \
+        || fail "$backend cache-read p99 ${cache_p99_display} µs exceeds ${CACHE_P99_LIMIT_US} µs limit"
 
     [[ "$db_p99_us" -le "$db_limit_us" ]] \
         || fail "$backend DB-write p99 ${db_p99_ms} ms exceeds ${DB_WRITE_P99_LIMIT_MS} ms limit"

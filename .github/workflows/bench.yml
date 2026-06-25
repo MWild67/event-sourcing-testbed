@@ -2799,178 +2799,38 @@ jobs:
             f.write('> **Strategies:** **A** = in-process ring buffer · **B** = KurrentDB native `$maxCount` (KDB only) · **C** = Memcached network cache\n')
             f.write('> **Setup:** 50k seed events, 500-event hot window, localhost loopback\n\n')
 
-            # Unified comparison table: startup latency
-            f.write('#### Startup Latency (first read after cold start)\n\n')
-            f.write('| Backend | Strategy A (µs) | Strategy B (µs) | Strategy C (µs) |\n')
-            f.write('|---------|----------------:|----------------:|----------------:|\n')
-            
-            for backend, label in [('kdb', 'KurrentDB'), ('mdb', 'MongoDB'), ('pg', 'PostgreSQL')]:
-              strat_a_startup = 'n/a'
-              strat_b_startup = 'n/a'
-              strat_c_startup = 'n/a'
-              
-              # Strategy A
-              if backend == 'kdb' and hot_cache_data.get('kdb'):
-                strat_a_startup = hot_cache_data['kdb'].get('startup_load_us', 'n/a')
-              elif backend == 'mdb' and hot_cache_data.get('mdb'):
-                strat_a_startup = hot_cache_data['mdb'].get('startup_load_us', 'n/a')
-              elif backend == 'pg' and hot_cache_data.get('pg'):
-                strat_a_startup = hot_cache_data['pg'].get('startup_load_us', 'n/a')
-              
-              # Strategy B (KurrentDB only)
-              if backend == 'kdb' and hot_cold_data.get('kdb'):
-                strat_b_startup = hot_cold_data['kdb'].get('hot_read_elapsed_us', 'n/a')
-              
-              # Strategy C
-              if mc_data and backend in mc_data:
-                strat_c_startup = mc_data[backend].get('startup_db_load_us', 'n/a')
-                if isinstance(strat_c_startup, int):
-                  mc_set_us = mc_data[backend].get('startup_mc_set_us', 0)
-                  if isinstance(mc_set_us, int):
-                    strat_c_startup = strat_c_startup + mc_set_us
-              
-              f.write(f'| {label} | {strat_a_startup} | {strat_b_startup} | {strat_c_startup} |\n')
-            f.write('\n')
-
-            # Unified comparison table: read latency p50
-            f.write('#### Read Latency (p50) — How fast is a typical read?\n\n')
-            f.write('| Backend | Strategy A (µs) | Strategy B (µs) | Strategy C (µs) |\n')
-            f.write('|---------|----------------:|----------------:|----------------:|\n')
-            
-            for backend, label in [('kdb', 'KurrentDB'), ('mdb', 'MongoDB'), ('pg', 'PostgreSQL')]:
-              strat_a_read = 'n/a'
-              strat_b_read = 'n/a'
-              strat_c_read = 'n/a'
-              
-              # Strategy A
-              if backend == 'kdb' and hot_cache_data.get('kdb'):
-                strat_a_read = hot_cache_data['kdb'].get('cache_read_p50_us', 'n/a')
-              elif backend == 'mdb' and hot_cache_data.get('mdb'):
-                strat_a_read = hot_cache_data['mdb'].get('cache_read_p50_us', 'n/a')
-              elif backend == 'pg' and hot_cache_data.get('pg'):
-                strat_a_read = hot_cache_data['pg'].get('cache_read_p50_us', 'n/a')
-              
-              # Strategy B (KurrentDB only)
-              if backend == 'kdb' and hot_cold_data.get('kdb'):
-                strat_b_read = hot_cold_data['kdb'].get('hot_read_p50_us', 'n/a')
-              
-              # Strategy C
-              if mc_data and backend in mc_data:
-                strat_c_read = mc_data[backend].get('cache_read_p50_us', 'n/a')
-              
-              f.write(f'| {label} | {strat_a_read} | {strat_b_read} | {strat_c_read} |\n')
-            f.write('\n')
-
-            # Unified comparison table: read latency p99
-            f.write('#### Read Latency (p99) — Tail latency matters for consistency\n\n')
-            f.write('| Backend | Strategy A (µs) | Strategy B (µs) | Strategy C (µs) |\n')
-            f.write('|---------|----------------:|----------------:|----------------:|\n')
-            
-            for backend, label in [('kdb', 'KurrentDB'), ('mdb', 'MongoDB'), ('pg', 'PostgreSQL')]:
-              strat_a_read = 'n/a'
-              strat_b_read = 'n/a'
-              strat_c_read = 'n/a'
-              
-              # Strategy A
-              if backend == 'kdb' and hot_cache_data.get('kdb'):
-                strat_a_read = hot_cache_data['kdb'].get('cache_read_p99_us', 'n/a')
-              elif backend == 'mdb' and hot_cache_data.get('mdb'):
-                strat_a_read = hot_cache_data['mdb'].get('cache_read_p99_us', 'n/a')
-              elif backend == 'pg' and hot_cache_data.get('pg'):
-                strat_a_read = hot_cache_data['pg'].get('cache_read_p99_us', 'n/a')
-              
-              # Strategy B (KurrentDB only)
-              if backend == 'kdb' and hot_cold_data.get('kdb'):
-                strat_b_read = hot_cold_data['kdb'].get('hot_read_p99_us', 'n/a')
-              
-              # Strategy C
-              if mc_data and backend in mc_data:
-                strat_c_read = mc_data[backend].get('cache_read_p99_us', 'n/a')
-              
-              f.write(f'| {label} | {strat_a_read} | {strat_b_read} | {strat_c_read} |\n')
-            f.write('\n')
-
-            # Unified comparison table: write-through latency
-            f.write('#### Write-Through Latency (p99) — How fast is an update (DB write + cache update)?\n\n')
-            f.write('| Backend | Strategy A (µs) | Strategy B (µs) | Strategy C (µs) |\n')
-            f.write('|---------|----------------:|----------------:|----------------:|\n')
-            
-            for backend, label in [('kdb', 'KurrentDB'), ('mdb', 'MongoDB'), ('pg', 'PostgreSQL')]:
-              strat_a_write = 'n/a'
-              strat_b_write = 'n/a'
-              strat_c_write = 'n/a'
-              
-              # Strategy A (DB write + cache push)
-              if backend == 'kdb' and hot_cache_data.get('kdb'):
-                db_write = hot_cache_data['kdb'].get('db_write_p99_us')
-                cache_push = hot_cache_data['kdb'].get('cache_push_p99_us')
-                if isinstance(db_write, int) and isinstance(cache_push, int):
-                  strat_a_write = db_write + cache_push
-              elif backend == 'mdb' and hot_cache_data.get('mdb'):
-                db_write = hot_cache_data['mdb'].get('db_write_p99_us')
-                cache_push = hot_cache_data['mdb'].get('cache_push_p99_us')
-                if isinstance(db_write, int) and isinstance(cache_push, int):
-                  strat_a_write = db_write + cache_push
-              elif backend == 'pg' and hot_cache_data.get('pg'):
-                db_write = hot_cache_data['pg'].get('db_write_p99_us')
-                cache_push = hot_cache_data['pg'].get('cache_push_p99_us')
-                if isinstance(db_write, int) and isinstance(cache_push, int):
-                  strat_a_write = db_write + cache_push
-              
-              # Strategy B (KurrentDB write)
-              if backend == 'kdb' and hot_cold_data.get('kdb'):
-                strat_b_write = hot_cold_data['kdb'].get('hot_write_p99_us', 'n/a')
-              
-              # Strategy C (DB write + MC set)
-              if mc_data and backend in mc_data:
-                db_write = mc_data[backend].get('db_write_p99_us')
-                mc_set = mc_data[backend].get('mc_set_p99_us')
-                if isinstance(db_write, int) and isinstance(mc_set, int):
-                  strat_c_write = db_write + mc_set
-              
-              f.write(f'| {label} | {strat_a_write} | {strat_b_write} | {strat_c_write} |\n')
-            f.write('\n')
-
-            # Decision guidance
-            f.write('#### Decision Matrix\n\n')
-            f.write('| Scenario | Best Choice | Reason |\n')
-            f.write('|----------|-------------|--------|\n')
-            f.write('| Lowest read latency | Strategy A (in-process) | Sub-microsecond (same machine, RAM) |\n')
-            f.write('| No external dependencies | Strategy B (KurrentDB) | Uses native DB features, no cache tier |\n')
-            f.write('| Multi-backend consistency | Strategy C (Memcached) | Unified approach across all databases |\n')
-            f.write('| Budget-conscious | Strategy A or B | No network latency or external services |\n')
-            f.write('| High availability required | Strategy C (Memcached) | Can run redundant Memcached cluster |\n\n')
-
             # ── Total Cost Comparison (usable decision table) ──────────────────────────
-            f.write('#### Total Cost for Different Read Frequencies (1-hour window)\n\n')
-            f.write('> **Setup:** Startup cost (one-time) + per-read cost × number of reads in 1 hour\n')
-            f.write('> Lower = better. Shows which DB+strategy is cheapest for your usage pattern.\n\n')
+            f.write('#### Total Cost for Different Usage Patterns (1-hour window)\n\n')
+            f.write('> **Setup:** Startup cost (one-time) + per-read cost × reads + per-write cost × writes\n')
+            f.write('> Assumes 10% write rate (1 write per 10 reads). Adjust for your workload.\n')
+            f.write('> Lower = better. Choose the strategy with lowest cost for your usage pattern.\n\n')
 
-            # Calculate costs for different frequencies
+            # Calculate costs for different frequencies (with 10% write rate)
             read_frequencies = [
-              (10, '10 reads/sec'),
-              (100, '100 reads/sec'),
-              (1_000, '1,000 reads/sec'),
-              (10_000, '10,000 reads/sec'),
+              (10, '10 reads/sec (1 write/sec)'),
+              (100, '100 reads/sec (10 writes/sec)'),
+              (1_000, '1,000 reads/sec (100 writes/sec)'),
+              (10_000, '10,000 reads/sec (1,000 writes/sec)'),
             ]
             
             for freq, freq_label in read_frequencies:
               total_reads_1hr = freq * 3600
-              f.write(f'**Scenario: {freq_label} ({total_reads_1hr:,} reads in 1 hour)**\n\n')
+              total_writes_1hr = (freq // 10) * 3600  # 10% write rate
+              f.write(f'**Scenario: {freq_label} ({total_reads_1hr:,} reads + {total_writes_1hr:,} writes)**\n\n')
               f.write('| Backend | Strategy A | Strategy B | Strategy C |\n')
               f.write('|---------|-----------|-----------|----------|\n')
               
               for backend, label in [('kdb', 'KurrentDB'), ('mdb', 'MongoDB'), ('pg', 'PostgreSQL')]:
-                costs = []
-                
-                # Strategy A cost
+                # Strategy A cost (read + write-through)
                 strat_a = 'N/A'
                 if hot_cache_data.get(backend):
                   hc = hot_cache_data[backend]
                   startup = hc.get('startup_load_us', 0)
                   read_p50 = hc.get('cache_read_p50_us', 0)
-                  if isinstance(startup, int) and isinstance(read_p50, int):
-                    total_us = startup + (read_p50 * total_reads_1hr)
+                  write_p99 = hc.get('db_write_p99_us', 0)
+                  cache_push_p99 = hc.get('cache_push_p99_us', 0)
+                  if isinstance(startup, int) and isinstance(read_p50, int) and isinstance(write_p99, int) and isinstance(cache_push_p99, int):
+                    total_us = startup + (read_p50 * total_reads_1hr) + ((write_p99 + cache_push_p99) * total_writes_1hr)
                     total_ms = total_us / 1000
                     total_sec = total_ms / 1000
                     if total_sec >= 1:
@@ -2978,13 +2838,14 @@ jobs:
                     else:
                       strat_a = f'{total_ms:.0f}ms'
                 
-                # Strategy B cost (KurrentDB only)
+                # Strategy B cost (KurrentDB only, read + write)
                 strat_b = 'N/A'
                 if backend == 'kdb' and hot_cold_data.get('kdb'):
                   hcv = hot_cold_data['kdb']
                   read_p50 = hcv.get('hot_read_p50_us', 0)
-                  if isinstance(read_p50, int):
-                    total_us = read_p50 * total_reads_1hr
+                  write_p99 = hcv.get('hot_write_p99_us', 0)
+                  if isinstance(read_p50, int) and isinstance(write_p99, int):
+                    total_us = (read_p50 * total_reads_1hr) + (write_p99 * total_writes_1hr)
                     total_ms = total_us / 1000
                     total_sec = total_ms / 1000
                     if total_sec >= 1:
@@ -2992,15 +2853,17 @@ jobs:
                     else:
                       strat_b = f'{total_ms:.0f}ms'
                 
-                # Strategy C cost
+                # Strategy C cost (read + write-through)
                 strat_c = 'N/A'
                 if mc_data and backend in mc_data:
                   mc = mc_data[backend]
                   startup = mc.get('startup_db_load_us', 0)
                   startup_set = mc.get('startup_mc_set_us', 0)
                   read_p50 = mc.get('cache_read_p50_us', 0)
-                  if all(isinstance(v, int) for v in [startup, startup_set, read_p50]):
-                    total_us = (startup + startup_set) + (read_p50 * total_reads_1hr)
+                  write_p99 = mc.get('db_write_p99_us', 0)
+                  mc_set_p99 = mc.get('mc_set_p99_us', 0)
+                  if all(isinstance(v, int) for v in [startup, startup_set, read_p50, write_p99, mc_set_p99]):
+                    total_us = (startup + startup_set) + (read_p50 * total_reads_1hr) + ((write_p99 + mc_set_p99) * total_writes_1hr)
                     total_ms = total_us / 1000
                     total_sec = total_ms / 1000
                     if total_sec >= 1:
