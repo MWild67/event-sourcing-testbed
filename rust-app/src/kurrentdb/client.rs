@@ -117,6 +117,37 @@ impl KurrentClient {
         Ok(result.next_expected_version)
     }
 
+    /// Append a batch of events with an expected stream revision (optimistic concurrency control).
+    /// Fails with a concurrency error if the stream revision doesn't match.
+    #[allow(clippy::future_not_send)]
+    pub async fn append_batch_with_stream_revision<T: Serialize>(
+        &self,
+        stream_name: &str,
+        event_type: &str,
+        payloads: &[T],
+        expected_revision: u64,
+    ) -> Result<u64> {
+        let events: Result<Vec<EventData>> = payloads
+            .iter()
+            .map(|p| {
+                Ok(EventData::json(event_type, p)
+                    .with_context(|| "serialise failed")?
+                    .id(Uuid::new_v4()))
+            })
+            .collect();
+
+        let opts = AppendToStreamOptions::default()
+            .stream_state(StreamState::StreamRevision(expected_revision));
+
+        let result = self
+            .inner
+            .append_to_stream(stream_name, &opts, events?)
+            .await
+            .with_context(|| format!("batch append with revision to '{stream_name}' failed"))?;
+
+        Ok(result.next_expected_version)
+    }
+
     /// Read all events from `stream_name` in chronological order (position 0
     /// to end).  Returns a `Vec` of `(event_type, revision, payload)` tuples.
     ///

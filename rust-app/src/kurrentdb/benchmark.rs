@@ -2,6 +2,7 @@
 //! measures write latency using an HDR histogram.
 
 use std::{
+    collections::HashMap,
     sync::{
         atomic::{AtomicU64, Ordering},
         Arc,
@@ -31,6 +32,9 @@ pub struct BenchmarkConfig {
     pub batch_size: u64,
     /// Payload size in bytes for each synthetic benchmark event.
     pub payload_bytes: usize,
+    /// Enable event-store-mode features:
+    ///   - Optimistic concurrency control via expected stream version.
+    pub event_store_mode: bool,
 }
 
 impl Default for BenchmarkConfig {
@@ -43,6 +47,7 @@ impl Default for BenchmarkConfig {
             stream_prefix: "bench-stream".to_string(),
             batch_size: 1,
             payload_bytes: 256,
+            event_store_mode: false,
         }
     }
 }
@@ -126,6 +131,7 @@ pub async fn run(kurrent_url: &str, config: BenchmarkConfig) -> Result<Benchmark
         concurrency = config.concurrency,
         batch_size = config.batch_size,
         duration = config.duration_secs,
+        event_store_mode = config.event_store_mode,
         "starting KurrentDB stress-test benchmark"
     );
 
@@ -169,6 +175,20 @@ pub async fn run(kurrent_url: &str, config: BenchmarkConfig) -> Result<Benchmark
         .min(96);
     let in_flight = Arc::new(tokio::sync::Semaphore::new(max_in_flight));
 
+    // When event_store_mode is enabled, track per-stream version counters for
+    // optimistic concurrency control.
+    let stream_versions = if config.event_store_mode {
+        let mut versions = HashMap::new();
+        for i in 0..config.concurrency {
+            versions.insert(i, 0u64);
+        }
+        Arc::new(tokio::sync::Mutex::new(versions))
+    } else {
+        Arc::new(tokio::sync::Mutex::new(HashMap::new()))
+    };
+
+    let event_store_mode = config.event_store_mode;
+
     let duration = Duration::from_secs(config.duration_secs);
     let wall_start = Instant::now();
 
@@ -192,30 +212,54 @@ pub async fn run(kurrent_url: &str, config: BenchmarkConfig) -> Result<Benchmark
         let total_events = Arc::clone(&total_events);
         let hist = Arc::clone(&shared_hist);
         let stream_name = format!("{}-{}", config.stream_prefix, seq % config.concurrency);
+        let stream_idx = seq % config.concurrency;
         let events: Vec<BenchmarkEvent> = (0..batch_size)
             .map(|i| {
                 BenchmarkEvent::new_with_payload(
                     seq * batch_size + i,
-                    seq % config.concurrency,
+                    stream_idx,
                     config.payload_bytes,
                 )
             })
             .collect();
+        let stream_versions = Arc::clone(&stream_versions);
         seq += 1;
 
         tokio::spawn(async move {
             let _permit = permit; // returned to semaphore when this task exits
             let t0 = Instant::now();
-            match client
-                .append_batch(&stream_name, "BenchmarkEvent", &events)
-                .await
-            {
+            let result = if event_store_mode {
+                let versions = stream_versions.lock().await;
+                let expected_version = versions.get(&stream_idx).copied().unwrap_or(0);
+                drop(versions); // Release lock before I/O
+                
+                // Try to append with expected version for optimistic concurrency
+                match client
+                    .append_batch_with_stream_revision(&stream_name, "BenchmarkEvent", &events, expected_version)
+                    .await
+                {
+                    Ok(next_version) => {
+                        // Update the version counter on success
+                        let mut versions = stream_versions.lock().await;
+                        versions.insert(stream_idx, next_version);
+                        drop(versions);
+                        Ok(next_version)
+                    }
+                    Err(e) => Err(e),
+                }
+            } else {
+                client
+                    .append_batch(&stream_name, "BenchmarkEvent", &events)
+                    .await
+            };
+            
+            match result {
                 Ok(_) => {
                     let lat_us = u64::try_from(t0.elapsed().as_micros()).unwrap_or(u64::MAX);
                     let _ = hist.lock().await.record(lat_us);
                     total_events.fetch_add(batch_size, Ordering::Relaxed);
                 }
-                Err(e) => warn!(error = %e, "append_batch failed, skipping"),
+                Err(e) => warn!(error = %e, "append failed, skipping"),
             }
         });
     }

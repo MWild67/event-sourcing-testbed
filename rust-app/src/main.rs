@@ -273,6 +273,10 @@ struct BenchArgs {
     /// Emit results as a single JSON line (for CI parsing).
     #[arg(long)]
     json: bool,
+
+    /// Enable event-store-mode: optimistic concurrency control with per-stream version counters.
+    #[arg(long)]
+    event_store_mode: bool,
 }
 
 #[derive(Parser)]
@@ -514,6 +518,7 @@ async fn main() -> Result<()> {
                 stream_prefix: args.stream_prefix,
                 batch_size: args.batch_size,
                 payload_bytes: args.payload_bytes,
+                event_store_mode: args.event_store_mode,
             };
 
             let result = kurrentdb::benchmark::run(&cli.kurrentdb_url, config).await?;
