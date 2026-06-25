@@ -353,7 +353,7 @@ testbed kurrentdb-snapshot-demo
 bash tests/06-rehydration-replay-test.sh
 ```
 
-> **Note:** Tests 01, 03, and 04 require a Kubernetes cluster and are automatically
+> **Note:** Tests 01, 03, 04, and 14 require a Kubernetes cluster and are automatically
 > skipped in the devcontainer with a clear `SKIPPED` message.
 
 ### Option B — Kubernetes
@@ -454,14 +454,19 @@ event-sourcing-testbed/
     ├── 11-scale-bench.sh            # Scale benchmark
     ├── 12-rate-ramp-test.sh         # Rate-ramp knee-point test
     ├── 13-replay-under-write-test.sh# Replay-under-write regression test
-    └── 14-failover-impact-test.sh   # Short failover-impact under active load
+    ├── 14-failover-impact-test.sh   # Short failover-impact under load
+    ├── 14-failover-impact-local-repro.sh # Local k3d reproduction of test 14
+    ├── 15-hot-stream-contention-test.sh  # Hot-stream contention + retry behavior
+    ├── 16-payload-batch-sensitivity-test.sh # Payload size + batch-shape sweep
+    ├── 17-hot-cold-view-bench.sh    # KurrentDB onboard hot/cold view features
+    └── 18-memcached-bench.sh        # Memcached write-through hot-tail-cache
 ```
 
 ---
 
 ## Tests
 
-### Test Coverage Matrix (01-14)
+### Test Coverage Matrix (01-18)
 
 Run core tests with:
 
@@ -491,10 +496,14 @@ message. In K8s CI mode (`DIRECT=0`), full production SLAs apply.
 | 08 | Hot-tail-cache benchmark | PASS | optional/manual |
 | 09 | Projection/subscription-lag benchmark | PASS | optional/manual |
 | 10 | Search/index projection benchmark | PASS | optional/manual |
-| 11 | Scale benchmark | PASS | optional/manual |
+| 11 | Scale benchmark (one year of history) | PASS | optional/manual |
 | 12 | Rate ramp knee-point | PASS | PASS |
 | 13 | Replay-under-write | PASS | PASS |
 | 14 | Short failover-impact under load | SKIPPED (no K8s) | PASS |
+| 15 | Hot-stream contention | PASS | optional/manual |
+| 16 | Payload and batch-shape sensitivity | PASS | optional/manual |
+| 17 | KurrentDB hot/cold view benchmark | PASS | PASS (`kdb-hot-cold-view` CI job) |
+| 18 | Memcached write-through hot-tail-cache | PASS | optional/manual |
 
 ---
 
@@ -825,6 +834,245 @@ make test-failover-impact-local
 
 ---
 
+### Test 08 — Hot-Tail-Cache Benchmark
+
+Tests the "last N events immediately accessible" pattern with an in-memory ring buffer in front of each backend.
+
+**Phases per backend (KurrentDB, MongoDB, PostgreSQL):**
+
+1. **Seed** — write 50 000 events in batches of 100
+2. **Startup** — load the last 500 events into an in-memory ring buffer (measures startup latency)
+3. **Cache hit** — read from the ring buffer (should be sub-millisecond)
+4. **Cache miss** — bypass the ring buffer and read directly from the backend
+
+```bash
+# Devcontainer:
+make test-hot-cache
+
+# Or directly:
+bash tests/08-hot-cache-bench.sh
+```
+
+**Pass criteria:**
+
+- Startup load < 1 000 ms
+- Cache hit read latency < 1 ms
+- Cache miss read latency lower than a cold full-stream read
+
+---
+
+### Test 09 — Projection / Subscription-Lag Benchmark
+
+Validates the "500 most-recent orders immediately visible on the UI" pattern.
+
+**Phases:**
+
+1. **Cold-start rebuild** — projector replays historical events to populate the materialised view
+2. **Subscription lag** — write-ack → view-updated (p50 / p99)
+3. **View read** — materialised-view access latency (always sub-millisecond)
+
+```bash
+# Devcontainer:
+make test-projection
+
+# Or directly:
+bash tests/09-projection-bench.sh
+```
+
+**Pass criteria:**
+
+- Cold-start rebuild < 5 000 ms (10 000 events)
+- Subscription lag p99 < 100 ms
+- View read latency < 1 ms
+
+---
+
+### Test 10 — Search-Index Projection Benchmark
+
+Validates the "all events are searchable" requirement.
+
+A projector reads from each event-store backend and writes every event into a PostgreSQL
+full-text search table (`search_index`). The BFF queries that table — never the event store
+— for search results.
+
+```bash
+# Devcontainer:
+make test-search
+
+# Or directly:
+bash tests/10-search-bench.sh
+```
+
+**Metrics:**
+
+- Projection throughput (events/s indexed)
+- End-to-end write-to-searchable latency (p50 / p99)
+- FTS query latency across backends
+
+---
+
+### Test 11 — Scale Benchmark (One Year of History)
+
+Validates the "5 million events accessible (one year of history)" requirement.
+
+Default run uses 500 000 events (~35 s on PostgreSQL, manageable in the devcontainer).
+For the full 5 M run: `SCALE_EVENTS=5000000 bash tests/11-scale-bench.sh`.
+
+```bash
+# Devcontainer:
+make test-scale
+
+# Full 5M test:
+SCALE_EVENTS=5000000 bash tests/11-scale-bench.sh
+
+# Or directly:
+bash tests/11-scale-bench.sh
+```
+
+**Metrics:**
+
+- Overall write throughput
+- First-10% vs last-10% throughput (degradation under scale)
+- Tail read latency at scale (p95 / p99)
+
+---
+
+### Test 15 — Hot-Stream Contention
+
+Skews 95% of writes toward a tiny set of "hot" streams (default: 2) while keeping background
+distributed writes active on 128 "cold" streams. Exposes conflict / retry behavior and measures
+tail latency impact from per-stream contention.
+
+```bash
+# KurrentDB (default):
+make test-hot-stream-contention
+
+# Change backend or hot/cold shape:
+make test-hot-stream-contention BACKEND=postgres HOT_STREAMS=4 HOT_RATIO=0.80
+
+# All tunable parameters:
+make test-hot-stream-contention \
+  BACKEND=mongodb \
+  TARGET_RATE=6000 \
+  CONCURRENCY=96 \
+  HOT_STREAMS=2 \
+  COLD_STREAMS=128 \
+  HOT_RATIO=0.95 \
+  MAX_RETRIES=10
+```
+
+**Output JSON** includes:
+
+- `baseline_p99_us` — distributed write p99 with no hot streams
+- `contention_p99_us` — p99 during hot-stream skew
+- `contention_factor` — ratio of contention p99 to baseline p99
+- `conflict_count` — total optimistic-concurrency conflicts observed
+- `retry_count` — total retries across all tasks
+
+**Interpreting contention factor:**
+
+- `< 1.1` — negligible; backend handles hot streams without lock pressure
+- `1.1–2.0` — moderate; acceptable for most write-skewed workloads
+- `> 2.0` — high; consider stream partitioning or conflict-free data models
+
+---
+
+### Test 16 — Payload and Batch-Shape Sensitivity
+
+Sweeps payload size and batch size across all three backends and reports whether the throughput
+ranking is stable or shifts with workload shape.
+
+Default sweep:
+
+| Payload sizes | Batch sizes |
+|---|---|
+| 256 B, 1 024 B, 4 096 B | 1, 8 |
+
+```bash
+# All three backends with default sweep:
+make test-payload-batch-sensitivity
+
+# Custom sweep:
+make test-payload-batch-sensitivity \
+  BACKENDS="kurrentdb postgres" \
+  PAYLOAD_SIZES="512 2048 8192" \
+  BATCH_SIZES="1 4 16" \
+  TARGET_RATE=5000 \
+  DURATION_SECS=12
+```
+
+**Output** is a matrix table (backend × payload × batch) plus a summary indicating whether
+any backend overtakes another at a specific shape (`ranking_shift: true/false`).
+
+---
+
+### Test 17 — KurrentDB Hot/Cold View Benchmark
+
+Validates two KurrentDB-native hot/cold view mechanisms without an external cache.
+
+**Section A — `$maxCount` stream metadata:**
+
+- A "hot" stream is created with `$maxCount=500`; 20 000 events are written.
+- The server retains only the last 500 events in the hot stream (automatic truncation).
+- A parallel "cold" stream retains all 20 000 events.
+- Asserts: hot stream has ≤ 500 events; cold stream has 20 000.
+
+**Section B — Catch-up subscription (hot vs cold start):**
+
+- A cold start subscription reads from the beginning of the stream.
+- A hot start subscription reads from `StreamPosition::End` — only new events.
+- Measures subscription startup latency for both approaches.
+
+```bash
+# Devcontainer:
+make test-hot-cold-view
+
+# Or directly:
+bash tests/17-hot-cold-view-bench.sh --json
+```
+
+**Pass criteria:**
+
+- `$maxCount` hot stream event count ≤ `hot_window` (500)
+- Cold stream event count == `seed_events` (20 000)
+- Hot-start subscription latency significantly lower than cold-start (confirms KurrentDB skips history)
+
+> This test exercises KurrentDB-native features. MongoDB and PostgreSQL equivalents require
+> application-layer trimming and are not covered here.
+
+---
+
+### Test 18 — Memcached Write-Through Hot-Tail-Cache Benchmark
+
+Measures the impact of a Memcached write-through cache layer in front of each backend.
+Complements Test 08 (in-process ring buffer) with an external cache that survives process restarts.
+
+**Phases per backend:**
+
+1. **Seed** — write 50 000 events to the DB and populate the Memcached cache
+2. **Cache read** — read the last 500 events from Memcached (should be sub-millisecond)
+3. **DB read** — bypass the cache and read directly from the backend (baseline comparison)
+4. **Write-through** — append new events; verify cache is updated before returning
+
+```bash
+# Requires Memcached running on localhost:11211 (started automatically in the devcontainer):
+bash tests/18-memcached-bench.sh
+
+# Custom cache TTL or event count:
+SEED_EVENTS=100000 CACHE_TTL_SECS=300 bash tests/18-memcached-bench.sh
+```
+
+**Pass criteria:**
+
+- Memcached read latency < 1 ms (p99)
+- Write-through overhead < 10% vs non-cached write p99
+- Cache hit rate ≥ 99% for the hot tail window
+
+> **Note:** Memcached is included in the devcontainer `docker-compose.yml`. For K8s
+> deployment, add a Memcached pod and set `MEMCACHED_URL` before running the test.
+
+---
+
 The provisioned dashboard ([k8s/04-monitoring/06-grafana-dashboard.yaml](k8s/04-monitoring/06-grafana-dashboard.yaml))
 contains three row groups:
 
@@ -866,22 +1114,65 @@ open http://localhost:3000   # admin / admin
 testbed [OPTIONS] <COMMAND>
 
 Options:
-  --kurrentdb-url  KurrentDB gRPC URL   [env: KURRENTDB_URL]
-  --rabbitmq-url   AMQP URL             [env: RABBITMQ_URL]
-  --mongodb-url    MongoDB URL          [env: MONGODB_URL]
-  --postgres-url   PostgreSQL URL       [env: POSTGRES_URL]
+  --kurrentdb-url   KurrentDB gRPC URL    [env: KURRENTDB_URL]
+  --rabbitmq-url    AMQP URL              [env: RABBITMQ_URL]
+  --mongodb-url     MongoDB URL           [env: MONGODB_URL]
+  --postgres-url    PostgreSQL URL        [env: POSTGRES_URL]
+  --memcached-url   Memcached URL         [env: MEMCACHED_URL] (optional)
 
-Commands:
-  kurrentdb-bench         Run the KurrentDB write-latency stress test
-  mongo-bench             Run the MongoDB write-latency stress test
-  pg-bench                Run the PostgreSQL write-latency stress test
-  produce                 Continuously produce events to KurrentDB + RabbitMQ
-  ping                    Probe KurrentDB + RabbitMQ connectivity and exit
-  mongo-ping              Probe MongoDB connectivity and exit
-  pg-ping                 Probe PostgreSQL connectivity and exit
-  mongo-event-store-demo  Demonstrate 8 event-sourcing properties (MongoDB)
-  pg-event-store-demo          Demonstrate 8 event-sourcing properties (PostgreSQL)
-  kurrentdb-snapshot-demo      Write 1000 events with snapshots, then rehydrate
+Commands (organized by backend & purpose):
+
+  ─── Benchmarks: Write Latency ───
+  kurrentdb-bench                 KurrentDB write-latency stress test (HDR histogram)
+  mongo-bench                     MongoDB write-latency stress test
+  pg-bench                        PostgreSQL write-latency stress test
+
+  ─── Benchmarks: Hot-Tail-Cache ───
+  kurrentdb-hot-cache-bench       KurrentDB: in-memory cache of last 500 events
+  mongo-hot-cache-bench           MongoDB: in-memory cache of last 500 events
+  pg-hot-cache-bench              PostgreSQL: in-memory cache of last 500 events
+  kurrentdb-memcached             KurrentDB: Memcached write-through cache
+  mongo-memcached                 MongoDB: Memcached write-through cache
+  pg-memcached                    PostgreSQL: Memcached write-through cache
+
+  ─── Benchmarks: Projections ───
+  kurrentdb-projection-bench      KurrentDB: materialised-view lag (catch-up subscriptions)
+  mongo-projection-bench          MongoDB: materialised-view lag (change streams)
+  pg-projection-bench             PostgreSQL: materialised-view lag (polling)
+
+  ─── Benchmarks: Search ───
+  kurrentdb-search-bench          KurrentDB: events indexed into PostgreSQL FTS table
+  mongo-search-bench              MongoDB: events indexed into PostgreSQL FTS table
+  pg-search-bench                 PostgreSQL: events indexed into PostgreSQL FTS table
+
+  ─── Benchmarks: Scale & Contention ───
+  kurrentdb-scale-bench           KurrentDB: 500k event throughput + tail latency
+  mongo-scale-bench               MongoDB: 500k event throughput + tail latency
+  pg-scale-bench                  PostgreSQL: 500k event throughput + tail latency
+  kurrentdb-hot-stream-contention-bench   KurrentDB: hot-stream contention + retries
+  mongo-hot-stream-contention-bench       MongoDB: hot-stream contention
+  pg-hot-stream-contention-bench          PostgreSQL: hot-stream contention
+
+  ─── Benchmarks: KurrentDB-Native ───
+  kurrentdb-hot-cold-view-bench   KurrentDB: $maxCount sliding-window + subscription modes
+
+  ─── Event-Store Demos (8 properties) ───
+  mongo-event-store-demo          Demonstrate all 8 event-sourcing properties (MongoDB)
+  pg-event-store-demo             Demonstrate all 8 event-sourcing properties (PostgreSQL)
+
+  ─── Rehydration Demos ───
+  kurrentdb-rehydrate-demo        KurrentDB: write events → replay from beginning
+  kurrentdb-snapshot-demo         KurrentDB: write with snapshots → restore via snapshot + tail
+  mongo-rehydrate-demo            MongoDB: write events → replay from beginning
+  pg-rehydrate-demo               PostgreSQL: write events → replay from beginning
+
+  ─── Connectivity Probes ───
+  kurrentdb-ping                  Probe KurrentDB + RabbitMQ connectivity (exit 0 if healthy)
+  mongo-ping                      Probe MongoDB connectivity
+  pg-ping                         Probe PostgreSQL connectivity
+
+  ─── Event Producer ───
+  kurrentdb-produce               Continuously produce events to KurrentDB + RabbitMQ
 ```
 
 ### `kurrentdb-snapshot-demo` flags
