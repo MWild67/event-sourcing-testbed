@@ -31,6 +31,7 @@ name: Benchmarks
           - mdb-rehydrate
           - mdb-rate-ramp
           - mdb-replay-under-write
+          - mdb-hot-cache
           - mdb-hot-stream-contention
           - mdb-memcached
           - pg-docker
@@ -38,6 +39,7 @@ name: Benchmarks
           - pg-rehydrate
           - pg-rate-ramp
           - pg-replay-under-write
+          - pg-hot-cache
           - pg-hot-stream-contention
           - pg-memcached
           - monitoring-check
@@ -941,6 +943,101 @@ jobs:
         with:
           name: kdb-hot-cache-result
           path: kdb-hot-cache.json
+          if-no-files-found: warn
+
+  mdb-hot-cache:
+    name: "MongoDB: Hot-Tail Cache (In-Memory Ring Buffer)"
+    runs-on: ubuntu-22.04
+    if: github.event_name != 'workflow_dispatch' || inputs.job == '' || inputs.job == 'mdb-hot-cache'
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Start MongoDB
+        run: |
+          docker run -d --name mongodb -p 27017:27017 \
+            -e MONGO_INITDB_DATABASE=eventbench \
+            mongo:7
+          for i in $(seq 1 30); do \
+            docker exec mongodb mongosh --eval "db.adminCommand('ping')" 2>/dev/null && break || sleep 2; done
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            rust-app/target
+          key: bench-${{ runner.os }}-cargo-${{ hashFiles('rust-app/Cargo.lock') }}
+
+      - name: Build
+        run: cargo build --release --manifest-path rust-app/Cargo.toml
+
+      - name: Hot-tail cache benchmark
+        run: |
+          RESULT=$(rust-app/target/release/testbed \
+            --mongodb-url 'mongodb://localhost:27017/eventbench' \
+            mongo-hot-cache-bench \
+            --seed-events 50000 \
+            --cache-size  500 \
+            --live-writes 500 \
+            --json)
+          echo "$RESULT"
+          echo "$RESULT" > mdb-hot-cache.json
+
+      - name: Upload result
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: mdb-hot-cache-result
+          path: mdb-hot-cache.json
+          if-no-files-found: warn
+
+  pg-hot-cache:
+    name: "PostgreSQL: Hot-Tail Cache (In-Memory Ring Buffer)"
+    runs-on: ubuntu-22.04
+    if: github.event_name != 'workflow_dispatch' || inputs.job == '' || inputs.job == 'pg-hot-cache'
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Start PostgreSQL
+        run: |
+          docker run -d --name postgres -p 5432:5432 \
+            -e POSTGRES_DB=eventbench \
+            -e POSTGRES_HOST_AUTH_METHOD=trust \
+            postgres:16
+          for i in $(seq 1 30); do \
+            docker exec postgres psql -U postgres -d eventbench -c "SELECT 1" 2>/dev/null && break || sleep 2; done
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            rust-app/target
+          key: bench-${{ runner.os }}-cargo-${{ hashFiles('rust-app/Cargo.lock') }}
+
+      - name: Build
+        run: cargo build --release --manifest-path rust-app/Cargo.toml
+
+      - name: Hot-tail cache benchmark
+        run: |
+          RESULT=$(rust-app/target/release/testbed \
+            --postgres-url 'postgresql://postgres@localhost/eventbench' \
+            pg-hot-cache-bench \
+            --seed-events 50000 \
+            --cache-size  500 \
+            --live-writes 500 \
+            --json)
+          echo "$RESULT"
+          echo "$RESULT" > pg-hot-cache.json
+
+      - name: Upload result
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: pg-hot-cache-result
+          path: pg-hot-cache.json
           if-no-files-found: warn
 
   # ── KurrentDB: Memcached write-through hot-tail-cache ────────────────────
@@ -2318,6 +2415,7 @@ jobs:
       - mdb-rehydrate
       - mdb-rate-ramp
       - mdb-replay-under-write
+      - mdb-hot-cache
       - mdb-hot-stream-contention
       - mdb-memcached
       - pg-docker
@@ -2325,6 +2423,7 @@ jobs:
       - pg-rehydrate
       - pg-rate-ramp
       - pg-replay-under-write
+      - pg-hot-cache
       - pg-hot-stream-contention
       - pg-memcached
       - monitoring-check
@@ -2510,6 +2609,8 @@ jobs:
 
           hot_cache_data = load_jsons('bench-artifacts', {
             'kdb': 'kdb-hot-cache.json',
+            'mdb': 'mdb-hot-cache.json',
+            'pg': 'pg-hot-cache.json',
           })
 
           mc_data = load_jsons('bench-artifacts', {
