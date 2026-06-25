@@ -209,11 +209,6 @@ impl HotCacheResult {
 
 // ─── Shared histogram helpers ─────────────────────────────────────────────────
 
-fn ns_histogram() -> Histogram<u64> {
-    // Range: 1 ns … 30 s expressed in nanoseconds; 3 significant figures.
-    Histogram::<u64>::new_with_bounds(1, 30_000_000_000, 3).unwrap()
-}
-
 fn us_histogram() -> Histogram<u64> {
     // Range: 1 µs … 30 s expressed in microseconds; 3 significant figures.
     Histogram::<u64>::new_with_bounds(1, 30_000_000, 3).unwrap()
