@@ -88,7 +88,12 @@ pub struct HotColdViewResult {
     pub cold_read_per_event_us: f64,
     pub hot_read_per_event_us: f64,
 
-    // Section B — catch-up subscription
+    // Section B — Synchronous hot stream reads (comparable to Strategy A/C)
+    pub hot_read_p50_us: u64,
+    pub hot_read_p99_us: u64,
+    pub hot_write_p99_us: u64,
+
+    // Section C — catch-up subscription
     pub cold_sub_replay_ms: f64,
     pub cold_sub_replay_rate_eps: f64,
     pub hot_sub_lag_p50_us: u64,
@@ -160,7 +165,7 @@ impl HotColdViewResult {
     #[allow(clippy::cast_precision_loss)]
     pub fn print_json(&self) {
         println!(
-            r#"{{"seed_events":{seed},"hot_window":{hw},"cold_stream_event_count":{cec},"hot_stream_event_count":{hec},"cold_read_elapsed_us":{cru},"hot_read_elapsed_us":{hru},"cold_read_per_event_us":{crpe:.3},"hot_read_per_event_us":{hrpe:.3},"cold_sub_replay_ms":{csrm:.1},"cold_sub_replay_rate_eps":{csrr:.0},"hot_sub_lag_p50_us":{p50},"hot_sub_lag_p95_us":{p95},"hot_sub_lag_p99_us":{p99},"hot_sub_lag_max_us":{pmax},"live_writes":{lw}}}"#,
+            r#"{{"seed_events":{seed},"hot_window":{hw},"cold_stream_event_count":{cec},"hot_stream_event_count":{hec},"cold_read_elapsed_us":{cru},"hot_read_elapsed_us":{hru},"cold_read_per_event_us":{crpe:.3},"hot_read_per_event_us":{hrpe:.3},"hot_read_p50_us":{hrp50},"hot_read_p99_us":{hrp99},"hot_write_p99_us":{hwp99},"cold_sub_replay_ms":{csrm:.1},"cold_sub_replay_rate_eps":{csrr:.0},"hot_sub_lag_p50_us":{p50},"hot_sub_lag_p95_us":{p95},"hot_sub_lag_p99_us":{p99},"hot_sub_lag_max_us":{pmax},"live_writes":{lw}}}"#,
             seed = self.seed_events,
             hw = self.hot_window,
             cec = self.cold_stream_event_count,
@@ -169,6 +174,9 @@ impl HotColdViewResult {
             hru = self.hot_read_elapsed_us,
             crpe = self.cold_read_per_event_us,
             hrpe = self.hot_read_per_event_us,
+            hrp50 = self.hot_read_p50_us,
+            hrp99 = self.hot_read_p99_us,
+            hwp99 = self.hot_write_p99_us,
             csrm = self.cold_sub_replay_ms,
             csrr = self.cold_sub_replay_rate_eps,
             p50 = self.hot_sub_lag_p50_us,
@@ -284,7 +292,44 @@ pub async fn run(kurrentdb_url: &str, cfg: HotColdViewConfig) -> Result<HotColdV
     };
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // SECTION B — Subscriptions: cold-start replay vs live-only hot start
+    // SECTION B — Synchronous hot stream reads (comparable to Strategy A/C)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    // Measure repeated synchronous reads of the hot stream (like Strategy A cache hits)
+    let mut read_hist = Histogram::<u64>::new_with_bounds(1, 10_000_000, 3)?;
+    for _ in 0..1_000 {
+        let t0 = Instant::now();
+        let _ = client.read_stream_events(hot_stream.as_str()).await?;
+        read_hist
+            .record(t0.elapsed().as_micros().max(1) as u64)
+            .ok();
+    }
+
+    let hot_read_p50_us = read_hist.value_at_quantile(0.50);
+    let hot_read_p99_us = read_hist.value_at_quantile(0.99);
+
+    // Measure write-through: write + read back
+    let mut write_hist = Histogram::<u64>::new_with_bounds(1, 10_000_000, 3)?;
+    for i in 0..100 {
+        let event = BenchmarkEvent::new(cfg.seed_events as u64 + i, 0);
+        let t0 = Instant::now();
+        client
+            .append_batch(hot_stream.as_str(), "HotWriteEvent", &[event])
+            .await?;
+        let _ = client.read_stream_events(hot_stream.as_str()).await?;
+        write_hist
+            .record(t0.elapsed().as_micros().max(1) as u64)
+            .ok();
+    }
+    let hot_write_p99_us = write_hist.value_at_quantile(0.99);
+
+    info!(
+        "hot-cold-view §B: hot_read_p50={} µs, hot_read_p99={} µs, hot_write_p99={} µs",
+        hot_read_p50_us, hot_read_p99_us, hot_write_p99_us
+    );
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // SECTION C — Subscriptions: cold-start replay vs live-only hot start
     // ═══════════════════════════════════════════════════════════════════════════
 
     // ── B1: Cold catch-up subscription ────────────────────────────────────────
@@ -446,6 +491,9 @@ pub async fn run(kurrentdb_url: &str, cfg: HotColdViewConfig) -> Result<HotColdV
         hot_read_elapsed_us,
         cold_read_per_event_us,
         hot_read_per_event_us,
+        hot_read_p50_us,
+        hot_read_p99_us,
+        hot_write_p99_us,
         cold_sub_replay_ms,
         cold_sub_replay_rate_eps,
         hot_sub_lag_p50_us: lag_hist.value_at_quantile(0.5),

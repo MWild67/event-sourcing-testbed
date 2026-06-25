@@ -109,20 +109,20 @@ pub struct HotCacheResult {
     pub startup_load_us: u64,
     /// Events present in the cache immediately after startup (no extra query).
     pub cache_size_after_startup: usize,
-    /// In-memory cache snapshot p50 latency (ns).
-    pub cache_read_p50_ns: u64,
-    /// In-memory cache snapshot p99 latency (ns).
-    pub cache_read_p99_ns: u64,
+    /// In-memory cache snapshot p50 latency (µs).
+    pub cache_read_p50_us: u64,
+    /// In-memory cache snapshot p99 latency (µs).
+    pub cache_read_p99_us: u64,
     /// DB write p50 latency during the live-write phase (µs).
     pub db_write_p50_us: u64,
     /// DB write p95 latency during the live-write phase (µs).
     pub db_write_p95_us: u64,
     /// DB write p99 latency during the live-write phase (µs).
     pub db_write_p99_us: u64,
-    /// Cache push p50 latency during the live-write phase (ns).
-    pub cache_push_p50_ns: u64,
-    /// Cache push p99 latency during the live-write phase (ns).
-    pub cache_push_p99_ns: u64,
+    /// Cache push p50 latency during the live-write phase (µs).
+    pub cache_push_p50_us: u64,
+    /// Cache push p99 latency during the live-write phase (µs).
+    pub cache_push_p99_us: u64,
     /// Number of events written during the live-write phase.
     pub live_writes: u64,
 }
@@ -152,8 +152,8 @@ impl HotCacheResult {
             self.cache_size_after_startup
         );
         println!("  ──────────────────────────────────────────────────────────");
-        println!("  p50            : {} ns", self.cache_read_p50_ns);
-        println!("  p99            : {} ns", self.cache_read_p99_ns);
+        println!("  p50            : {} µs", self.cache_read_p50_us);
+        println!("  p99            : {} µs", self.cache_read_p99_us);
         println!();
         println!(
             "  LIVE WRITE PHASE  ({} events, 1 at a time)",
@@ -175,8 +175,8 @@ impl HotCacheResult {
             self.db_write_p99_us,
             self.db_write_p99_us as f64 / 1_000.0
         );
-        println!("  Cache push p50 : {} ns", self.cache_push_p50_ns);
-        println!("  Cache push p99 : {} ns", self.cache_push_p99_ns);
+        println!("  Cache push p50 : {} µs", self.cache_push_p50_us);
+        println!("  Cache push p99 : {} µs", self.cache_push_p99_us);
         println!("══════════════════════════════════════════════════════════════");
         println!(
             "  (seed: {} events written in {:.0} ms to establish the stream)",
@@ -188,20 +188,20 @@ impl HotCacheResult {
     #[allow(clippy::cast_precision_loss)]
     pub fn print_json(&self) {
         println!(
-            r#"{{"backend":"{backend}","seed_events":{seed},"seed_elapsed_ms":{seed_ms:.1},"seed_rate_eps":{seed_rate:.0},"startup_load_us":{startup},"cache_size_after_startup":{cache_sz},"cache_read_p50_ns":{cr_p50},"cache_read_p99_ns":{cr_p99},"db_write_p50_us":{dw_p50},"db_write_p95_us":{dw_p95},"db_write_p99_us":{dw_p99},"cache_push_p50_ns":{cp_p50},"cache_push_p99_ns":{cp_p99},"live_writes":{lw}}}"#,
+            r#"{{"backend":"{backend}","seed_events":{seed},"seed_elapsed_ms":{seed_ms:.1},"seed_rate_eps":{seed_rate:.0},"startup_load_us":{startup},"cache_size_after_startup":{cache_sz},"cache_read_p50_us":{cr_p50},"cache_read_p99_us":{cr_p99},"db_write_p50_us":{dw_p50},"db_write_p95_us":{dw_p95},"db_write_p99_us":{dw_p99},"cache_push_p50_us":{cp_p50},"cache_push_p99_us":{cp_p99},"live_writes":{lw}}}"#,
             backend = self.backend,
             seed = self.seed_events,
             seed_ms = self.seed_elapsed_ms,
             seed_rate = self.seed_rate_eps,
             startup = self.startup_load_us,
             cache_sz = self.cache_size_after_startup,
-            cr_p50 = self.cache_read_p50_ns,
-            cr_p99 = self.cache_read_p99_ns,
+            cr_p50 = self.cache_read_p50_us,
+            cr_p99 = self.cache_read_p99_us,
             dw_p50 = self.db_write_p50_us,
             dw_p95 = self.db_write_p95_us,
             dw_p99 = self.db_write_p99_us,
-            cp_p50 = self.cache_push_p50_ns,
-            cp_p99 = self.cache_push_p99_ns,
+            cp_p50 = self.cache_push_p50_us,
+            cp_p99 = self.cache_push_p99_us,
             lw = self.live_writes,
         );
     }
@@ -307,13 +307,13 @@ pub async fn run_kurrentdb(kurrentdb_url: &str, config: HotCacheConfig) -> Resul
     );
 
     // ── Phase 3: Cache reads ──────────────────────────────────────────────────
-    let mut cache_read_hist = ns_histogram();
+    let mut cache_read_hist = us_histogram();
     for _ in 0..1_000u64 {
         let t0 = Instant::now();
         let snap = cache.snapshot();
-        let elapsed_ns = t0.elapsed().as_nanos() as u64;
+        let elapsed_us = t0.elapsed().as_micros() as u64;
         let _ = snap; // prevent optimisation
-        cache_read_hist.record(elapsed_ns.max(1)).unwrap_or(());
+        cache_read_hist.record(elapsed_us.max(1)).unwrap_or(());
     }
     info!("hot-cache/kurrentdb: cache read phase done");
 
@@ -323,7 +323,7 @@ pub async fn run_kurrentdb(kurrentdb_url: &str, config: HotCacheConfig) -> Resul
         "hot-cache/kurrentdb: live-write phase …"
     );
     let mut db_write_hist = us_histogram();
-    let mut cache_push_hist = ns_histogram();
+    let mut cache_push_hist = us_histogram();
     let base_seq = config.seed_events;
 
     for i in 0..config.live_writes {
@@ -338,8 +338,8 @@ pub async fn run_kurrentdb(kurrentdb_url: &str, config: HotCacheConfig) -> Resul
         // Cache push
         let t_push = Instant::now();
         cache.push(event);
-        let push_ns = t_push.elapsed().as_nanos() as u64;
-        cache_push_hist.record(push_ns.max(1)).unwrap_or(());
+        let push_us = t_push.elapsed().as_micros() as u64;
+        cache_push_hist.record(push_us.max(1)).unwrap_or(());
     }
     info!("hot-cache/kurrentdb: live-write phase done");
 
@@ -350,13 +350,13 @@ pub async fn run_kurrentdb(kurrentdb_url: &str, config: HotCacheConfig) -> Resul
         seed_rate_eps,
         startup_load_us,
         cache_size_after_startup,
-        cache_read_p50_ns: cache_read_hist.value_at_quantile(0.50),
-        cache_read_p99_ns: cache_read_hist.value_at_quantile(0.99),
+        cache_read_p50_us: cache_read_hist.value_at_quantile(0.50),
+        cache_read_p99_us: cache_read_hist.value_at_quantile(0.99),
         db_write_p50_us: db_write_hist.value_at_quantile(0.50),
         db_write_p95_us: db_write_hist.value_at_quantile(0.95),
         db_write_p99_us: db_write_hist.value_at_quantile(0.99),
-        cache_push_p50_ns: cache_push_hist.value_at_quantile(0.50),
-        cache_push_p99_ns: cache_push_hist.value_at_quantile(0.99),
+        cache_push_p50_us: cache_push_hist.value_at_quantile(0.50),
+        cache_push_p99_us: cache_push_hist.value_at_quantile(0.99),
         live_writes: config.live_writes,
     })
 }
@@ -461,13 +461,13 @@ pub async fn run_mongo(mongo_url: &str, config: HotCacheConfig) -> Result<HotCac
     );
 
     // ── Phase 3: Cache reads ──────────────────────────────────────────────────
-    let mut cache_read_hist = ns_histogram();
+    let mut cache_read_hist = us_histogram();
     for _ in 0..1_000u64 {
         let t0 = Instant::now();
         let snap = cache.snapshot();
-        let elapsed_ns = t0.elapsed().as_nanos() as u64;
+        let elapsed_us = t0.elapsed().as_micros() as u64;
         let _ = snap;
-        cache_read_hist.record(elapsed_ns.max(1)).unwrap_or(());
+        cache_read_hist.record(elapsed_us.max(1)).unwrap_or(());
     }
     info!("hot-cache/mongodb: cache read phase done");
 
@@ -477,7 +477,7 @@ pub async fn run_mongo(mongo_url: &str, config: HotCacheConfig) -> Result<HotCac
         "hot-cache/mongodb: live-write phase …"
     );
     let mut db_write_hist = us_histogram();
-    let mut cache_push_hist = ns_histogram();
+    let mut cache_push_hist = us_histogram();
     let base_seq = config.seed_events;
 
     for i in 0..config.live_writes {
@@ -493,8 +493,8 @@ pub async fn run_mongo(mongo_url: &str, config: HotCacheConfig) -> Result<HotCac
 
         let t_push = Instant::now();
         cache.push(event);
-        let push_ns = t_push.elapsed().as_nanos() as u64;
-        cache_push_hist.record(push_ns.max(1)).unwrap_or(());
+        let push_us = t_push.elapsed().as_micros() as u64;
+        cache_push_hist.record(push_us.max(1)).unwrap_or(());
     }
     info!("hot-cache/mongodb: live-write phase done");
 
@@ -505,13 +505,13 @@ pub async fn run_mongo(mongo_url: &str, config: HotCacheConfig) -> Result<HotCac
         seed_rate_eps,
         startup_load_us,
         cache_size_after_startup,
-        cache_read_p50_ns: cache_read_hist.value_at_quantile(0.50),
-        cache_read_p99_ns: cache_read_hist.value_at_quantile(0.99),
+        cache_read_p50_us: cache_read_hist.value_at_quantile(0.50),
+        cache_read_p99_us: cache_read_hist.value_at_quantile(0.99),
         db_write_p50_us: db_write_hist.value_at_quantile(0.50),
         db_write_p95_us: db_write_hist.value_at_quantile(0.95),
         db_write_p99_us: db_write_hist.value_at_quantile(0.99),
-        cache_push_p50_ns: cache_push_hist.value_at_quantile(0.50),
-        cache_push_p99_ns: cache_push_hist.value_at_quantile(0.99),
+        cache_push_p50_us: cache_push_hist.value_at_quantile(0.50),
+        cache_push_p99_us: cache_push_hist.value_at_quantile(0.99),
         live_writes: config.live_writes,
     })
 }
@@ -618,13 +618,13 @@ pub async fn run_postgres(pg_url: &str, config: HotCacheConfig) -> Result<HotCac
     );
 
     // ── Phase 3: Cache reads ──────────────────────────────────────────────────
-    let mut cache_read_hist = ns_histogram();
+    let mut cache_read_hist = us_histogram();
     for _ in 0..1_000u64 {
         let t0 = Instant::now();
         let snap = cache.snapshot();
-        let elapsed_ns = t0.elapsed().as_nanos() as u64;
+        let elapsed_us = t0.elapsed().as_micros() as u64;
         let _ = snap;
-        cache_read_hist.record(elapsed_ns.max(1)).unwrap_or(());
+        cache_read_hist.record(elapsed_us.max(1)).unwrap_or(());
     }
     info!("hot-cache/postgres: cache read phase done");
 
@@ -634,7 +634,7 @@ pub async fn run_postgres(pg_url: &str, config: HotCacheConfig) -> Result<HotCac
         "hot-cache/postgres: live-write phase …"
     );
     let mut db_write_hist = us_histogram();
-    let mut cache_push_hist = ns_histogram();
+    let mut cache_push_hist = us_histogram();
     let base_seq = config.seed_events;
 
     for i in 0..config.live_writes {
@@ -656,8 +656,8 @@ pub async fn run_postgres(pg_url: &str, config: HotCacheConfig) -> Result<HotCac
 
         let t_push = Instant::now();
         cache.push(event);
-        let push_ns = t_push.elapsed().as_nanos() as u64;
-        cache_push_hist.record(push_ns.max(1)).unwrap_or(());
+        let push_us = t_push.elapsed().as_micros() as u64;
+        cache_push_hist.record(push_us.max(1)).unwrap_or(());
     }
     info!("hot-cache/postgres: live-write phase done");
 
@@ -668,13 +668,13 @@ pub async fn run_postgres(pg_url: &str, config: HotCacheConfig) -> Result<HotCac
         seed_rate_eps,
         startup_load_us,
         cache_size_after_startup,
-        cache_read_p50_ns: cache_read_hist.value_at_quantile(0.50),
-        cache_read_p99_ns: cache_read_hist.value_at_quantile(0.99),
+        cache_read_p50_us: cache_read_hist.value_at_quantile(0.50),
+        cache_read_p99_us: cache_read_hist.value_at_quantile(0.99),
         db_write_p50_us: db_write_hist.value_at_quantile(0.50),
         db_write_p95_us: db_write_hist.value_at_quantile(0.95),
         db_write_p99_us: db_write_hist.value_at_quantile(0.99),
-        cache_push_p50_ns: cache_push_hist.value_at_quantile(0.50),
-        cache_push_p99_ns: cache_push_hist.value_at_quantile(0.99),
+        cache_push_p50_us: cache_push_hist.value_at_quantile(0.50),
+        cache_push_p99_us: cache_push_hist.value_at_quantile(0.99),
         live_writes: config.live_writes,
     })
 }
