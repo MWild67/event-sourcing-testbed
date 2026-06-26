@@ -51,7 +51,7 @@ env:
 # One run per ref; cancel in-progress on new push.
 concurrency:
   group: bench-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
 
