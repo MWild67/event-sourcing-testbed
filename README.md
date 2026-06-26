@@ -24,7 +24,7 @@ The Rust benchmark harness drives each backend at 10 000 events/second and measu
 
 | Component       | Version              | Role                                  |
 |-----------------|----------------------|---------------------------------------|
-| KurrentDB       | 23.10.0              | Append-only event log (gRPC/HTTP)     |
+| KurrentDB       | latest               | Append-only event log (gRPC/HTTP)     |
 | MongoDB         | 7.x                  | Document store — event-store mode     |
 | PostgreSQL      | 16                   | Relational DB — versioned CTE inserts |
 | RabbitMQ        | 3.13 + management    | Event fan-out (topic exchange)        |
@@ -39,15 +39,16 @@ The Rust benchmark harness drives each backend at 10 000 events/second and measu
 
 ### What is being measured
 
-The CI workflow runs **18 benchmark/reliability scenarios** on every push to `main`,
-then a report job aggregates all artifacts.
+The CI workflow runs **30 benchmark/validation scenarios** on every push to `main`,
+then `report` and `publish-history` aggregate and persist artifacts.
 Each scenario runs one backend in isolation on a fresh ubuntu-22.04 runner (2 vCPU, 7 GB RAM).
 
 | Backend | Scenarios |
 |---|---|
-| KurrentDB | `kdb-memdb`, `kdb-docker`, `kdb-k8s`, `kdb-rehydrate`, `kdb-failover`, `kdb-failover-impact`, `kdb-rate-ramp`, `kdb-replay-under-write`, `kdb-hot-cold-view` |
-| MongoDB | `mdb-docker`, `mdb-k8s`, `mdb-rehydrate`, `mdb-rate-ramp`, `mdb-replay-under-write` |
-| PostgreSQL | `pg-docker`, `pg-k8s`, `pg-rehydrate`, `pg-rate-ramp`, `pg-replay-under-write` |
+| KurrentDB | `kdb-memdb`, `kdb-docker`, `kdb-k8s`, `kdb-rehydrate`, `kdb-failover`, `kdb-failover-impact`, `kdb-rate-ramp`, `kdb-replay-under-write`, `kdb-hot-stream-contention`, `kdb-hot-cold-view`, `kdb-hot-cache`, `kdb-memcached` |
+| MongoDB | `mdb-docker`, `mdb-k8s`, `mdb-rehydrate`, `mdb-rate-ramp`, `mdb-replay-under-write`, `mdb-hot-stream-contention`, `mdb-hot-cache`, `mdb-memcached` |
+| PostgreSQL | `pg-docker`, `pg-k8s`, `pg-rehydrate`, `pg-rate-ramp`, `pg-replay-under-write`, `pg-hot-stream-contention`, `pg-hot-cache`, `pg-memcached` |
+| Cross-backend / infra | `payload-batch-sensitivity`, `monitoring-check` |
 
 `kdb-memdb` is the theoretical maximum — KurrentDB with no persistence at all.  
 The Docker and k8s throughput jobs (`*-docker`, `*-k8s`) run the real database server
@@ -177,8 +178,8 @@ summary table.
 
 ## CI Pipeline
 
-The GitHub Actions workflow (`.github/workflows/bench.yml`) runs **20 jobs** on pushes
-to `main`: 18 benchmark/reliability jobs + 1 report job + 1 publish-history job.
+The GitHub Actions workflow (`.github/workflows/bench.yml`) runs **32 jobs** on pushes
+to `main`: 30 benchmark/validation jobs + 1 report job + 1 publish-history job.
 All use `ubuntu-22.04` (2 vCPU, 7 GB RAM) runners.
 
 ### Running a single job manually
@@ -192,12 +193,12 @@ re-run only one job instead of waiting for the full suite (~1–2 hours):
 4. Pick a job from the **"Job to run"** dropdown — leave it blank to run everything.
 5. Click **"Run workflow"** to trigger the run.
 
-When a specific job is selected, all other benchmark jobs and the `report` job are
-skipped automatically, so only the chosen job consumes runner minutes.
+When a specific job is selected, all other benchmark jobs (plus dependent aggregate
+jobs) are skipped automatically, so only the chosen job consumes runner minutes.
 
 | Selector value | What runs |
 |---|---|
-| *(blank)* | All 18 benchmark jobs + report |
+| *(blank)* | Full workflow (all benchmark/validation jobs + `report` + `publish-history`) |
 | `kdb-failover-impact` | Only the failover-under-load test |
 | `kdb-rate-ramp` | Only the rate-ramp knee-point test |
 | `kdb-replay-under-write` | Only the replay regression test |
@@ -219,18 +220,30 @@ skipped automatically, so only the chosen job consumes runner minutes.
 | `kdb-failover-impact` | KurrentDB | Reliability under load | Pause/error/recovery/tail impact |
 | `kdb-rate-ramp` | KurrentDB | Scenario | Peak+durable ramp in one job |
 | `kdb-replay-under-write` | KurrentDB | Scenario | Peak+durable regression in one job |
+| `kdb-hot-stream-contention` | KurrentDB | Scenario | Hot-stream skew, conflict/retry behavior |
 | `kdb-hot-cold-view` | KurrentDB | Scenario | Onboard `$maxCount` and cold-vs-hot subscription behavior |
+| `kdb-hot-cache` | KurrentDB | Scenario | In-process hot-tail cache benchmark |
+| `kdb-memcached` | KurrentDB | Scenario | External Memcached write-through cache benchmark |
 | `mdb-docker` | MongoDB | Throughput | Docker tmpfs, peak+durable modes |
 | `mdb-k8s` | MongoDB | Throughput | k3d single-node, peak+durable modes |
 | `mdb-rehydrate` | MongoDB | Rehydration | Replay metrics |
 | `mdb-rate-ramp` | MongoDB | Scenario | Peak+durable ramp in one job |
 | `mdb-replay-under-write` | MongoDB | Scenario | Peak+durable regression in one job |
+| `mdb-hot-stream-contention` | MongoDB | Scenario | Hot-stream skew, conflict/retry behavior |
+| `mdb-hot-cache` | MongoDB | Scenario | In-process hot-tail cache benchmark |
+| `mdb-memcached` | MongoDB | Scenario | External Memcached write-through cache benchmark |
 | `pg-docker` | PostgreSQL | Throughput | Docker tmpfs, peak+durable modes |
 | `pg-k8s` | PostgreSQL | Throughput | k3d single-node, peak+durable modes |
 | `pg-rehydrate` | PostgreSQL | Rehydration | Replay metrics |
 | `pg-rate-ramp` | PostgreSQL | Scenario | Peak+durable ramp in one job |
 | `pg-replay-under-write` | PostgreSQL | Scenario | Peak+durable regression in one job |
+| `pg-hot-stream-contention` | PostgreSQL | Scenario | Hot-stream skew, conflict/retry behavior |
+| `pg-hot-cache` | PostgreSQL | Scenario | In-process hot-tail cache benchmark |
+| `pg-memcached` | PostgreSQL | Scenario | External Memcached write-through cache benchmark |
+| `payload-batch-sensitivity` | All | Scenario | Payload-size and batch-shape ranking stability |
+| `monitoring-check` | Infra | Validation | Prometheus/Grafana target and metric verification |
 | `report` | — | Aggregation | Downloads artifacts and writes combined summary |
+| `publish-history` | — | Aggregation | Publishes benchmark history JSON for trend tracking |
 
 ### How the Docker benchmark jobs work
 
