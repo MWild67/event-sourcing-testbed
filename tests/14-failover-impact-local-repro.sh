@@ -100,8 +100,8 @@ k3d cluster create "$CLUSTER_NAME" --servers 1 --agents 3 --wait --timeout 180s
 kubectl get nodes -o wide
 
 step "Pre-pull and import KurrentDB image"
-"$CONTAINER_RUNTIME" pull kurrentplatform/kurrentdb:latest
-k3d image import kurrentplatform/kurrentdb:latest -c "$CLUSTER_NAME"
+"$CONTAINER_RUNTIME" pull kurrentplatform/kurrentdb:26.1
+k3d image import kurrentplatform/kurrentdb:26.1 -c "$CLUSTER_NAME"
 
 step "Deploy namespace and services"
 kubectl apply -f k8s/00-namespace.yaml
@@ -137,7 +137,7 @@ spec:
       terminationGracePeriodSeconds: 10
       containers:
         - name: kurrentdb
-          image: kurrentplatform/kurrentdb:latest
+          image: kurrentplatform/kurrentdb:26.1
           imagePullPolicy: IfNotPresent
           ports:
             - {name: http, containerPort: 2113}

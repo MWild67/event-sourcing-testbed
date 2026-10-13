@@ -2,7 +2,7 @@ services:
 
   # ── KurrentDB node 0 ────────────────────────────────────────────────────
   kurrentdb-0:
-    image: kurrentplatform/kurrentdb:latest
+    image: kurrentplatform/kurrentdb:26.1
     container_name: kurrentdb-0
     environment:
       KURRENTDB_CLUSTER_SIZE: 3
@@ -34,7 +34,7 @@ services:
 
   # ── KurrentDB node 1 ────────────────────────────────────────────────────
   kurrentdb-1:
-    image: kurrentplatform/kurrentdb:latest
+    image: kurrentplatform/kurrentdb:26.1
     container_name: kurrentdb-1
     environment:
       KURRENTDB_CLUSTER_SIZE: 3
@@ -66,7 +66,7 @@ services:
 
   # ── KurrentDB node 2 ────────────────────────────────────────────────────
   kurrentdb-2:
-    image: kurrentplatform/kurrentdb:latest
+    image: kurrentplatform/kurrentdb:26.1
     container_name: kurrentdb-2
     environment:
       KURRENTDB_CLUSTER_SIZE: 3
@@ -101,7 +101,7 @@ services:
   # Podman VM bridge network (adds ~100 ms per write on Windows).
   # Production/Kubernetes benchmarks use the 3-node cluster (real hardware).
   kurrentdb-bench:
-    image: kurrentplatform/kurrentdb:latest
+    image: kurrentplatform/kurrentdb:26.1
     container_name: kurrentdb-bench
     environment:
       KURRENTDB_CLUSTER_SIZE: 1

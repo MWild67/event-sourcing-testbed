@@ -3,7 +3,7 @@ services:
   # ── Single-node KurrentDB (in-memory, no TLS) ────────────────────────────
   # Shared by benchmarks, the snapshot demo, and rehydration tests.
   kurrentdb-bench:
-    image: kurrentplatform/kurrentdb:latest
+    image: kurrentplatform/kurrentdb:26.1
     container_name: kurrentdb-bench
     environment:
       KURRENTDB_CLUSTER_SIZE: 1

@@ -145,7 +145,7 @@ jobs:
             -e KURRENTDB_ENABLE_ATOM_PUB_OVER_HTTP=true \
             -e KURRENTDB_DB=/data/db \
             -e KURRENTDB_LOG=/data/log \
-            kurrentplatform/kurrentdb:latest
+            kurrentplatform/kurrentdb:26.1
           for i in $(seq 1 30); do curl -sf http://localhost:2113/health/live && break || sleep 2; done
 
       - uses: dtolnay/rust-toolchain@stable
@@ -224,8 +224,8 @@ jobs:
 
       - name: Pre-pull KurrentDB image
         run: |
-          docker pull kurrentplatform/kurrentdb:latest
-          k3d image import kurrentplatform/kurrentdb:latest -c testbed
+          docker pull kurrentplatform/kurrentdb:26.1
+          k3d image import kurrentplatform/kurrentdb:26.1 -c testbed
 
       - name: Deploy KurrentDB (single-node, emptyDir Memory)
         run: |
@@ -251,7 +251,7 @@ jobs:
                 enableServiceLinks: false
                 containers:
                   - name: kurrentdb
-                    image: kurrentplatform/kurrentdb:latest
+                    image: kurrentplatform/kurrentdb:26.1
                     imagePullPolicy: IfNotPresent
                     ports:
                       - containerPort: 2113
@@ -411,8 +411,8 @@ jobs:
 
       - name: Pre-pull KurrentDB image
         run: |
-          docker pull kurrentplatform/kurrentdb:latest
-          k3d image import kurrentplatform/kurrentdb:latest -c failover
+          docker pull kurrentplatform/kurrentdb:26.1
+          k3d image import kurrentplatform/kurrentdb:26.1 -c failover
 
       - name: Deploy namespace and services
         run: |
@@ -450,7 +450,7 @@ jobs:
                 terminationGracePeriodSeconds: 10
                 containers:
                   - name: kurrentdb
-                    image: kurrentplatform/kurrentdb:latest
+                    image: kurrentplatform/kurrentdb:26.1
                     imagePullPolicy: IfNotPresent
                     ports:
                       - {name: http,  containerPort: 2113}
@@ -542,8 +542,8 @@ jobs:
 
       - name: Pre-pull KurrentDB image
         run: |
-          docker pull kurrentplatform/kurrentdb:latest
-          k3d image import kurrentplatform/kurrentdb:latest -c failover-impact
+          docker pull kurrentplatform/kurrentdb:26.1
+          k3d image import kurrentplatform/kurrentdb:26.1 -c failover-impact
 
       - name: Deploy namespace and services
         run: |
@@ -581,7 +581,7 @@ jobs:
                 terminationGracePeriodSeconds: 10
                 containers:
                   - name: kurrentdb
-                    image: kurrentplatform/kurrentdb:latest
+                    image: kurrentplatform/kurrentdb:26.1
                     imagePullPolicy: IfNotPresent
                     ports:
                       - {name: http,  containerPort: 2113}
@@ -2199,8 +2199,8 @@ jobs:
 
       - name: Pre-pull KurrentDB image
         run: |
-          docker pull kurrentplatform/kurrentdb:latest
-          k3d image import kurrentplatform/kurrentdb:latest -c monitoring-check
+          docker pull kurrentplatform/kurrentdb:26.1
+          k3d image import kurrentplatform/kurrentdb:26.1 -c monitoring-check
 
       - name: Deploy namespace
         run: kubectl apply -f k8s/00-namespace.yaml
@@ -2229,7 +2229,7 @@ jobs:
                 terminationGracePeriodSeconds: 10
                 containers:
                   - name: kurrentdb
-                    image: kurrentplatform/kurrentdb:latest
+                    image: kurrentplatform/kurrentdb:26.1
                     imagePullPolicy: IfNotPresent
                     ports:
                       - {name: http, containerPort: 2113}
